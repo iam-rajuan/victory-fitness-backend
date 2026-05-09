@@ -31,8 +31,8 @@ class NutritionAdviceResult:
 
 
 def generate_nutrition_plan(payload: dict) -> NutritionResult:
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
 
     prompt = (
         "Create a 7-day nutrition plan in JSON with this exact top-level structure:\n"
@@ -48,30 +48,25 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
     )
 
     request_payload = {
-        "model": settings.anthropic_model,
-        "max_tokens": 2048,
-        "system": NUTRITION_PLAN_SYSTEM_PROMPT,
+        "model": settings.openai_model,
         "messages": [
+            {"role": "system", "content": NUTRITION_PLAN_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
+        "temperature": 0.5,
     }
 
-    data = _anthropic_json(request_payload)
+    data = _openai_json(request_payload)
     try:
-        content = data["content"]
-        text = next(
-            block["text"]
-            for block in content
-            if block.get("type") == "text" and block.get("text")
-        ).strip()
+        text = data["choices"][0]["message"]["content"].strip()
         return NutritionResult(data=json.loads(text))
-    except (KeyError, IndexError, AttributeError, TypeError, StopIteration, json.JSONDecodeError) as exc:
-        raise RuntimeError("Anthropic nutrition plan response was invalid JSON") from exc
+    except (KeyError, IndexError, AttributeError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("OpenAI nutrition plan response was invalid JSON") from exc
 
 
 def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
-    if not settings.anthropic_api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
 
     prompt = (
         "Give 3 to 5 short bullet-style nutrition suggestions based on this context. "
@@ -80,37 +75,31 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
     )
 
     request_payload = {
-        "model": settings.anthropic_model,
-        "max_tokens": 512,
-        "system": NUTRITION_ADVICE_SYSTEM_PROMPT,
+        "model": settings.openai_model,
         "messages": [
+            {"role": "system", "content": NUTRITION_ADVICE_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
+        "temperature": 0.6,
     }
 
-    data = _anthropic_json(request_payload)
+    data = _openai_json(request_payload)
     try:
-        content = data["content"]
-        reply = next(
-            block["text"]
-            for block in content
-            if block.get("type") == "text" and block.get("text")
-        ).strip()
-    except (KeyError, IndexError, AttributeError, TypeError, StopIteration) as exc:
-        raise RuntimeError("Anthropic nutrition advice response was missing text") from exc
+        reply = data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, AttributeError, TypeError) as exc:
+        raise RuntimeError("OpenAI nutrition advice response was missing text") from exc
 
     return NutritionAdviceResult(reply=reply)
 
 
-def _anthropic_json(payload: dict) -> dict:
+def _openai_json(payload: dict) -> dict:
     req = request.Request(
-        "https://api.anthropic.com/v1/messages",
+        "https://api.openai.com/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "x-api-key": settings.anthropic_api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-            "accept": "application/json",
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         },
         method="POST",
     )
@@ -120,6 +109,6 @@ def _anthropic_json(payload: dict) -> dict:
             return json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"Anthropic request failed: {detail}") from exc
+        raise RuntimeError(f"OpenAI request failed: {detail}") from exc
     except error.URLError as exc:
-        raise RuntimeError(f"Anthropic request failed: {exc.reason}") from exc
+        raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
