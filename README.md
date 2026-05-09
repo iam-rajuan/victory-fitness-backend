@@ -17,7 +17,7 @@ Update `.env` before running:
 - `JWT_SECRET_KEY`: replace with a long random secret.
 - `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`: your SMTP account details.
 - `OPENAI_API_KEY`: your OpenAI API key for Coach Victor.
-- `OPENAI_MODEL`: OpenAI model for Coach Victor, defaults to `gpt-5.4-mini`.
+- `OPENAI_MODEL`: OpenAI model for Coach Victor, defaults to `gpt-4.1-mini`.
 - `FRONTEND_ORIGIN`: Expo web origin, usually `http://localhost:8081`.
 - `FRONTEND_ORIGIN_REGEX`: `.*` allows all origins for development. Use a strict regex or remove it in production.
 - `COOKIE_SECURE`: use `false` for local HTTP, `true` for production HTTPS.

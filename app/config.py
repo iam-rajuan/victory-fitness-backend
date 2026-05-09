@@ -37,7 +37,7 @@ class Settings:
     smtp_use_tls = _get_bool("SMTP_USE_TLS", True)
 
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
-    openai_model = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+    openai_model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:8081")
     frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", ".*")
