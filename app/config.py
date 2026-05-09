@@ -14,13 +14,21 @@ def _get_bool(name: str, default: bool) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def _get_mongodb_uri() -> str:
+    value = (os.getenv("MONGODB_URI") or os.getenv("MONGO_URL") or "").strip()
+    if "<" in value or ">" in value:
+        return ""
+    return value
+
+
 class Settings:
     app_name = os.getenv("APP_NAME", "Victory Fitness API")
     environment = os.getenv("ENVIRONMENT", "development")
     api_host = os.getenv("API_HOST", "0.0.0.0")
     api_port = int(os.getenv("API_PORT", "8000"))
 
-    mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+    mongodb_uri = _get_mongodb_uri()
+    mongodb_configured = bool(mongodb_uri)
     mongodb_db = os.getenv("MONGODB_DB", "victory_fitness")
 
     jwt_secret_key = os.getenv("JWT_SECRET_KEY", "change-this-to-a-long-random-secret")
@@ -37,7 +45,9 @@ class Settings:
     smtp_use_tls = _get_bool("SMTP_USE_TLS", True)
 
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
-    openai_model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:8081")
     frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", ".*")

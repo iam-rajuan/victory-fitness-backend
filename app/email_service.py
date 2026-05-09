@@ -13,8 +13,19 @@ def send_verification_email(to_email: str, code: str) -> None:
     message["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
     message["To"] = to_email
     message.set_content(
-        f"Your Victory Fitness verification code is {code}.\n\n"
-        "This code expires in 10 minutes."
+        "Victory Fitness Email Verification\n\n"
+        "Hi,\n\n"
+        "Thanks for creating your Victory Fitness account. Use the verification "
+        "code below to confirm your email address and finish setting up your account.\n\n"
+        f"Verification code: {code}\n\n"
+        "This code expires in 10 minutes. For your security, do not share this "
+        "code with anyone. Victory Fitness will never ask you for this code outside "
+        "the app verification screen.\n\n"
+        "If you did not create a Victory Fitness account, you can safely ignore "
+        "this email.\n\n"
+        "Need help?\n"
+        "Contact support at office@victorakko.com.\n\n"
+        "Victory Fitness"
     )
 
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:

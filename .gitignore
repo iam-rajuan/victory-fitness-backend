@@ -39,3 +39,4 @@ Thumbs.db
 
 # Docker/local data
 mongo-data/
+.local-data/

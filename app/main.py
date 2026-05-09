@@ -1,13 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, Security, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .coach_victor import generate_coach_victor_reply
 from .config import settings
-from .database import ensure_indexes, users_collection
+from .database import DatabaseNotConfiguredError, ensure_indexes, users_collection
 from .email_service import send_verification_email
 from .models import (
     CoachVictorChatRequest,
@@ -52,6 +53,14 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(DatabaseNotConfiguredError)
+async def database_not_configured_handler(
+    _request: Request,
+    exc: DatabaseNotConfiguredError,
+) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 async def _require_access_user(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
 ) -> dict:
@@ -68,7 +77,7 @@ async def startup() -> None:
 
 
 @app.get("/")
-async def root(user: dict = Depends(_require_access_user)) -> dict[str, str]:
+async def root() -> dict[str, str]:
     return {
         "status": "success",
         "message": "Victory Fitness API is running",
@@ -76,7 +85,7 @@ async def root(user: dict = Depends(_require_access_user)) -> dict[str, str]:
 
 
 @app.get("/health")
-async def health(user: dict = Depends(_require_access_user)) -> dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
