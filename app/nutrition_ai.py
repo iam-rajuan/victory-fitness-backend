@@ -106,6 +106,10 @@ class NutritionAdviceResult:
     reply: str
 
 
+class NutritionPlanRefusalError(RuntimeError):
+    pass
+
+
 def generate_nutrition_plan(payload: dict) -> NutritionResult:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
@@ -140,7 +144,12 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
 
     data = _openai_json_with_retry(request_payload)
     try:
-        text = data["choices"][0]["message"]["content"].strip()
+        message = data["choices"][0]["message"]
+        refusal = message.get("refusal")
+        if refusal:
+            raise NutritionPlanRefusalError(str(refusal))
+
+        text = message["content"].strip()
         return NutritionResult(data=_normalize_nutrition_plan(json.loads(text)))
     except (KeyError, IndexError, AttributeError, TypeError, json.JSONDecodeError) as exc:
         raise RuntimeError("OpenAI nutrition plan response was invalid JSON") from exc

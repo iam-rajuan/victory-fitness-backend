@@ -24,7 +24,11 @@ from .models import (
     VerifyEmailRequest,
 )
 from .database import coach_victor_threads_collection, nutrition_plans_collection
-from .nutrition_ai import generate_nutrition_advice, generate_nutrition_plan
+from .nutrition_ai import (
+    NutritionPlanRefusalError,
+    generate_nutrition_advice,
+    generate_nutrition_plan,
+)
 from .security import (
     create_token,
     create_verification_code,
@@ -259,8 +263,10 @@ async def nutrition_plan(
 
     try:
         result = generate_nutrition_plan(payload.model_dump())
+    except NutritionPlanRefusalError as exc:
+        raise HTTPException(status_code=422, detail=f"Nutrition plan refused: {exc}") from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=f"Nutrition plan unavailable: {exc}") from exc
 
     plan = NutritionPlanResponse(**result.data, profile=payload.model_dump())
     created_at = datetime.now(timezone.utc)
