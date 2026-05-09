@@ -4,10 +4,19 @@ from bson import ObjectId
 from fastapi import Cookie, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from .coach_victor import generate_coach_victor_reply
 from .config import settings
 from .database import ensure_indexes, users_collection
 from .email_service import send_verification_email
-from .models import LoginRequest, RefreshRequest, RegisterRequest, TokenResponse, VerifyEmailRequest
+from .models import (
+    CoachVictorChatRequest,
+    CoachVictorChatResponse,
+    LoginRequest,
+    RefreshRequest,
+    RegisterRequest,
+    TokenResponse,
+    VerifyEmailRequest,
+)
 from .security import (
     create_token,
     create_verification_code,
@@ -162,6 +171,44 @@ async def validate_authorization(authorization: str | None = Header(default=None
         raise HTTPException(status_code=401, detail="Invalid access token")
 
     return {"status": "ok"}
+
+
+@app.post("/ai/coach-victor/chat", response_model=CoachVictorChatResponse)
+async def coach_victor_chat(
+    payload: CoachVictorChatRequest,
+    authorization: str | None = Header(default=None),
+) -> CoachVictorChatResponse:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing access token")
+
+    token = authorization.split(" ", 1)[1].strip()
+
+    try:
+        data = decode_token(token, "access")
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid access token") from exc
+
+    try:
+        user_id = ObjectId(data["sub"])
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid access token") from exc
+
+    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid access token")
+
+    chat_history = [
+        {"role": item.role, "content": item.content}
+        for item in payload.history[-12:]
+    ]
+    chat_history.append({"role": "user", "content": payload.message})
+
+    try:
+        result = generate_coach_victor_reply(chat_history)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return CoachVictorChatResponse(reply=result.reply)
 
 
 async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:

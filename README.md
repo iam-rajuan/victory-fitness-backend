@@ -16,6 +16,8 @@ Update `.env` before running:
 - `MONGODB_URI`: your MongoDB Atlas connection string.
 - `JWT_SECRET_KEY`: replace with a long random secret.
 - `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`: your SMTP account details.
+- `OPENAI_API_KEY`: your OpenAI API key for Coach Victor.
+- `OPENAI_MODEL`: OpenAI model for Coach Victor, defaults to `gpt-5.4-mini`.
 - `FRONTEND_ORIGIN`: Expo web origin, usually `http://localhost:8081`.
 - `FRONTEND_ORIGIN_REGEX`: `.*` allows all origins for development. Use a strict regex or remove it in production.
 - `COOKIE_SECURE`: use `false` for local HTTP, `true` for production HTTPS.
@@ -44,3 +46,5 @@ The compose file starts the FastAPI API and reads `MONGODB_URI` from `.env`, so 
 - `POST /auth/refresh`
 
 `/auth/login`, `/auth/verify-email`, and `/auth/refresh` set HttpOnly cookies and also return tokens in the response body for Expo native usage.
+
+`POST /ai/coach-victor/chat` generates a response from Coach Victor using OpenAI. It expects an authenticated access token and a body with `message` plus optional prior `history`.

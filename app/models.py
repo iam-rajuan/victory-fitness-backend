@@ -37,3 +37,17 @@ class UserOut(BaseModel):
     email: EmailStr
     is_verified: bool
     created_at: datetime
+
+
+class CoachVictorMessage(BaseModel):
+    role: str = Field(pattern=r"^(user|assistant)$")
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class CoachVictorChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
+    history: list[CoachVictorMessage] = Field(default_factory=list)
+
+
+class CoachVictorChatResponse(BaseModel):
+    reply: str
