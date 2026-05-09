@@ -44,7 +44,7 @@ class CoachVictorMessage(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
 
 
-class CoachVictorStoredMessage(CoachVictorMessage):
+class CoachVictorThreadMessage(CoachVictorMessage):
     id: str
     created_at: datetime
 
@@ -55,10 +55,12 @@ class CoachVictorChatRequest(BaseModel):
 
 class CoachVictorChatResponse(BaseModel):
     reply: str
+    thread_id: str | None = None
 
 
 class CoachVictorHistoryResponse(BaseModel):
-    messages: list[CoachVictorStoredMessage] = Field(default_factory=list)
+    thread_id: str | None = None
+    messages: list[CoachVictorThreadMessage] = Field(default_factory=list)
 
 
 class NutritionMealItem(BaseModel):

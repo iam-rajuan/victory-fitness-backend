@@ -23,7 +23,7 @@ from .models import (
     TokenResponse,
     VerifyEmailRequest,
 )
-from .database import coach_victor_messages_collection, nutrition_plans_collection
+from .database import coach_victor_threads_collection, nutrition_plans_collection
 from .nutrition_ai import generate_nutrition_advice, generate_nutrition_plan
 from .security import (
     create_token,
@@ -170,40 +170,58 @@ async def coach_victor_chat(
 ) -> CoachVictorChatResponse:
     user = await _get_verified_user(authorization)
     user_id = str(user["_id"])
-
-    await coach_victor_messages_collection.insert_one(
-        {
-            "user_id": user_id,
-            "role": "user",
-            "content": payload.message,
-            "created_at": datetime.now(timezone.utc),
-        }
+    thread = await coach_victor_threads_collection.find_one(
+        {"user_id": user_id},
+        sort=[("updated_at", -1)],
     )
 
-    stored_history = await coach_victor_messages_collection.find(
-        {"user_id": user_id}
-    ).sort("created_at", 1).to_list(length=24)
-
+    existing_messages = thread.get("messages", []) if thread else []
     chat_history = [
         {"role": item["role"], "content": item["content"]}
-        for item in stored_history[-12:]
+        for item in existing_messages[-12:]
     ]
+    chat_history.append({"role": "user", "content": payload.message})
 
     try:
         result = generate_coach_victor_reply(chat_history)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    await coach_victor_messages_collection.insert_one(
-        {
-            "user_id": user_id,
-            "role": "assistant",
-            "content": result.reply,
-            "created_at": datetime.now(timezone.utc),
-        }
-    )
+    now = datetime.now(timezone.utc)
+    user_message = {
+        "id": str(ObjectId()),
+        "role": "user",
+        "content": payload.message,
+        "created_at": now,
+    }
+    assistant_message = {
+        "id": str(ObjectId()),
+        "role": "assistant",
+        "content": result.reply,
+        "created_at": now,
+    }
 
-    return CoachVictorChatResponse(reply=result.reply)
+    if thread:
+        await coach_victor_threads_collection.update_one(
+            {"_id": thread["_id"]},
+            {
+                "$push": {"messages": {"$each": [user_message, assistant_message]}},
+                "$set": {"updated_at": now},
+            },
+        )
+        thread_id = str(thread["_id"])
+    else:
+        insert_result = await coach_victor_threads_collection.insert_one(
+            {
+                "user_id": user_id,
+                "messages": [user_message, assistant_message],
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+        thread_id = str(insert_result.inserted_id)
+
+    return CoachVictorChatResponse(reply=result.reply, thread_id=thread_id)
 
 
 @app.get("/ai/coach-victor/history", response_model=CoachVictorHistoryResponse)
@@ -212,14 +230,17 @@ async def coach_victor_history(
 ) -> CoachVictorHistoryResponse:
     user = await _get_verified_user(authorization)
     user_id = str(user["_id"])
-    stored_messages = await coach_victor_messages_collection.find(
-        {"user_id": user_id}
-    ).sort("created_at", 1).to_list(length=100)
+    thread = await coach_victor_threads_collection.find_one(
+        {"user_id": user_id},
+        sort=[("updated_at", -1)],
+    )
+    stored_messages = thread.get("messages", []) if thread else []
 
     return CoachVictorHistoryResponse(
+        thread_id=str(thread["_id"]) if thread else None,
         messages=[
             {
-                "id": str(item["_id"]),
+                "id": item["id"],
                 "role": item["role"],
                 "content": item["content"],
                 "created_at": item["created_at"],
