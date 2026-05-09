@@ -1,10 +1,13 @@
+import logging
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 
 from bson import ObjectId
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .coach_archive import (
     build_archive_record,
@@ -53,6 +56,7 @@ from .security import (
 
 app = FastAPI(title=settings.app_name)
 bearer_scheme = HTTPBearer(auto_error=False)
+logger = logging.getLogger("victory_fitness.api")
 
 app.add_middleware(
     CORSMiddleware,
@@ -64,12 +68,70 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    started_at = perf_counter()
+    logger.info("request_started method=%s path=%s", request.method, request.url.path)
+    try:
+        response = await call_next(request)
+    except Exception:
+        duration_ms = round((perf_counter() - started_at) * 1000, 2)
+        logger.exception(
+            "request_failed method=%s path=%s duration_ms=%s",
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
+
+    duration_ms = round((perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "request_completed method=%s path=%s status_code=%s duration_ms=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
+
+
 @app.exception_handler(DatabaseNotConfiguredError)
 async def database_not_configured_handler(
-    _request: Request,
+    request: Request,
     exc: DatabaseNotConfiguredError,
 ) -> JSONResponse:
+    logger.error("database_not_configured path=%s detail=%s", request.url.path, str(exc))
     return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(
+    request: Request,
+    exc: StarletteHTTPException,
+) -> JSONResponse:
+    logger.warning(
+        "http_exception method=%s path=%s status_code=%s detail=%s",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.detail,
+    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    detail = str(exc).strip() or "Internal server error"
+    logger.exception(
+        "unhandled_exception method=%s path=%s detail=%s",
+        request.method,
+        request.url.path,
+        detail,
+    )
+    return JSONResponse(status_code=500, content={"detail": detail})
 
 
 async def _require_access_user(
@@ -84,7 +146,9 @@ async def _require_access_user(
 
 @app.on_event("startup")
 async def startup() -> None:
+    logger.info("startup_begin")
     await ensure_indexes()
+    logger.info("startup_complete")
 
 
 @app.get("/")
@@ -103,6 +167,7 @@ async def health() -> dict[str, str]:
 @app.post("/auth/register", status_code=status.HTTP_202_ACCEPTED)
 async def register(payload: RegisterRequest) -> dict[str, str]:
     email = payload.email.lower()
+    logger.info("auth_register_attempt email=%s", email)
     existing_user = await users_collection.find_one({"email": email})
     if existing_user and existing_user.get("is_verified"):
         raise HTTPException(status_code=409, detail="Email is already registered")
@@ -128,12 +193,14 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    logger.info("auth_register_code_sent email=%s", email)
     return {"message": "Verification code sent", "email": email}
 
 
 @app.post("/auth/verify-email", response_model=TokenResponse)
 async def verify_email(payload: VerifyEmailRequest, response: Response) -> TokenResponse:
     email = payload.email.lower()
+    logger.info("auth_verify_attempt email=%s", email)
     user = await users_collection.find_one({"email": email})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -154,16 +221,19 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
         },
     )
     user["is_verified"] = True
+    logger.info("auth_verify_success email=%s", email)
     return await _issue_tokens(user, response)
 
 
 @app.post("/auth/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, response: Response) -> TokenResponse:
+    logger.info("auth_login_attempt email=%s", payload.email.lower())
     user = await users_collection.find_one({"email": payload.email.lower()})
     if not user or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.get("is_verified"):
         raise HTTPException(status_code=403, detail="Email is not verified")
+    logger.info("auth_login_success email=%s", payload.email.lower())
     return await _issue_tokens(user, response)
 
 
@@ -173,6 +243,7 @@ async def refresh(
     payload: RefreshRequest | None = None,
     session_token: str | None = Cookie(default=None),
 ) -> TokenResponse:
+    logger.info("auth_refresh_attempt")
     token = session_token or (payload.session_token if payload else None)
     if not token:
         raise HTTPException(status_code=401, detail="Missing session token")
@@ -190,6 +261,7 @@ async def refresh(
     user = await users_collection.find_one({"_id": user_id, "is_verified": True})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid session token")
+    logger.info("auth_refresh_success user_id=%s", str(user["_id"]))
     return await _issue_tokens(user, response)
 
 
@@ -204,6 +276,7 @@ async def coach_victor_chat(
     user: dict = Depends(_require_access_user),
 ) -> CoachVictorChatResponse:
     user_id = str(user["_id"])
+    logger.info("coach_chat_attempt user_id=%s", user_id)
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
         sort=[("updated_at", -1)],
@@ -258,6 +331,12 @@ async def coach_victor_chat(
         insert_result = await coach_victor_threads_collection.insert_one(thread_doc)
         thread_id = str(insert_result.inserted_id)
 
+    logger.info(
+        "coach_chat_success user_id=%s thread_id=%s message_count=%s",
+        user_id,
+        thread_id,
+        len(next_full_messages),
+    )
     return CoachVictorChatResponse(reply=result.reply, thread_id=thread_id)
 
 
@@ -266,11 +345,18 @@ async def coach_victor_history(
     user: dict = Depends(_require_access_user),
 ) -> CoachVictorHistoryResponse:
     user_id = str(user["_id"])
+    logger.info("coach_history_attempt user_id=%s", user_id)
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
         sort=[("updated_at", -1)],
     )
     all_messages = await _get_full_thread_messages(thread)
+    logger.info(
+        "coach_history_success user_id=%s thread_id=%s message_count=%s",
+        user_id,
+        str(thread["_id"]) if thread else None,
+        len(all_messages),
+    )
 
     return CoachVictorHistoryResponse(
         thread_id=str(thread["_id"]) if thread else None,
@@ -291,6 +377,7 @@ async def nutrition_plan(
     payload: NutritionPlanRequest,
     user: dict = Depends(_require_access_user),
 ) -> NutritionPlanSaveResponse:
+    logger.info("nutrition_plan_attempt user_id=%s", str(user["_id"]))
     try:
         result = generate_nutrition_plan(payload.model_dump())
     except NutritionPlanRefusalError as exc:
@@ -309,6 +396,12 @@ async def nutrition_plan(
         }
     )
     plan.plan_id = str(insert_result.inserted_id)
+    logger.info(
+        "nutrition_plan_saved user_id=%s plan_id=%s days=%s",
+        str(user["_id"]),
+        plan.plan_id,
+        len(plan.days),
+    )
 
     return NutritionPlanSaveResponse(plan=plan)
 
@@ -317,6 +410,7 @@ async def nutrition_plan(
 async def nutrition_latest_plan(
     user: dict = Depends(_require_access_user),
 ) -> NutritionPlanResponse:
+    logger.info("nutrition_latest_attempt user_id=%s", str(user["_id"]))
     record = await nutrition_plans_collection.find_one(
         {"user_id": str(user["_id"])},
         sort=[("created_at", -1)],
@@ -326,6 +420,7 @@ async def nutrition_latest_plan(
 
     plan_data = dict(record["plan"])
     plan_data["plan_id"] = str(record["_id"])
+    logger.info("nutrition_latest_success user_id=%s plan_id=%s", str(user["_id"]), plan_data["plan_id"])
     return NutritionPlanResponse(**plan_data)
 
 
@@ -334,11 +429,13 @@ async def nutrition_advice(
     payload: NutritionAdviceRequest,
     user: dict = Depends(_require_access_user),
 ) -> NutritionAdviceResponse:
+    logger.info("nutrition_advice_attempt user_id=%s", str(user["_id"]))
     try:
         result = generate_nutrition_advice(payload.model_dump())
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    logger.info("nutrition_advice_success user_id=%s", str(user["_id"]))
     return NutritionAdviceResponse(reply=result.reply)
 
 
