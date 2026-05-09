@@ -130,25 +130,25 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
 
     request_payload = {
         "model": settings.openai_model,
-        "messages": [
-            {"role": "system", "content": NUTRITION_PLAN_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": NUTRITION_PLAN_SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            },
         ],
-        "temperature": 0.5,
-        "max_tokens": 2200,
-        "response_format": {"type": "json_object"},
+        "text": {"format": NUTRITION_PLAN_JSON_SCHEMA},
+        "max_output_tokens": 2200,
     }
 
     data = _openai_json_with_retry(request_payload)
+    text = _extract_response_text(data, NutritionPlanRefusalError)
     try:
-        message = data["choices"][0]["message"]
-        refusal = message.get("refusal")
-        if refusal:
-            raise NutritionPlanRefusalError(str(refusal))
-
-        text = message["content"].strip()
         return NutritionResult(data=_normalize_nutrition_plan(json.loads(text)))
-    except (KeyError, IndexError, AttributeError, TypeError, json.JSONDecodeError) as exc:
+    except json.JSONDecodeError as exc:
         raise RuntimeError("OpenAI nutrition plan response was invalid JSON") from exc
 
 
@@ -164,17 +164,22 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
 
     request_payload = {
         "model": settings.openai_model,
-        "messages": [
-            {"role": "system", "content": NUTRITION_ADVICE_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": NUTRITION_ADVICE_SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            },
         ],
-        "temperature": 0.6,
-        "max_tokens": 400,
+        "max_output_tokens": 400,
     }
 
     data = _openai_json_with_retry(request_payload)
     try:
-        reply = data["choices"][0]["message"]["content"].strip()
+        reply = _extract_response_text(data).strip()
     except (KeyError, IndexError, AttributeError, TypeError) as exc:
         raise RuntimeError("OpenAI nutrition advice response was missing text") from exc
 
@@ -203,7 +208,7 @@ def _openai_json_with_retry(payload: dict) -> dict:
 
 def _openai_json(payload: dict) -> dict:
     req = request.Request(
-        "https://api.openai.com/v1/chat/completions",
+        "https://api.openai.com/v1/responses",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {settings.openai_api_key}",
@@ -223,6 +228,38 @@ def _openai_json(payload: dict) -> dict:
         raise RuntimeError(f"OpenAI request failed: {detail}") from exc
     except error.URLError as exc:
         raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+
+
+def _extract_response_text(data: dict, refusal_error_cls: type[Exception] = RuntimeError) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text
+
+    output = data.get("output", [])
+    if isinstance(output, list):
+        parts: list[str] = []
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+
+            content = item.get("content", [])
+            if not isinstance(content, list):
+                continue
+
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "refusal":
+                    raise refusal_error_cls(str(part.get("refusal", "Model refused the request")))
+                if part.get("type") == "output_text":
+                    text = part.get("text", "")
+                    if text:
+                        parts.append(text)
+
+        if parts:
+            return "".join(parts)
+
+    raise RuntimeError("OpenAI response was missing output text")
 
 
 def _normalize_nutrition_plan(plan: dict) -> dict:
