@@ -96,6 +96,7 @@ class NutritionPlanRequest(BaseModel):
 
 
 class NutritionPlanResponse(BaseModel):
+    plan_id: str | None = None
     summary: str
     goal_label: str
     days: list[NutritionDayPlan]

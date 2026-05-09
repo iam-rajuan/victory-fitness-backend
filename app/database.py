@@ -11,4 +11,4 @@ nutrition_plans_collection = db["nutrition_plans"]
 
 async def ensure_indexes() -> None:
     await users_collection.create_index("email", unique=True)
-    await nutrition_plans_collection.create_index("user_id", unique=True)
+    await nutrition_plans_collection.create_index([("user_id", 1), ("created_at", -1)])

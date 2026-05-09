@@ -196,18 +196,16 @@ async def nutrition_plan(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     plan = NutritionPlanResponse(**result.data, profile=payload.model_dump())
-    await nutrition_plans_collection.update_one(
-        {"user_id": str(user["_id"])},
+    created_at = datetime.now(timezone.utc)
+    insert_result = await nutrition_plans_collection.insert_one(
         {
-            "$set": {
-                "user_id": str(user["_id"]),
-                "plan": plan.model_dump(),
-                "updated_at": datetime.now(timezone.utc),
-            },
-            "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
-        },
-        upsert=True,
+            "user_id": str(user["_id"]),
+            "plan": plan.model_dump(),
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
     )
+    plan.plan_id = str(insert_result.inserted_id)
 
     return NutritionPlanSaveResponse(plan=plan)
 
@@ -217,11 +215,17 @@ async def nutrition_latest_plan(
     authorization: str | None = Header(default=None),
 ) -> NutritionPlanResponse:
     user = await _get_verified_user(authorization)
-    record = await nutrition_plans_collection.find_one({"user_id": str(user["_id"])})
+    record = await nutrition_plans_collection.find_one(
+        {"user_id": str(user["_id"])},
+        sort=[("created_at", -1)],
+    )
     if not record or not record.get("plan"):
         raise HTTPException(status_code=404, detail="Nutrition plan not found")
 
-    return NutritionPlanResponse(**record["plan"])
+    return NutritionPlanResponse(
+        **record["plan"],
+        plan_id=str(record["_id"]),
+    )
 
 
 @app.post("/ai/nutrition/advice", response_model=NutritionAdviceResponse)
