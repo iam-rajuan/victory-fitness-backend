@@ -136,10 +136,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         ],
         "temperature": 0.5,
         "max_tokens": 2200,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": NUTRITION_PLAN_JSON_SCHEMA,
-        },
+        "response_format": {"type": "json_object"},
     }
 
     data = _openai_json_with_retry(request_payload)
