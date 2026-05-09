@@ -38,7 +38,12 @@ from .security import (
 )
 
 
-app = FastAPI(title=settings.app_name)
+app = FastAPI(
+    title=settings.app_name,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 app.add_middleware(
     CORSMiddleware,
