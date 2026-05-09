@@ -129,7 +129,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         f"User context: {json.dumps(payload, ensure_ascii=False)}"
     )
 
-    request_payload = {
+    responses_payload = {
         "model": settings.openai_model,
         "input": [
             {
@@ -145,8 +145,14 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         "max_output_tokens": 2200,
     }
 
-    data = _openai_json_with_retry(request_payload)
-    text = _extract_response_text(data, NutritionPlanRefusalError)
+    try:
+        data = _openai_responses_json_with_retry(responses_payload)
+        text = _extract_response_text(data, NutritionPlanRefusalError)
+    except NutritionPlanRefusalError:
+        raise
+    except RuntimeError:
+        text = _fallback_nutrition_plan_json(prompt)
+
     try:
         return NutritionResult(data=_normalize_nutrition_plan(json.loads(text)))
     except json.JSONDecodeError as exc:
@@ -178,7 +184,7 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
         "max_output_tokens": 400,
     }
 
-    data = _openai_json_with_retry(request_payload)
+    data = _openai_responses_json_with_retry(request_payload)
     try:
         reply = _extract_response_text(data).strip()
     except (KeyError, IndexError, AttributeError, TypeError) as exc:
@@ -187,12 +193,12 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
     return NutritionAdviceResult(reply=reply)
 
 
-def _openai_json_with_retry(payload: dict) -> dict:
+def _openai_responses_json_with_retry(payload: dict) -> dict:
     last_error: Exception | None = None
 
     for attempt in range(OPENAI_REQUEST_RETRIES):
         try:
-            return _openai_json(payload)
+            return _openai_responses_json(payload)
         except TimeoutError as exc:
             last_error = exc
         except RuntimeError as exc:
@@ -207,9 +213,72 @@ def _openai_json_with_retry(payload: dict) -> dict:
     raise RuntimeError("OpenAI request timed out") from last_error
 
 
-def _openai_json(payload: dict) -> dict:
+def _openai_responses_json(payload: dict) -> dict:
     req = request.Request(
         "https://api.openai.com/v1/responses",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with request.urlopen(req, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError("OpenAI request timed out") from exc
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"OpenAI request failed: {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+
+
+def _fallback_nutrition_plan_json(prompt: str) -> str:
+    payload = {
+        "model": settings.openai_model,
+        "messages": [
+            {"role": "system", "content": NUTRITION_PLAN_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.3,
+        "max_tokens": 2200,
+    }
+
+    data = _openai_chat_json_with_retry(payload)
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, AttributeError, TypeError) as exc:
+        raise RuntimeError("OpenAI nutrition plan fallback response was missing JSON text") from exc
+
+
+def _openai_chat_json_with_retry(payload: dict) -> dict:
+    last_error: Exception | None = None
+
+    for attempt in range(OPENAI_REQUEST_RETRIES):
+        try:
+            return _openai_chat_json(payload)
+        except TimeoutError as exc:
+            last_error = exc
+        except RuntimeError as exc:
+            last_error = exc
+
+        if attempt < OPENAI_REQUEST_RETRIES - 1:
+            time.sleep(1.5)
+
+    if isinstance(last_error, RuntimeError):
+        raise last_error
+
+    raise RuntimeError("OpenAI request timed out") from last_error
+
+
+def _openai_chat_json(payload: dict) -> dict:
+    req = request.Request(
+        "https://api.openai.com/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {settings.openai_api_key}",
