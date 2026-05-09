@@ -100,6 +100,7 @@ class NutritionPlanResponse(BaseModel):
     goal_label: str
     days: list[NutritionDayPlan]
     shopping_list: list[NutritionShoppingSection] = Field(default_factory=list)
+    profile: dict | None = None
 
 
 class NutritionAdviceRequest(BaseModel):
@@ -116,3 +117,8 @@ class NutritionAdviceRequest(BaseModel):
 
 class NutritionAdviceResponse(BaseModel):
     reply: str
+
+
+class NutritionPlanSaveResponse(BaseModel):
+    status: str = "success"
+    plan: NutritionPlanResponse

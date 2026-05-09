@@ -16,11 +16,13 @@ from .models import (
     NutritionAdviceResponse,
     NutritionPlanRequest,
     NutritionPlanResponse,
+    NutritionPlanSaveResponse,
     RefreshRequest,
     RegisterRequest,
     TokenResponse,
     VerifyEmailRequest,
 )
+from .database import nutrition_plans_collection
 from .nutrition_ai import generate_nutrition_advice, generate_nutrition_plan
 from .security import (
     create_token,
@@ -181,19 +183,45 @@ async def coach_victor_chat(
     return CoachVictorChatResponse(reply=result.reply)
 
 
-@app.post("/ai/nutrition/plan", response_model=NutritionPlanResponse)
+@app.post("/ai/nutrition/plan", response_model=NutritionPlanSaveResponse)
 async def nutrition_plan(
     payload: NutritionPlanRequest,
     authorization: str | None = Header(default=None),
-) -> NutritionPlanResponse:
-    await _get_verified_user(authorization)
+) -> NutritionPlanSaveResponse:
+    user = await _get_verified_user(authorization)
 
     try:
         result = generate_nutrition_plan(payload.model_dump())
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return NutritionPlanResponse(**result.data)
+    plan = NutritionPlanResponse(**result.data, profile=payload.model_dump())
+    await nutrition_plans_collection.update_one(
+        {"user_id": str(user["_id"])},
+        {
+            "$set": {
+                "user_id": str(user["_id"]),
+                "plan": plan.model_dump(),
+                "updated_at": datetime.now(timezone.utc),
+            },
+            "$setOnInsert": {"created_at": datetime.now(timezone.utc)},
+        },
+        upsert=True,
+    )
+
+    return NutritionPlanSaveResponse(plan=plan)
+
+
+@app.get("/ai/nutrition/plan/latest", response_model=NutritionPlanResponse)
+async def nutrition_latest_plan(
+    authorization: str | None = Header(default=None),
+) -> NutritionPlanResponse:
+    user = await _get_verified_user(authorization)
+    record = await nutrition_plans_collection.find_one({"user_id": str(user["_id"])})
+    if not record or not record.get("plan"):
+        raise HTTPException(status_code=404, detail="Nutrition plan not found")
+
+    return NutritionPlanResponse(**record["plan"])
 
 
 @app.post("/ai/nutrition/advice", response_model=NutritionAdviceResponse)
