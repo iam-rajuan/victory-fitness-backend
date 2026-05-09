@@ -6,6 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from .coach_archive import (
+    build_archive_record,
+    hydrate_archive_messages,
+    load_thread_snapshot,
+    s3_archive_enabled,
+    store_thread_snapshot,
+)
 from .coach_victor import generate_coach_victor_reply
 from .config import settings
 from .database import DatabaseNotConfiguredError, ensure_indexes, users_collection
@@ -25,7 +32,11 @@ from .models import (
     TokenResponse,
     VerifyEmailRequest,
 )
-from .database import coach_victor_threads_collection, nutrition_plans_collection
+from .database import (
+    coach_victor_archives_collection,
+    coach_victor_threads_collection,
+    nutrition_plans_collection,
+)
 from .nutrition_ai import (
     NutritionPlanRefusalError,
     generate_nutrition_advice,
@@ -198,7 +209,8 @@ async def coach_victor_chat(
         sort=[("updated_at", -1)],
     )
 
-    existing_messages = thread.get("messages", []) if thread else []
+    full_thread_messages = await _get_full_thread_messages(thread)
+    existing_messages = full_thread_messages[-12:]
     chat_history = [
         {"role": item["role"], "content": item["content"]}
         for item in existing_messages[-12:]
@@ -223,25 +235,27 @@ async def coach_victor_chat(
         "content": result.reply,
         "created_at": now,
     }
+    next_full_messages = [*full_thread_messages, user_message, assistant_message]
 
     if thread:
+        update_doc = await _build_thread_update_doc(
+            thread_id=str(thread["_id"]),
+            user_id=user_id,
+            messages=next_full_messages,
+            updated_at=now,
+        )
         await coach_victor_threads_collection.update_one(
             {"_id": thread["_id"]},
-            {
-                "$push": {"messages": {"$each": [user_message, assistant_message]}},
-                "$set": {"updated_at": now},
-            },
+            update_doc,
         )
         thread_id = str(thread["_id"])
     else:
-        insert_result = await coach_victor_threads_collection.insert_one(
-            {
-                "user_id": user_id,
-                "messages": [user_message, assistant_message],
-                "created_at": now,
-                "updated_at": now,
-            }
+        thread_doc = await _build_new_thread_doc(
+            user_id=user_id,
+            messages=next_full_messages,
+            created_at=now,
         )
+        insert_result = await coach_victor_threads_collection.insert_one(thread_doc)
         thread_id = str(insert_result.inserted_id)
 
     return CoachVictorChatResponse(reply=result.reply, thread_id=thread_id)
@@ -256,7 +270,7 @@ async def coach_victor_history(
         {"user_id": user_id},
         sort=[("updated_at", -1)],
     )
-    stored_messages = thread.get("messages", []) if thread else []
+    all_messages = await _get_full_thread_messages(thread)
 
     return CoachVictorHistoryResponse(
         thread_id=str(thread["_id"]) if thread else None,
@@ -267,7 +281,7 @@ async def coach_victor_history(
                 "content": item["content"],
                 "created_at": item["created_at"],
             }
-            for item in stored_messages
+            for item in all_messages
         ]
     )
 
@@ -310,10 +324,9 @@ async def nutrition_latest_plan(
     if not record or not record.get("plan"):
         raise HTTPException(status_code=404, detail="Nutrition plan not found")
 
-    return NutritionPlanResponse(
-        **record["plan"],
-        plan_id=str(record["_id"]),
-    )
+    plan_data = dict(record["plan"])
+    plan_data["plan_id"] = str(record["_id"])
+    return NutritionPlanResponse(**plan_data)
 
 
 @app.post("/ai/nutrition/advice", response_model=NutritionAdviceResponse)
@@ -327,6 +340,169 @@ async def nutrition_advice(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return NutritionAdviceResponse(reply=result.reply)
+
+
+def _get_thread_recent_messages(thread: dict | None) -> list[dict]:
+    if not thread:
+        return []
+
+    recent_messages = thread.get("recent_messages")
+    if isinstance(recent_messages, list):
+        return recent_messages
+
+    legacy_messages = thread.get("messages")
+    if isinstance(legacy_messages, list):
+        return legacy_messages
+
+    return []
+
+
+async def _get_full_thread_messages(thread: dict | None) -> list[dict]:
+    if not thread:
+        return []
+
+    snapshot_key = str(thread.get("latest_snapshot_s3_key") or "")
+    snapshot_bucket = str(thread.get("latest_snapshot_s3_bucket") or "")
+    if snapshot_key and snapshot_bucket:
+        return load_thread_snapshot(snapshot_bucket, snapshot_key)
+
+    stored_messages = _get_thread_recent_messages(thread)
+    archived_messages: list[dict] = []
+    archive_records = (
+        await coach_victor_archives_collection.find(
+            {"thread_id": str(thread["_id"])},
+            sort=[("created_at", 1)],
+        ).to_list(length=None)
+    )
+    for archive_record in archive_records:
+        archived_messages.extend(hydrate_archive_messages(archive_record))
+
+    return [*archived_messages, *stored_messages]
+
+
+def _trim_recent_messages(messages: list[dict]) -> list[dict]:
+    recent_limit = max(settings.coach_recent_message_limit, 2)
+    return messages[-recent_limit:]
+
+
+async def _build_thread_update_doc(
+    thread_id: str,
+    user_id: str,
+    messages: list[dict],
+    updated_at: datetime,
+) -> dict:
+    recent_messages = _trim_recent_messages(messages)
+    update_doc: dict = {
+        "$set": {
+            "recent_messages": recent_messages,
+            "recent_message_count": len(recent_messages),
+            "updated_at": updated_at,
+            "last_message_at": updated_at,
+        },
+        "$unset": {"messages": ""},
+    }
+
+    if s3_archive_enabled():
+        snapshot = store_thread_snapshot(user_id, thread_id, messages)
+        update_doc["$set"].update(
+            {
+                "latest_snapshot_s3_bucket": snapshot["s3_bucket"],
+                "latest_snapshot_s3_key": snapshot["s3_key"],
+                "snapshot_message_count": snapshot["message_count"],
+                "last_snapshot_at": snapshot["created_at"],
+                "storage_mode": "s3_snapshot",
+            }
+        )
+        return update_doc
+
+    archive_result = await _archive_thread_messages_if_needed(
+        thread_id=thread_id,
+        user_id=user_id,
+        messages=messages,
+    )
+    update_doc["$set"]["recent_messages"] = archive_result["recent_messages"]
+    update_doc["$set"]["recent_message_count"] = len(archive_result["recent_messages"])
+    archive_count_increment = int(archive_result["archive_count_increment"])
+    if archive_count_increment:
+        update_doc["$inc"] = {"archive_count": archive_count_increment}
+    if archive_result["last_archive_at"] is not None:
+        update_doc["$set"]["last_archive_at"] = archive_result["last_archive_at"]
+    update_doc["$set"]["storage_mode"] = "mongodb_archive"
+    return update_doc
+
+
+async def _build_new_thread_doc(
+    user_id: str,
+    messages: list[dict],
+    created_at: datetime,
+) -> dict:
+    recent_messages = _trim_recent_messages(messages)
+    thread_doc = {
+        "user_id": user_id,
+        "recent_messages": recent_messages,
+        "recent_message_count": len(recent_messages),
+        "archive_count": 0,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "last_message_at": created_at,
+    }
+
+    if s3_archive_enabled():
+        thread_id = str(ObjectId())
+        snapshot = store_thread_snapshot(user_id, thread_id, messages)
+        thread_doc.update(
+            {
+                "_id": ObjectId(thread_id),
+                "latest_snapshot_s3_bucket": snapshot["s3_bucket"],
+                "latest_snapshot_s3_key": snapshot["s3_key"],
+                "snapshot_message_count": snapshot["message_count"],
+                "last_snapshot_at": snapshot["created_at"],
+                "storage_mode": "s3_snapshot",
+            }
+        )
+        return thread_doc
+
+    thread_doc["storage_mode"] = "mongodb_archive"
+    return thread_doc
+
+
+async def _archive_thread_messages_if_needed(
+    thread_id: str,
+    user_id: str,
+    messages: list[dict],
+) -> dict[str, datetime | int | list[dict] | None]:
+    recent_limit = max(settings.coach_recent_message_limit, 2)
+    archive_batch_size = max(settings.coach_archive_batch_size, 2)
+
+    if len(messages) <= recent_limit:
+        return {
+            "recent_messages": messages,
+            "archive_count_increment": 0,
+            "last_archive_at": None,
+        }
+
+    archive_count = len(messages) - recent_limit
+    archive_count = max(archive_count, archive_batch_size)
+    archive_count = min(archive_count, len(messages) - 2)
+    if archive_count % 2 != 0:
+        archive_count -= 1
+
+    if archive_count <= 0:
+        return {
+            "recent_messages": messages,
+            "archive_count_increment": 0,
+            "last_archive_at": None,
+        }
+
+    archived_messages = messages[:archive_count]
+    archive_record = build_archive_record(user_id, thread_id, archived_messages)
+    await coach_victor_archives_collection.insert_one(archive_record)
+
+    return {
+        "recent_messages": messages[archive_count:],
+        "archive_count_increment": 1,
+        "last_archive_at": archive_record["created_at"],
+    }
 
 
 async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:

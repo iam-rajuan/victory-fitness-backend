@@ -7,17 +7,29 @@ from .config import settings
 
 
 NUTRITION_PLAN_SYSTEM_PROMPT = (
-    "You are a senior nutrition coach inside the Victory Fitness app. "
-    "Create practical, realistic meal plans that match the user's goal and preferences. "
-    "Return only valid JSON, with no markdown or extra commentary. "
-    "Keep the nutrition advice safe, specific, and easy to follow."
+    "You are the senior nutrition coach inside the Victory Fitness app. "
+    "Create accurate, practical, realistic nutrition plans that match the user's goal, body data, preferences, dietary pattern, allergies, activity level, and health context. "
+    "The plan must feel like something a real person could actually buy, cook, and follow for a full week. "
+    "Use foods and portions that are believable, balanced, and aligned with the goal. "
+    "Make the meals specific, varied, and easy to understand. "
+    "Each meal should include a clear meal name, a short useful description, realistic calories and macros, ingredients that match the meal, and concise step-by-step instructions. "
+    "Keep the plan safe and moderate. "
+    "Do not use extreme calorie restriction, extreme bulking, fake foods, impossible macros, or medically risky advice. "
+    "If the user has allergies or health conditions, respect them carefully and avoid unsafe ingredients. "
+    "If the user input is incomplete, infer a sensible practical plan instead of failing. "
+    "The weekly summary should clearly describe the plan focus and how it supports the user's goal. "
+    "The shopping list should be grouped logically and should match the actual meals in the plan. "
+    "Return only valid JSON that matches the required schema exactly, with no markdown, no commentary, and no extra keys."
 )
 
 NUTRITION_ADVICE_SYSTEM_PROMPT = (
-    "You are a senior nutrition coach inside the Victory Fitness app. "
-    "Give short, practical, high-signal nutrition guidance. "
-    "Keep the advice grounded and user-friendly. "
-    "Avoid medical claims and tell the user to consult a professional for medical conditions."
+    "You are the senior nutrition coach inside the Victory Fitness app. "
+    "Give accurate, practical, user-friendly nutrition guidance based on the user's context, goal, and meal question. "
+    "Keep the advice specific, grounded, and easy to act on today. "
+    "Prefer concrete suggestions such as food swaps, meal composition, protein targets, portion adjustments, hydration, timing, or consistency habits. "
+    "Keep the tone direct and helpful. "
+    "Avoid medical claims, extreme restrictions, or vague motivational filler. "
+    "If the user mentions a medical condition, include a short caution and suggest professional guidance."
 )
 
 OPENAI_REQUEST_TIMEOUT_SECONDS = 120
@@ -113,9 +125,6 @@ class NutritionPlanRefusalError(RuntimeError):
 
 
 def generate_nutrition_plan(payload: dict) -> NutritionResult:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
-
     prompt = (
         "Create a 7-day nutrition plan in JSON with this exact top-level structure:\n"
         "{"
@@ -130,34 +139,46 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         f"User context: {json.dumps(payload, ensure_ascii=False)}"
     )
 
-    responses_payload = {
-        "model": settings.openai_model,
-        "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": NUTRITION_PLAN_SYSTEM_PROMPT}],
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            },
-        ],
-        "text": {"format": NUTRITION_PLAN_JSON_SCHEMA},
-        "max_output_tokens": 2200,
-    }
+    candidates: list[str] = []
 
-    try:
-        data = _openai_responses_json_with_retry(responses_payload)
-        text = _extract_response_text(data, NutritionPlanRefusalError)
-    except NutritionPlanRefusalError:
-        raise
-    except RuntimeError:
-        text = _fallback_nutrition_plan_json(prompt)
+    if settings.openai_api_key:
+        responses_payload = {
+            "model": settings.openai_model,
+            "input": [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": NUTRITION_PLAN_SYSTEM_PROMPT}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                },
+            ],
+            "text": {"format": NUTRITION_PLAN_JSON_SCHEMA},
+            "max_output_tokens": 2200,
+        }
 
-    try:
-        return NutritionResult(data=_normalize_nutrition_plan(_parse_json_object(text)))
-    except json.JSONDecodeError as exc:
-        raise RuntimeError("OpenAI nutrition plan response was invalid JSON") from exc
+        try:
+            data = _openai_responses_json_with_retry(responses_payload)
+            candidates.append(_extract_response_text(data, NutritionPlanRefusalError))
+        except NutritionPlanRefusalError:
+            raise
+        except RuntimeError:
+            pass
+
+    if settings.anthropic_api_key:
+        try:
+            candidates.append(_anthropic_nutrition_plan_json(prompt))
+        except RuntimeError:
+            pass
+
+    for text in candidates:
+        try:
+            return NutritionResult(data=_normalize_nutrition_plan(_parse_json_object(text)))
+        except json.JSONDecodeError:
+            continue
+
+    raise RuntimeError("No cloud model produced a valid nutrition plan")
 
 
 def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
@@ -238,51 +259,24 @@ def _openai_responses_json(payload: dict) -> dict:
         raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
 
 
-def _fallback_nutrition_plan_json(prompt: str) -> str:
+def _anthropic_nutrition_plan_json(prompt: str) -> str:
     payload = {
-        "model": settings.openai_model,
-        "messages": [
-            {"role": "system", "content": NUTRITION_PLAN_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        "response_format": {"type": "json_object"},
-        "temperature": 0.3,
-        "max_tokens": 2200,
+        "model": settings.anthropic_model,
+        "system": (
+            f"{NUTRITION_PLAN_SYSTEM_PROMPT} Return only one valid JSON object. "
+            "Do not include markdown fences, explanations, or commentary."
+        ),
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 3000,
+        "temperature": 0.2,
     }
 
-    data = _openai_chat_json_with_retry(payload)
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, AttributeError, TypeError) as exc:
-        raise RuntimeError("OpenAI nutrition plan fallback response was missing JSON text") from exc
-
-
-def _openai_chat_json_with_retry(payload: dict) -> dict:
-    last_error: Exception | None = None
-
-    for attempt in range(OPENAI_REQUEST_RETRIES):
-        try:
-            return _openai_chat_json(payload)
-        except TimeoutError as exc:
-            last_error = exc
-        except RuntimeError as exc:
-            last_error = exc
-
-        if attempt < OPENAI_REQUEST_RETRIES - 1:
-            time.sleep(1.5)
-
-    if isinstance(last_error, RuntimeError):
-        raise last_error
-
-    raise RuntimeError("OpenAI request timed out") from last_error
-
-
-def _openai_chat_json(payload: dict) -> dict:
     req = request.Request(
-        "https://api.openai.com/v1/chat/completions",
+        "https://api.anthropic.com/v1/messages",
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {settings.openai_api_key}",
+            "x-api-key": settings.anthropic_api_key,
+            "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
             "Accept": "application/json",
         },
@@ -291,14 +285,23 @@ def _openai_chat_json(payload: dict) -> dict:
 
     try:
         with request.urlopen(req, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+            data = json.loads(resp.read().decode("utf-8"))
     except TimeoutError as exc:
-        raise RuntimeError("OpenAI request timed out") from exc
+        raise RuntimeError("Anthropic request timed out") from exc
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"OpenAI request failed: {detail}") from exc
+        raise RuntimeError(f"Anthropic request failed: {detail}") from exc
     except error.URLError as exc:
-        raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+        raise RuntimeError(f"Anthropic request failed: {exc.reason}") from exc
+
+    try:
+        return "".join(
+            part["text"]
+            for part in data["content"]
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        ).strip()
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("Anthropic nutrition plan response was missing text") from exc
 
 
 def _extract_response_text(data: dict, refusal_error_cls: type[Exception] = RuntimeError) -> str:
@@ -527,3 +530,13 @@ def _default_meal_entry(name: str) -> dict:
         "ingredients": ["Ingredients tailored to your nutrition goal."],
         "instructions": ["Prepare the ingredients and portion the meal to match your plan."],
     }
+
+
+def _goal_label(goal: object) -> str:
+    return {
+        "g1": "Weight Loss",
+        "g2": "Muscle Building",
+        "g3": "Weight Maintenance",
+        "g4": "Flexibility and Mobility",
+        "g5": "Energy and Endurance",
+    }.get(str(goal), "Personalized Nutrition Plan")
