@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
-from fastapi import Cookie, FastAPI, HTTPException, Response, status
+from fastapi import Cookie, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
@@ -138,6 +138,30 @@ async def refresh(
     if not user:
         raise HTTPException(status_code=401, detail="Invalid session token")
     return await _issue_tokens(user, response)
+
+
+@app.get("/auth/validate")
+async def validate_authorization(authorization: str | None = Header(default=None)) -> dict[str, str]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing access token")
+
+    token = authorization.split(" ", 1)[1].strip()
+
+    try:
+        data = decode_token(token, "access")
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid access token") from exc
+
+    try:
+        user_id = ObjectId(data["sub"])
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid access token") from exc
+
+    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid access token")
+
+    return {"status": "ok"}
 
 
 async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
