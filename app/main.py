@@ -34,6 +34,14 @@ async def startup() -> None:
     await ensure_indexes()
 
 
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {
+        "status": "success",
+        "message": "Victory Fitness API is running",
+    }
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}

@@ -13,7 +13,7 @@ pip install -r requirements.txt
 
 Update `.env` before running:
 
-- `MONGODB_URI`: your local MongoDB or MongoDB Atlas connection string.
+- `MONGODB_URI`: your MongoDB Atlas connection string.
 - `JWT_SECRET_KEY`: replace with a long random secret.
 - `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`: your SMTP account details.
 - `FRONTEND_ORIGIN`: Expo web origin, usually `http://localhost:8081`.
@@ -33,7 +33,7 @@ cd C:\Miskat\victoria\victory-backend
 docker compose up --build
 ```
 
-The compose file starts both the FastAPI API and MongoDB. It reads `.env`, but overrides `MONGODB_URI` to use the compose Mongo service.
+The compose file starts the FastAPI API and reads `MONGODB_URI` from `.env`, so it connects to MongoDB Atlas instead of a local Mongo service.
 
 ## Endpoints
 
