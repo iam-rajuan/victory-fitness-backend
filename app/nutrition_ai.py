@@ -155,7 +155,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         text = _fallback_nutrition_plan_json(prompt)
 
     try:
-        return NutritionResult(data=_normalize_nutrition_plan(json.loads(text)))
+        return NutritionResult(data=_normalize_nutrition_plan(_parse_json_object(text)))
     except json.JSONDecodeError as exc:
         raise RuntimeError("OpenAI nutrition plan response was invalid JSON") from exc
 
@@ -331,6 +331,53 @@ def _extract_response_text(data: dict, refusal_error_cls: type[Exception] = Runt
             return "".join(parts)
 
     raise RuntimeError("OpenAI response was missing output text")
+
+
+def _parse_json_object(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+
+    start = cleaned.find("{")
+    if start == -1:
+        raise json.JSONDecodeError("No JSON object found", cleaned, 0)
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, char in enumerate(cleaned[start:], start=start):
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = cleaned[start:index + 1]
+                parsed = json.loads(candidate)
+                if isinstance(parsed, dict):
+                    return parsed
+                break
+
+    raise json.JSONDecodeError("No valid JSON object found", cleaned, 0)
 
 
 def _normalize_nutrition_plan(plan: dict) -> dict:
