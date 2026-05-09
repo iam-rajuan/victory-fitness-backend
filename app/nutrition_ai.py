@@ -22,6 +22,7 @@ NUTRITION_ADVICE_SYSTEM_PROMPT = (
 
 OPENAI_REQUEST_TIMEOUT_SECONDS = 120
 OPENAI_REQUEST_RETRIES = 2
+PLAN_DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 MEAL_ENTRY_SCHEMA = {
     "type": "object",
@@ -333,20 +334,38 @@ def _extract_response_text(data: dict, refusal_error_cls: type[Exception] = Runt
 
 
 def _normalize_nutrition_plan(plan: dict) -> dict:
-    days = plan.get("days", [])
-    if isinstance(days, list):
-        plan["days"] = [_normalize_day_plan(day) for day in days if isinstance(day, dict)]
-
+    normalized_days = _normalize_plan_days(plan.get("days", []))
     shopping_list = plan.get("shopping_list", [])
-    if isinstance(shopping_list, list):
-        plan["shopping_list"] = [_normalize_shopping_section(section) for section in shopping_list if isinstance(section, dict)]
 
-    return plan
+    return {
+        "summary": _normalize_text(plan.get("summary"), "A practical weekly nutrition plan tailored to your profile."),
+        "goal_label": _normalize_text(plan.get("goal_label"), "Personalized Nutrition Plan"),
+        "days": normalized_days,
+        "shopping_list": _normalize_shopping_list(shopping_list, normalized_days),
+    }
+
+
+def _normalize_plan_days(days: object) -> list[dict]:
+    by_day: dict[str, dict] = {}
+    if isinstance(days, list):
+        for raw_day in days:
+            if not isinstance(raw_day, dict):
+                continue
+            normalized_day = _normalize_day_plan(raw_day)
+            day_name = normalized_day["day"]
+            if day_name not in by_day:
+                by_day[day_name] = normalized_day
+
+    return [by_day.get(day_name, _default_day_plan(day_name)) for day_name in PLAN_DAY_ORDER]
 
 
 def _normalize_day_plan(day: dict) -> dict:
+    day_name = str(day.get("day", "")).strip().title()[:3]
+    if day_name not in PLAN_DAY_ORDER:
+        day_name = PLAN_DAY_ORDER[0]
+
     return {
-        "day": day.get("day"),
+        "day": day_name,
         "breakfast": _normalize_meal_entry(day.get("breakfast", {})),
         "lunch": _normalize_meal_entry(day.get("lunch", {})),
         "dinner": _normalize_meal_entry(day.get("dinner", {})),
@@ -356,16 +375,26 @@ def _normalize_day_plan(day: dict) -> dict:
 def _normalize_meal_entry(entry: dict) -> dict:
     ingredients = entry.get("ingredients", [])
     instructions = entry.get("instructions", [])
+    normalized_name = _normalize_text(entry.get("name"), "Balanced Meal")
+    normalized_desc = _normalize_text(entry.get("desc"), "A practical meal tailored to your plan.")
+    normalized_ingredients = _normalize_string_list(ingredients)
+    normalized_instructions = _normalize_string_list(instructions)
+
+    if not normalized_ingredients:
+        normalized_ingredients = ["Ingredients tailored to your nutrition goal."]
+
+    if not normalized_instructions:
+        normalized_instructions = ["Prepare the ingredients and portion the meal to match your plan."]
 
     return {
-        "name": entry.get("name", ""),
-        "desc": entry.get("desc", ""),
-        "kcal": entry.get("kcal", 0),
-        "p": entry.get("p", 0),
-        "c": entry.get("c", 0),
-        "f": entry.get("f", 0),
-        "ingredients": _normalize_string_list(ingredients),
-        "instructions": _normalize_string_list(instructions),
+        "name": normalized_name,
+        "desc": normalized_desc,
+        "kcal": _normalize_int(entry.get("kcal"), 450, 0, 3000),
+        "p": _normalize_int(entry.get("p"), 30, 0, 300),
+        "c": _normalize_int(entry.get("c"), 35, 0, 500),
+        "f": _normalize_int(entry.get("f"), 15, 0, 200),
+        "ingredients": normalized_ingredients,
+        "instructions": normalized_instructions,
     }
 
 
@@ -384,6 +413,28 @@ def _normalize_shopping_section(section: dict) -> dict:
     }
 
 
+def _normalize_shopping_list(shopping_list: object, days: list[dict]) -> list[dict]:
+    if isinstance(shopping_list, list):
+        normalized = [_normalize_shopping_section(section) for section in shopping_list if isinstance(section, dict)]
+        normalized = [section for section in normalized if section["category"] and section["items"]]
+        if normalized:
+            return normalized
+
+    fallback_items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for day in days:
+        for meal_key in ("breakfast", "lunch", "dinner"):
+            meal = day.get(meal_key, {})
+            for ingredient in meal.get("ingredients", []):
+                label = ingredient.strip()
+                lowered = label.lower()
+                if label and lowered not in seen:
+                    seen.add(lowered)
+                    fallback_items.append({"name": label, "qty": "1 serving"})
+
+    return [{"category": "Weekly Ingredients", "items": fallback_items[:40]}] if fallback_items else []
+
+
 def _normalize_string_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -393,3 +444,39 @@ def _normalize_string_list(value: object) -> list[str]:
         return [part for part in parts if part]
 
     return []
+
+
+def _normalize_text(value: object, fallback: str) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text or fallback
+
+
+def _normalize_int(value: object, fallback: int, min_value: int, max_value: int) -> int:
+    try:
+        normalized = int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        normalized = fallback
+
+    return max(min_value, min(max_value, normalized))
+
+
+def _default_day_plan(day_name: str) -> dict:
+    return {
+        "day": day_name,
+        "breakfast": _default_meal_entry(f"{day_name} Breakfast"),
+        "lunch": _default_meal_entry(f"{day_name} Lunch"),
+        "dinner": _default_meal_entry(f"{day_name} Dinner"),
+    }
+
+
+def _default_meal_entry(name: str) -> dict:
+    return {
+        "name": name,
+        "desc": "A balanced meal placeholder used to complete your weekly plan.",
+        "kcal": 450,
+        "p": 30,
+        "c": 35,
+        "f": 15,
+        "ingredients": ["Ingredients tailored to your nutrition goal."],
+        "instructions": ["Prepare the ingredients and portion the meal to match your plan."],
+    }
