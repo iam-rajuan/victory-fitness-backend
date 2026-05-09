@@ -23,6 +23,78 @@ NUTRITION_ADVICE_SYSTEM_PROMPT = (
 OPENAI_REQUEST_TIMEOUT_SECONDS = 120
 OPENAI_REQUEST_RETRIES = 2
 
+MEAL_ENTRY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name", "desc", "kcal", "p", "c", "f", "ingredients", "instructions"],
+    "properties": {
+        "name": {"type": "string"},
+        "desc": {"type": "string"},
+        "kcal": {"type": "integer", "minimum": 0, "maximum": 3000},
+        "p": {"type": "integer", "minimum": 0, "maximum": 300},
+        "c": {"type": "integer", "minimum": 0, "maximum": 500},
+        "f": {"type": "integer", "minimum": 0, "maximum": 200},
+        "ingredients": {"type": "array", "items": {"type": "string"}},
+        "instructions": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+NUTRITION_PLAN_JSON_SCHEMA = {
+    "name": "nutrition_plan",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "goal_label", "days", "shopping_list"],
+        "properties": {
+            "summary": {"type": "string"},
+            "goal_label": {"type": "string"},
+            "days": {
+                "type": "array",
+                "minItems": 7,
+                "maxItems": 7,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["day", "breakfast", "lunch", "dinner"],
+                    "properties": {
+                        "day": {
+                            "type": "string",
+                            "enum": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+                        },
+                        "breakfast": MEAL_ENTRY_SCHEMA,
+                        "lunch": MEAL_ENTRY_SCHEMA,
+                        "dinner": MEAL_ENTRY_SCHEMA,
+                    },
+                },
+            },
+            "shopping_list": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["category", "items"],
+                    "properties": {
+                        "category": {"type": "string"},
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["name", "qty"],
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "qty": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
 
 @dataclass
 class NutritionResult:
@@ -60,6 +132,10 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         ],
         "temperature": 0.5,
         "max_tokens": 2200,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": NUTRITION_PLAN_JSON_SCHEMA,
+        },
     }
 
     data = _openai_json_with_retry(request_payload)
