@@ -1,8 +1,9 @@
 from datetime import datetime, timedelta, timezone
 
 from bson import ObjectId
-from fastapi import Cookie, FastAPI, Header, HTTPException, Response, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, Security, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .coach_victor import generate_coach_victor_reply
 from .config import settings
@@ -39,6 +40,7 @@ from .security import (
 
 
 app = FastAPI(title=settings.app_name)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,14 +52,23 @@ app.add_middleware(
 )
 
 
+async def _require_access_user(
+    credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+) -> dict:
+    token = credentials.credentials if credentials else None
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing access token")
+
+    return await _get_verified_user(f"Bearer {token}")
+
+
 @app.on_event("startup")
 async def startup() -> None:
     await ensure_indexes()
 
 
 @app.get("/")
-async def root(authorization: str | None = Header(default=None)) -> dict[str, str]:
-    await _get_verified_user(authorization)
+async def root(user: dict = Depends(_require_access_user)) -> dict[str, str]:
     return {
         "status": "success",
         "message": "Victory Fitness API is running",
@@ -65,8 +76,7 @@ async def root(authorization: str | None = Header(default=None)) -> dict[str, st
 
 
 @app.get("/health")
-async def health(authorization: str | None = Header(default=None)) -> dict[str, str]:
-    await _get_verified_user(authorization)
+async def health(user: dict = Depends(_require_access_user)) -> dict[str, str]:
     return {"status": "ok"}
 
 
@@ -164,17 +174,15 @@ async def refresh(
 
 
 @app.get("/auth/validate")
-async def validate_authorization(authorization: str | None = Header(default=None)) -> dict[str, str]:
-    await _get_verified_user(authorization)
+async def validate_authorization(user: dict = Depends(_require_access_user)) -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.post("/ai/coach-victor/chat", response_model=CoachVictorChatResponse)
 async def coach_victor_chat(
     payload: CoachVictorChatRequest,
-    authorization: str | None = Header(default=None),
+    user: dict = Depends(_require_access_user),
 ) -> CoachVictorChatResponse:
-    user = await _get_verified_user(authorization)
     user_id = str(user["_id"])
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
@@ -232,9 +240,8 @@ async def coach_victor_chat(
 
 @app.get("/ai/coach-victor/history", response_model=CoachVictorHistoryResponse)
 async def coach_victor_history(
-    authorization: str | None = Header(default=None),
+    user: dict = Depends(_require_access_user),
 ) -> CoachVictorHistoryResponse:
-    user = await _get_verified_user(authorization)
     user_id = str(user["_id"])
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
@@ -259,10 +266,8 @@ async def coach_victor_history(
 @app.post("/ai/nutrition/plan", response_model=NutritionPlanSaveResponse)
 async def nutrition_plan(
     payload: NutritionPlanRequest,
-    authorization: str | None = Header(default=None),
+    user: dict = Depends(_require_access_user),
 ) -> NutritionPlanSaveResponse:
-    user = await _get_verified_user(authorization)
-
     try:
         result = generate_nutrition_plan(payload.model_dump())
     except NutritionPlanRefusalError as exc:
@@ -287,9 +292,8 @@ async def nutrition_plan(
 
 @app.get("/ai/nutrition/plan/latest", response_model=NutritionPlanResponse)
 async def nutrition_latest_plan(
-    authorization: str | None = Header(default=None),
+    user: dict = Depends(_require_access_user),
 ) -> NutritionPlanResponse:
-    user = await _get_verified_user(authorization)
     record = await nutrition_plans_collection.find_one(
         {"user_id": str(user["_id"])},
         sort=[("created_at", -1)],
@@ -306,10 +310,8 @@ async def nutrition_latest_plan(
 @app.post("/ai/nutrition/advice", response_model=NutritionAdviceResponse)
 async def nutrition_advice(
     payload: NutritionAdviceRequest,
-    authorization: str | None = Header(default=None),
+    user: dict = Depends(_require_access_user),
 ) -> NutritionAdviceResponse:
-    await _get_verified_user(authorization)
-
     try:
         result = generate_nutrition_advice(payload.model_dump())
     except RuntimeError as exc:
