@@ -40,6 +40,7 @@ MEAL_ENTRY_SCHEMA = {
 }
 
 NUTRITION_PLAN_JSON_SCHEMA = {
+    "type": "json_schema",
     "name": "nutrition_plan",
     "strict": True,
     "schema": {
