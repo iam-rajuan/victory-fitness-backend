@@ -12,11 +12,16 @@ from .models import (
     CoachVictorChatRequest,
     CoachVictorChatResponse,
     LoginRequest,
+    NutritionAdviceRequest,
+    NutritionAdviceResponse,
+    NutritionPlanRequest,
+    NutritionPlanResponse,
     RefreshRequest,
     RegisterRequest,
     TokenResponse,
     VerifyEmailRequest,
 )
+from .nutrition_ai import generate_nutrition_advice, generate_nutrition_plan
 from .security import (
     create_token,
     create_verification_code,
@@ -151,25 +156,7 @@ async def refresh(
 
 @app.get("/auth/validate")
 async def validate_authorization(authorization: str | None = Header(default=None)) -> dict[str, str]:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing access token")
-
-    token = authorization.split(" ", 1)[1].strip()
-
-    try:
-        data = decode_token(token, "access")
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid access token") from exc
-
-    try:
-        user_id = ObjectId(data["sub"])
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid access token") from exc
-
-    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid access token")
-
+    await _get_verified_user(authorization)
     return {"status": "ok"}
 
 
@@ -178,24 +165,7 @@ async def coach_victor_chat(
     payload: CoachVictorChatRequest,
     authorization: str | None = Header(default=None),
 ) -> CoachVictorChatResponse:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing access token")
-
-    token = authorization.split(" ", 1)[1].strip()
-
-    try:
-        data = decode_token(token, "access")
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid access token") from exc
-
-    try:
-        user_id = ObjectId(data["sub"])
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid access token") from exc
-
-    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid access token")
+    await _get_verified_user(authorization)
 
     chat_history = [
         {"role": item.role, "content": item.content}
@@ -209,6 +179,36 @@ async def coach_victor_chat(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return CoachVictorChatResponse(reply=result.reply)
+
+
+@app.post("/ai/nutrition/plan", response_model=NutritionPlanResponse)
+async def nutrition_plan(
+    payload: NutritionPlanRequest,
+    authorization: str | None = Header(default=None),
+) -> NutritionPlanResponse:
+    await _get_verified_user(authorization)
+
+    try:
+        result = generate_nutrition_plan(payload.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return NutritionPlanResponse(**result.data)
+
+
+@app.post("/ai/nutrition/advice", response_model=NutritionAdviceResponse)
+async def nutrition_advice(
+    payload: NutritionAdviceRequest,
+    authorization: str | None = Header(default=None),
+) -> NutritionAdviceResponse:
+    await _get_verified_user(authorization)
+
+    try:
+        result = generate_nutrition_advice(payload.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return NutritionAdviceResponse(reply=result.reply)
 
 
 async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
@@ -259,3 +259,26 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+async def _get_verified_user(authorization: str | None) -> dict:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing access token")
+
+    token = authorization.split(" ", 1)[1].strip()
+
+    try:
+        data = decode_token(token, "access")
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid access token") from exc
+
+    try:
+        user_id = ObjectId(data["sub"])
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid access token") from exc
+
+    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid access token")
+
+    return user

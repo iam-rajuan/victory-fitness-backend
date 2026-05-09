@@ -48,3 +48,5 @@ The compose file starts the FastAPI API and reads `MONGODB_URI` from `.env`, so 
 `/auth/login`, `/auth/verify-email`, and `/auth/refresh` set HttpOnly cookies and also return tokens in the response body for Expo native usage.
 
 `POST /ai/coach-victor/chat` generates a response from Coach Victor using Anthropic. It expects an authenticated access token and a body with `message` plus optional prior `history`.
+
+`POST /ai/nutrition/plan` builds a 7-day nutrition plan from the onboarding profile data. `POST /ai/nutrition/advice` returns short nutrition suggestions for the tracker tab.
