@@ -21,25 +21,24 @@ class CoachVictorResult:
 
 
 def generate_coach_victor_reply(messages: list[dict[str, str]]) -> CoachVictorResult:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+    if not settings.anthropic_api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
 
     payload = {
-        "model": settings.openai_model,
-        "messages": [
-            {"role": "system", "content": COACH_SYSTEM_PROMPT},
-            *messages,
-        ],
-        "temperature": 0.7,
+        "model": settings.anthropic_model,
+        "max_tokens": 1024,
+        "system": COACH_SYSTEM_PROMPT,
+        "messages": messages,
     }
 
     req = request.Request(
-        "https://api.openai.com/v1/chat/completions",
+        "https://api.anthropic.com/v1/messages",
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {settings.openai_api_key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
+            "x-api-key": settings.anthropic_api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+            "accept": "application/json",
         },
         method="POST",
     )
@@ -49,13 +48,18 @@ def generate_coach_victor_reply(messages: list[dict[str, str]]) -> CoachVictorRe
             data = json.loads(resp.read().decode("utf-8"))
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"OpenAI request failed: {detail}") from exc
+        raise RuntimeError(f"Anthropic request failed: {detail}") from exc
     except error.URLError as exc:
-        raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+        raise RuntimeError(f"Anthropic request failed: {exc.reason}") from exc
 
     try:
-        reply = data["choices"][0]["message"]["content"].strip()
-    except (KeyError, IndexError, AttributeError, TypeError) as exc:
-        raise RuntimeError("OpenAI response was missing message content") from exc
+        content = data["content"]
+        reply = next(
+            block["text"]
+            for block in content
+            if block.get("type") == "text" and block.get("text")
+        ).strip()
+    except (KeyError, IndexError, AttributeError, TypeError, StopIteration) as exc:
+        raise RuntimeError("Anthropic response was missing message content") from exc
 
     return CoachVictorResult(reply=reply)

@@ -36,8 +36,8 @@ class Settings:
     smtp_from_name = os.getenv("SMTP_FROM_NAME", "Victory Fitness")
     smtp_use_tls = _get_bool("SMTP_USE_TLS", True)
 
-    openai_api_key = os.getenv("OPENAI_API_KEY", "")
-    openai_model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
 
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:8081")
     frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", ".*")
