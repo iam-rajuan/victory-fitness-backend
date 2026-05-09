@@ -1,5 +1,6 @@
 import json
 from dataclasses import dataclass
+import time
 from urllib import error, request
 
 from .config import settings
@@ -18,6 +19,9 @@ NUTRITION_ADVICE_SYSTEM_PROMPT = (
     "Keep the advice grounded and user-friendly. "
     "Avoid medical claims and tell the user to consult a professional for medical conditions."
 )
+
+OPENAI_REQUEST_TIMEOUT_SECONDS = 120
+OPENAI_REQUEST_RETRIES = 2
 
 
 @dataclass
@@ -55,9 +59,10 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.5,
+        "max_tokens": 2200,
     }
 
-    data = _openai_json(request_payload)
+    data = _openai_json_with_retry(request_payload)
     try:
         text = data["choices"][0]["message"]["content"].strip()
         return NutritionResult(data=_normalize_nutrition_plan(json.loads(text)))
@@ -82,15 +87,36 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.6,
+        "max_tokens": 400,
     }
 
-    data = _openai_json(request_payload)
+    data = _openai_json_with_retry(request_payload)
     try:
         reply = data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, AttributeError, TypeError) as exc:
         raise RuntimeError("OpenAI nutrition advice response was missing text") from exc
 
     return NutritionAdviceResult(reply=reply)
+
+
+def _openai_json_with_retry(payload: dict) -> dict:
+    last_error: Exception | None = None
+
+    for attempt in range(OPENAI_REQUEST_RETRIES):
+        try:
+            return _openai_json(payload)
+        except TimeoutError as exc:
+            last_error = exc
+        except RuntimeError as exc:
+            last_error = exc
+
+        if attempt < OPENAI_REQUEST_RETRIES - 1:
+            time.sleep(1.5)
+
+    if isinstance(last_error, RuntimeError):
+        raise last_error
+
+    raise RuntimeError("OpenAI request timed out") from last_error
 
 
 def _openai_json(payload: dict) -> dict:
@@ -106,8 +132,10 @@ def _openai_json(payload: dict) -> dict:
     )
 
     try:
-        with request.urlopen(req, timeout=45) as resp:
+        with request.urlopen(req, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as resp:
             return json.loads(resp.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError("OpenAI request timed out") from exc
     except error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
         raise RuntimeError(f"OpenAI request failed: {detail}") from exc
