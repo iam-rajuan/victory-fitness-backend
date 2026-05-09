@@ -11,6 +11,7 @@ from .email_service import send_verification_email
 from .models import (
     CoachVictorChatRequest,
     CoachVictorChatResponse,
+    CoachVictorHistoryResponse,
     LoginRequest,
     NutritionAdviceRequest,
     NutritionAdviceResponse,
@@ -22,7 +23,7 @@ from .models import (
     TokenResponse,
     VerifyEmailRequest,
 )
-from .database import nutrition_plans_collection
+from .database import coach_victor_messages_collection, nutrition_plans_collection
 from .nutrition_ai import generate_nutrition_advice, generate_nutrition_plan
 from .security import (
     create_token,
@@ -167,20 +168,65 @@ async def coach_victor_chat(
     payload: CoachVictorChatRequest,
     authorization: str | None = Header(default=None),
 ) -> CoachVictorChatResponse:
-    await _get_verified_user(authorization)
+    user = await _get_verified_user(authorization)
+    user_id = str(user["_id"])
+
+    await coach_victor_messages_collection.insert_one(
+        {
+            "user_id": user_id,
+            "role": "user",
+            "content": payload.message,
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
+    stored_history = await coach_victor_messages_collection.find(
+        {"user_id": user_id}
+    ).sort("created_at", 1).to_list(length=24)
 
     chat_history = [
-        {"role": item.role, "content": item.content}
-        for item in payload.history[-12:]
+        {"role": item["role"], "content": item["content"]}
+        for item in stored_history[-12:]
     ]
-    chat_history.append({"role": "user", "content": payload.message})
 
     try:
         result = generate_coach_victor_reply(chat_history)
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
+    await coach_victor_messages_collection.insert_one(
+        {
+            "user_id": user_id,
+            "role": "assistant",
+            "content": result.reply,
+            "created_at": datetime.now(timezone.utc),
+        }
+    )
+
     return CoachVictorChatResponse(reply=result.reply)
+
+
+@app.get("/ai/coach-victor/history", response_model=CoachVictorHistoryResponse)
+async def coach_victor_history(
+    authorization: str | None = Header(default=None),
+) -> CoachVictorHistoryResponse:
+    user = await _get_verified_user(authorization)
+    user_id = str(user["_id"])
+    stored_messages = await coach_victor_messages_collection.find(
+        {"user_id": user_id}
+    ).sort("created_at", 1).to_list(length=100)
+
+    return CoachVictorHistoryResponse(
+        messages=[
+            {
+                "id": str(item["_id"]),
+                "role": item["role"],
+                "content": item["content"],
+                "created_at": item["created_at"],
+            }
+            for item in stored_messages
+        ]
+    )
 
 
 @app.post("/ai/nutrition/plan", response_model=NutritionPlanSaveResponse)

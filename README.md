@@ -49,4 +49,6 @@ The compose file starts the FastAPI API and reads `MONGODB_URI` from `.env`, so 
 
 `POST /ai/coach-victor/chat` generates a response from Coach Victor using OpenAI. It expects an authenticated access token and a body with `message` plus optional prior `history`.
 
+Coach Victor chat history is stored in MongoDB in the `coach_victor_messages` collection and loaded back into the app through `GET /ai/coach-victor/history`.
+
 `POST /ai/nutrition/plan` builds a 7-day nutrition plan from the onboarding profile data. `POST /ai/nutrition/advice` returns short nutrition suggestions for the tracker tab.
