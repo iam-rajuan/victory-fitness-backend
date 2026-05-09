@@ -43,6 +43,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         '"shopping_list": [{"category": string, "items": [{"name": string, "qty": string}]}]'
         "}\n"
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
+        "ingredients must be an array of strings. instructions must be an array of strings.\n"
         "Use concise meal names, realistic portions, and keep the plan practical.\n"
         f"User context: {json.dumps(payload, ensure_ascii=False)}"
     )
@@ -59,7 +60,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
     data = _openai_json(request_payload)
     try:
         text = data["choices"][0]["message"]["content"].strip()
-        return NutritionResult(data=json.loads(text))
+        return NutritionResult(data=_normalize_nutrition_plan(json.loads(text)))
     except (KeyError, IndexError, AttributeError, TypeError, json.JSONDecodeError) as exc:
         raise RuntimeError("OpenAI nutrition plan response was invalid JSON") from exc
 
@@ -112,3 +113,66 @@ def _openai_json(payload: dict) -> dict:
         raise RuntimeError(f"OpenAI request failed: {detail}") from exc
     except error.URLError as exc:
         raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+
+
+def _normalize_nutrition_plan(plan: dict) -> dict:
+    days = plan.get("days", [])
+    if isinstance(days, list):
+        plan["days"] = [_normalize_day_plan(day) for day in days if isinstance(day, dict)]
+
+    shopping_list = plan.get("shopping_list", [])
+    if isinstance(shopping_list, list):
+        plan["shopping_list"] = [_normalize_shopping_section(section) for section in shopping_list if isinstance(section, dict)]
+
+    return plan
+
+
+def _normalize_day_plan(day: dict) -> dict:
+    return {
+        "day": day.get("day"),
+        "breakfast": _normalize_meal_entry(day.get("breakfast", {})),
+        "lunch": _normalize_meal_entry(day.get("lunch", {})),
+        "dinner": _normalize_meal_entry(day.get("dinner", {})),
+    }
+
+
+def _normalize_meal_entry(entry: dict) -> dict:
+    ingredients = entry.get("ingredients", [])
+    instructions = entry.get("instructions", [])
+
+    return {
+        "name": entry.get("name", ""),
+        "desc": entry.get("desc", ""),
+        "kcal": entry.get("kcal", 0),
+        "p": entry.get("p", 0),
+        "c": entry.get("c", 0),
+        "f": entry.get("f", 0),
+        "ingredients": _normalize_string_list(ingredients),
+        "instructions": _normalize_string_list(instructions),
+    }
+
+
+def _normalize_shopping_section(section: dict) -> dict:
+    items = section.get("items", [])
+    return {
+        "category": section.get("category", ""),
+        "items": [
+            {
+                "name": item.get("name", ""),
+                "qty": item.get("qty", ""),
+            }
+            for item in items
+            if isinstance(item, dict)
+        ],
+    }
+
+
+def _normalize_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace("\n", ",").split(",")]
+        return [part for part in parts if part]
+
+    return []
