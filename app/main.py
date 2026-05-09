@@ -56,7 +56,8 @@ async def startup() -> None:
 
 
 @app.get("/")
-async def root() -> dict[str, str]:
+async def root(authorization: str | None = Header(default=None)) -> dict[str, str]:
+    await _get_verified_user(authorization)
     return {
         "status": "success",
         "message": "Victory Fitness API is running",
@@ -64,7 +65,8 @@ async def root() -> dict[str, str]:
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health(authorization: str | None = Header(default=None)) -> dict[str, str]:
+    await _get_verified_user(authorization)
     return {"status": "ok"}
 
 
