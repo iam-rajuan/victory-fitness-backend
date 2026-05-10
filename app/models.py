@@ -63,6 +63,33 @@ class CoachVictorHistoryResponse(BaseModel):
     messages: list[CoachVictorThreadMessage] = Field(default_factory=list)
 
 
+class JournalEntryCreateRequest(BaseModel):
+    mood: str = Field(min_length=1, max_length=40)
+    content: str = Field(min_length=1, max_length=10000)
+
+
+class JournalEntryResponse(BaseModel):
+    id: str
+    user_id: str
+    mood: str
+    content: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class JournalEntryListResponse(BaseModel):
+    entries: list[JournalEntryResponse] = Field(default_factory=list)
+
+
+class JournalAnalysisRequest(BaseModel):
+    mood: str = Field(min_length=1, max_length=40)
+    content: str = Field(min_length=1, max_length=10000)
+
+
+class JournalAnalysisResponse(BaseModel):
+    analysis: str
+
+
 class NutritionMealItem(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     qty: str = Field(min_length=1, max_length=80)
