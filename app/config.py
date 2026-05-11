@@ -48,6 +48,7 @@ class Settings:
     openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+    vimeo_access_token = os.getenv("VIMEO_ACCESS_TOKEN", "").strip()
 
     coach_recent_message_limit = int(os.getenv("COACH_RECENT_MESSAGE_LIMIT", "40"))
     coach_archive_batch_size = int(os.getenv("COACH_ARCHIVE_BATCH_SIZE", "20"))

@@ -1,4 +1,5 @@
 import logging
+from calendar import month_abbr
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
 
@@ -25,6 +26,9 @@ from .models import (
     CoachVictorChatRequest,
     CoachVictorChatResponse,
     CoachVictorHistoryResponse,
+    DashboardOverviewChartPoint,
+    DashboardOverviewRecentUser,
+    DashboardOverviewResponse,
     JournalAnalysisRequest,
     JournalAnalysisResponse,
     JournalEntryCreateRequest,
@@ -149,6 +153,12 @@ async def _require_access_user(
         raise HTTPException(status_code=401, detail="Missing access token")
 
     return await _get_verified_user(f"Bearer {token}")
+
+
+async def _require_admin_user(user: dict = Depends(_require_access_user)) -> dict:
+    if not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 
 @app.on_event("startup")
@@ -278,6 +288,76 @@ async def refresh(
 @app.get("/auth/validate")
 async def validate_authorization(user: dict = Depends(_require_access_user)) -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
+async def admin_dashboard_overview(
+    year: int | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> DashboardOverviewResponse:
+    selected_year = year or datetime.now(timezone.utc).year
+    year_start = datetime(selected_year, 1, 1, tzinfo=timezone.utc)
+    next_year_start = datetime(selected_year + 1, 1, 1, tzinfo=timezone.utc)
+    non_admin_filter = {"is_admin": {"$ne": True}}
+
+    total_users = await users_collection.count_documents(non_admin_filter)
+    recent_user_records = await users_collection.find(
+        non_admin_filter,
+        sort=[("created_at", -1)],
+        limit=5,
+    ).to_list(length=5)
+
+    monthly_records = await users_collection.aggregate(
+        [
+            {
+                "$match": {
+                    **non_admin_filter,
+                    "created_at": {
+                        "$gte": year_start,
+                        "$lt": next_year_start,
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": {"$month": "$created_at"},
+                    "userCount": {"$sum": 1},
+                }
+            },
+            {"$sort": {"_id": 1}},
+        ]
+    ).to_list(length=12)
+
+    monthly_map = {int(item["_id"]): int(item.get("userCount", 0)) for item in monthly_records}
+    user_chart = [
+        DashboardOverviewChartPoint(
+            month=month_abbr[month_number],
+            userCount=monthly_map.get(month_number, 0),
+            agentCount=0,
+        )
+        for month_number in range(1, 13)
+    ]
+
+    recent_users = [
+        DashboardOverviewRecentUser(
+            id=str(record["_id"]),
+            fullName=str(record.get("name") or "Unknown"),
+            email=record["email"],
+            status="ACTIVE" if record.get("is_verified") else "PENDING",
+            createdAt=_as_utc(record["created_at"]),
+            profileImage=str(record.get("profile_image") or ""),
+        )
+        for record in recent_user_records
+    ]
+
+    return DashboardOverviewResponse(
+        totalUsers=total_users,
+        workoutsThisWeek=0,
+        challengeCompletions=0,
+        vimeoApiStatus="CONFIGURED" if settings.vimeo_access_token else "MISSING",
+        userChart=user_chart,
+        recentUsers=recent_users,
+    )
 
 
 @app.post("/journal/entries", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)

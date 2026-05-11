@@ -160,3 +160,27 @@ class NutritionAdviceResponse(BaseModel):
 class NutritionPlanSaveResponse(BaseModel):
     status: str = "success"
     plan: NutritionPlanResponse
+
+
+class DashboardOverviewChartPoint(BaseModel):
+    month: str
+    userCount: int = 0
+    agentCount: int = 0
+
+
+class DashboardOverviewRecentUser(BaseModel):
+    id: str
+    fullName: str
+    email: EmailStr
+    status: str
+    createdAt: datetime
+    profileImage: str = ""
+
+
+class DashboardOverviewResponse(BaseModel):
+    totalUsers: int = 0
+    workoutsThisWeek: int = 0
+    challengeCompletions: int = 0
+    vimeoApiStatus: str
+    userChart: list[DashboardOverviewChartPoint] = Field(default_factory=list)
+    recentUsers: list[DashboardOverviewRecentUser] = Field(default_factory=list)
