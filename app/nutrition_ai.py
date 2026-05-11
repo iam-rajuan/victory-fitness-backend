@@ -37,6 +37,14 @@ NUTRITION_ADVICE_SYSTEM_PROMPT = (
     "If the user mentions a medical condition, include a short caution and suggest professional guidance."
 )
 
+MEAL_IMAGE_ANALYSIS_SYSTEM_PROMPT = (
+    "You are the senior nutrition coach inside the Victory Fitness app. "
+    "Analyze the provided meal photo and estimate what the dish is, how balanced it looks, and rough macros. "
+    "Be practical and conservative with estimates. "
+    "If the image is unclear, say so and keep the estimate cautious. "
+    "Return only valid JSON that matches the required schema exactly, with no markdown, no commentary, and no extra keys."
+)
+
 OPENAI_REQUEST_TIMEOUT_SECONDS = 120
 OPENAI_REQUEST_RETRIES = 2
 PLAN_DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -114,6 +122,36 @@ NUTRITION_PLAN_JSON_SCHEMA = {
     },
 }
 
+MEAL_IMAGE_ANALYSIS_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "meal_image_analysis",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "meal_name_guess",
+            "summary",
+            "estimated_calories",
+            "estimated_protein",
+            "estimated_carbs",
+            "estimated_fat",
+            "confidence",
+            "notes",
+        ],
+        "properties": {
+            "meal_name_guess": {"type": "string"},
+            "summary": {"type": "string"},
+            "estimated_calories": {"type": "integer", "minimum": 0, "maximum": 3000},
+            "estimated_protein": {"type": "integer", "minimum": 0, "maximum": 300},
+            "estimated_carbs": {"type": "integer", "minimum": 0, "maximum": 500},
+            "estimated_fat": {"type": "integer", "minimum": 0, "maximum": 200},
+            "confidence": {"type": "string"},
+            "notes": {"type": "array", "items": {"type": "string"}},
+        },
+    },
+}
+
 _NUTRITION_PLAN_MEMORY_CACHE: dict[str, dict] = {}
 
 
@@ -125,6 +163,11 @@ class NutritionResult:
 @dataclass
 class NutritionAdviceResult:
     reply: str
+
+
+@dataclass
+class MealImageAnalysisResult:
+    data: dict
 
 
 class NutritionPlanRefusalError(RuntimeError):
@@ -241,6 +284,64 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
         raise RuntimeError("OpenAI nutrition advice response was missing text") from exc
 
     return NutritionAdviceResult(reply=reply)
+
+
+def generate_meal_image_analysis(payload: dict) -> MealImageAnalysisResult:
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    image_base64 = _normalize_text(payload.get("image_base64"), "")
+    mime_type = _normalize_text(payload.get("mime_type"), "image/jpeg")
+    image_data_url = f"data:{mime_type};base64,{image_base64}"
+
+    request_payload = {
+        "model": settings.openai_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": MEAL_IMAGE_ANALYSIS_SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Analyze this meal photo and estimate the dish, macros, and practical nutrition notes. "
+                            "Be careful and conservative. "
+                            "Return only the JSON object requested by the schema."
+                        ),
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": image_data_url,
+                    },
+                ],
+            },
+        ],
+        "text": {"format": MEAL_IMAGE_ANALYSIS_JSON_SCHEMA},
+        "max_output_tokens": 1000,
+    }
+
+    data = _openai_responses_json_with_retry(request_payload)
+    try:
+        result_text = _extract_response_text(data).strip()
+    except (KeyError, IndexError, AttributeError, TypeError) as exc:
+        raise RuntimeError("OpenAI meal analysis response was missing text") from exc
+
+    parsed = _parse_json_object(result_text)
+    normalized = {
+        "meal_name_guess": _normalize_text(parsed.get("meal_name_guess"), "Meal"),
+        "summary": _normalize_text(parsed.get("summary"), "A practical meal estimate could not be generated."),
+        "estimated_calories": _normalize_int(parsed.get("estimated_calories"), 0, 0, 3000),
+        "estimated_protein": _normalize_int(parsed.get("estimated_protein"), 0, 0, 300),
+        "estimated_carbs": _normalize_int(parsed.get("estimated_carbs"), 0, 0, 500),
+        "estimated_fat": _normalize_int(parsed.get("estimated_fat"), 0, 0, 200),
+        "confidence": _normalize_text(parsed.get("confidence"), "medium"),
+        "notes": _normalize_string_list(parsed.get("notes")),
+    }
+
+    return MealImageAnalysisResult(data=normalized)
 
 
 def _generate_nutrition_plan_json(prompt: str) -> str:

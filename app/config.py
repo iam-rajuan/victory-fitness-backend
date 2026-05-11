@@ -60,7 +60,8 @@ class Settings:
 
     frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:8081")
     frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", ".*")
-    cookie_secure = _get_bool("COOKIE_SECURE", False)
+    cookie_secure = _get_bool("COOKIE_SECURE", environment == "production")
+    cookie_samesite = os.getenv("COOKIE_SAMESITE", "none" if environment == "production" else "lax").strip().lower()
     admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)
     admin_name = os.getenv("ADMIN_NAME", "Victory Admin").strip()
     admin_email = os.getenv("ADMIN_EMAIL", "admin@victoryfitness.com").strip().lower()

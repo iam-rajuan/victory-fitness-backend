@@ -99,6 +99,23 @@ class JournalAnalysisResponse(BaseModel):
     analysis: str
 
 
+class MealImageAnalysisRequest(BaseModel):
+    image_base64: str = Field(min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
+
+
+class MealImageAnalysisResponse(BaseModel):
+    meal_name_guess: str
+    summary: str
+    estimated_calories: int = Field(ge=0, le=3000)
+    estimated_protein: int = Field(ge=0, le=300)
+    estimated_carbs: int = Field(ge=0, le=500)
+    estimated_fat: int = Field(ge=0, le=200)
+    confidence: str
+    notes: list[str] = Field(default_factory=list)
+
+
 class NutritionMealItem(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     qty: str = Field(min_length=1, max_length=80)

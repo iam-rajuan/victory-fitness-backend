@@ -50,6 +50,8 @@ from .models import (
     JournalEntryCreateRequest,
     JournalEntryListResponse,
     JournalEntryResponse,
+    MealImageAnalysisRequest,
+    MealImageAnalysisResponse,
     LoginRequest,
     MeResponse,
     NutritionAdviceRequest,
@@ -78,6 +80,7 @@ from .database import (
 from .nutrition_ai import (
     NutritionPlanRefusalError,
     build_nutrition_plan_signature,
+    generate_meal_image_analysis,
     generate_nutrition_advice,
     generate_nutrition_plan,
 )
@@ -790,6 +793,22 @@ async def analyze_journal_entry(
     return JournalAnalysisResponse(analysis=result.analysis)
 
 
+@app.post("/ai/meal-analysis", response_model=MealImageAnalysisResponse)
+async def analyze_meal_image(
+    payload: MealImageAnalysisRequest,
+    user: dict = Depends(_require_access_user),
+) -> MealImageAnalysisResponse:
+    user_id = str(user["_id"])
+    logger.info("meal_image_analyze_attempt user_id=%s file_name=%s", user_id, payload.file_name or "")
+    try:
+        result = generate_meal_image_analysis(payload.model_dump())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"Meal image analysis unavailable: {exc}") from exc
+
+    logger.info("meal_image_analyze_success user_id=%s", user_id)
+    return MealImageAnalysisResponse(**result.data)
+
+
 @app.post("/ai/coach-victor/chat", response_model=CoachVictorChatResponse)
 async def coach_victor_chat(
     payload: CoachVictorChatRequest,
@@ -1385,7 +1404,7 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
             max_age=settings.access_token_expire_minutes * 60,
             httponly=True,
             secure=settings.cookie_secure,
-            samesite="lax",
+            samesite=settings.cookie_samesite,
         )
         response.set_cookie(
             "session_token",
@@ -1393,7 +1412,7 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
             max_age=settings.session_token_expire_days * 24 * 60 * 60,
             httponly=True,
             secure=settings.cookie_secure,
-            samesite="lax",
+            samesite=settings.cookie_samesite,
         )
 
     return TokenResponse(
