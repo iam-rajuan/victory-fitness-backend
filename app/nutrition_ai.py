@@ -244,11 +244,14 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
 
 
 def _generate_nutrition_plan_json(prompt: str) -> str:
-    if settings.openai_api_key:
-        return _openai_structured_nutrition_plan_json(prompt)
+    candidates, provider_errors = _collect_nutrition_plan_candidates(prompt)
+    for candidate in candidates:
+        normalized = _parse_or_repair_nutrition_plan(candidate)
+        if normalized is not None:
+            return json.dumps(normalized, ensure_ascii=False)
 
-    if settings.anthropic_api_key:
-        return _anthropic_nutrition_plan_json(prompt)
+    if provider_errors:
+        raise RuntimeError("; ".join(provider_errors))
 
     raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
 
@@ -396,43 +399,9 @@ def _collect_nutrition_plan_candidates(prompt: str) -> tuple[list[str], list[str
         except RuntimeError as exc:
             provider_errors.append(str(exc))
 
-        responses_payload = {
-            "model": settings.openai_model,
-            "input": [
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": NUTRITION_PLAN_SYSTEM_PROMPT}],
-                },
-                {
-                    "role": "user",
-                    "content": [{"type": "input_text", "text": prompt}],
-                },
-            ],
-            "text": {"format": NUTRITION_PLAN_JSON_SCHEMA},
-            "max_output_tokens": 2200,
-        }
-
-        try:
-            data = _openai_responses_json_with_retry(responses_payload)
-            _append_candidate(candidates, _extract_response_text(data, NutritionPlanRefusalError))
-        except NutritionPlanRefusalError:
-            raise
-        except RuntimeError as exc:
-            provider_errors.append(str(exc))
-
-        try:
-            _append_candidate(candidates, _openai_chat_nutrition_plan_json(prompt))
-        except RuntimeError as exc:
-            provider_errors.append(str(exc))
-
     if settings.anthropic_api_key:
         try:
             _append_candidate(candidates, _langchain_anthropic_nutrition_plan_json(prompt))
-        except RuntimeError as exc:
-            provider_errors.append(str(exc))
-
-        try:
-            _append_candidate(candidates, _anthropic_nutrition_plan_json(prompt))
         except RuntimeError as exc:
             provider_errors.append(str(exc))
 
