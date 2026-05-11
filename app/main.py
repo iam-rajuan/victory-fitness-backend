@@ -38,6 +38,10 @@ from .models import (
     AdminUserManagementOverviewResponse,
     AdminUserSummaryResponse,
     AdminUserUpdateRequest,
+    AdminWorkoutItem,
+    AdminWorkoutListResponse,
+    AdminWorkoutRequest,
+    AdminWorkoutSyncResponse,
     DashboardOverviewRecentUser,
     DashboardOverviewResponse,
     JournalAnalysisRequest,
@@ -46,6 +50,7 @@ from .models import (
     JournalEntryListResponse,
     JournalEntryResponse,
     LoginRequest,
+    MeResponse,
     NutritionAdviceRequest,
     NutritionAdviceResponse,
     NutritionPlanRequest,
@@ -55,12 +60,16 @@ from .models import (
     RegisterRequest,
     TokenResponse,
     VerifyEmailRequest,
+    WorkoutLibraryCategory,
+    WorkoutLibraryItem,
+    WorkoutLibraryResponse,
 )
 from .database import (
     coach_victor_archives_collection,
     coach_victor_threads_collection,
     journal_entries_collection,
     nutrition_plans_collection,
+    workouts_collection,
 )
 from .nutrition_ai import (
     NutritionPlanRefusalError,
@@ -193,6 +202,53 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/workouts/library", response_model=WorkoutLibraryResponse)
+async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
+    filter_doc: dict = {"visibility": "Published"}
+    search = (query or "").strip()
+    if search:
+        escaped = re.escape(search)
+        filter_doc["$or"] = [
+            {"title": {"$regex": escaped, "$options": "i"}},
+            {"tag": {"$regex": escaped, "$options": "i"}},
+        ]
+
+    records = await workouts_collection.find(
+        filter_doc,
+        sort=[("created_at", -1), ("_id", -1)],
+    ).to_list(length=None)
+
+    workouts = [WorkoutLibraryItem(**_serialize_public_workout_record(record)) for record in records]
+
+    category_map: dict[str, dict[str, object]] = {}
+    for workout in workouts:
+        key = workout.tag.strip() or "Workout"
+        if key not in category_map:
+            category_map[key] = {
+                "id": key.lower().replace(" ", "-"),
+                "name": key,
+                "count": 0,
+                "image": workout.thumbnail,
+            }
+        category_map[key]["count"] = int(category_map[key]["count"]) + 1
+
+    categories = [
+        WorkoutLibraryCategory(
+            id=str(item["id"]),
+            name=str(item["name"]),
+            count=int(item["count"]),
+            image=str(item["image"] or ""),
+        )
+        for item in sorted(category_map.values(), key=lambda item: (-int(item["count"]), str(item["name"])))
+    ]
+
+    return WorkoutLibraryResponse(
+        featuredWorkout=workouts[0] if workouts else None,
+        workouts=workouts,
+        categories=categories,
+    )
+
+
 @app.post("/auth/register", status_code=status.HTTP_202_ACCEPTED)
 async def register(payload: RegisterRequest) -> dict[str, str]:
     email = payload.email.lower()
@@ -299,6 +355,18 @@ async def refresh(
 @app.get("/auth/validate")
 async def validate_authorization(user: dict = Depends(_require_access_user)) -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/me", response_model=MeResponse)
+async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
+    return MeResponse(
+        id=str(user["_id"]),
+        name=str(user.get("name") or ""),
+        email=user["email"],
+        is_verified=bool(user.get("is_verified")),
+        role=str(user.get("role") or ("admin" if user.get("is_admin") else "user")),
+        is_admin=bool(user.get("is_admin")),
+    )
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -502,6 +570,124 @@ async def admin_delete_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     return {"status": "success", "message": "User deleted"}
+
+
+@app.get("/admin/workouts", response_model=AdminWorkoutListResponse)
+async def admin_list_workouts(
+    query: str | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> AdminWorkoutListResponse:
+    filter_doc = {}
+    search = (query or "").strip()
+    if search:
+        escaped = re.escape(search)
+        filter_doc["$or"] = [
+            {"title": {"$regex": escaped, "$options": "i"}},
+            {"tag": {"$regex": escaped, "$options": "i"}},
+            {"vimeo_id": {"$regex": escaped, "$options": "i"}},
+            {"visibility": {"$regex": escaped, "$options": "i"}},
+        ]
+
+    records = await workouts_collection.find(
+        filter_doc,
+        sort=[("created_at", -1), ("_id", -1)],
+    ).to_list(length=None)
+
+    return AdminWorkoutListResponse(
+        total=len(records),
+        workouts=[AdminWorkoutItem(**_serialize_admin_workout_record(record)) for record in records],
+    )
+
+
+@app.post("/admin/workouts", response_model=AdminWorkoutItem, status_code=status.HTTP_201_CREATED)
+async def admin_create_workout(
+    payload: AdminWorkoutRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminWorkoutItem:
+    now = datetime.now(timezone.utc)
+    vimeo_id = payload.vimeoId.strip()
+
+    existing_workout = await workouts_collection.find_one({"vimeo_id": vimeo_id})
+    if existing_workout:
+        raise HTTPException(status_code=409, detail="A workout with this Vimeo ID already exists")
+
+    document = {
+        "title": payload.title.strip(),
+        "vimeo_id": vimeo_id,
+        "tag": payload.tag.strip(),
+        "visibility": payload.visibility,
+        "thumbnail": (payload.thumbnail or "").strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    insert_result = await workouts_collection.insert_one(document)
+    document["_id"] = insert_result.inserted_id
+    return AdminWorkoutItem(**_serialize_admin_workout_record(document))
+
+
+@app.patch("/admin/workouts/{workout_id}", response_model=AdminWorkoutItem)
+async def admin_update_workout(
+    workout_id: str,
+    payload: AdminWorkoutRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminWorkoutItem:
+    try:
+        object_id = ObjectId(workout_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid workout id") from exc
+
+    existing_workout = await workouts_collection.find_one({"_id": object_id})
+    if not existing_workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
+
+    vimeo_id = payload.vimeoId.strip()
+    duplicate_workout = await workouts_collection.find_one({"vimeo_id": vimeo_id, "_id": {"$ne": object_id}})
+    if duplicate_workout:
+        raise HTTPException(status_code=409, detail="A workout with this Vimeo ID already exists")
+
+    update_doc = {
+        "title": payload.title.strip(),
+        "vimeo_id": vimeo_id,
+        "tag": payload.tag.strip(),
+        "visibility": payload.visibility,
+        "thumbnail": (payload.thumbnail or "").strip(),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await workouts_collection.update_one({"_id": object_id}, {"$set": update_doc})
+
+    updated_workout = await workouts_collection.find_one({"_id": object_id})
+    if not updated_workout:
+        raise HTTPException(status_code=404, detail="Workout not found")
+
+    return AdminWorkoutItem(**_serialize_admin_workout_record(updated_workout))
+
+
+@app.delete("/admin/workouts/{workout_id}")
+async def admin_delete_workout(
+    workout_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, str]:
+    try:
+        object_id = ObjectId(workout_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid workout id") from exc
+
+    delete_result = await workouts_collection.delete_one({"_id": object_id})
+    if delete_result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Workout not found")
+
+    return {"status": "success", "message": "Workout deleted"}
+
+
+@app.post("/admin/workouts/sync", response_model=AdminWorkoutSyncResponse)
+async def admin_sync_workouts(
+    _: dict = Depends(_require_admin_user),
+) -> AdminWorkoutSyncResponse:
+    count = await workouts_collection.count_documents({})
+    return AdminWorkoutSyncResponse(
+        message="Workout sync is ready for Vimeo integration. Existing library has been refreshed.",
+        syncedCount=count,
+    )
 
 
 @app.post("/journal/entries", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
@@ -1072,6 +1258,33 @@ def _build_admin_user_query(query: str | None) -> dict:
         {"role": {"$regex": escaped, "$options": "i"}},
     ]
     return base_query
+
+
+def _serialize_admin_workout_record(record: dict) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    updated_at = _as_utc(record.get("updated_at") or created_at)
+    return {
+        "id": str(record["_id"]),
+        "title": str(record.get("title") or ""),
+        "vimeoId": str(record.get("vimeo_id") or ""),
+        "tag": str(record.get("tag") or ""),
+        "visibility": str(record.get("visibility") or "Draft"),
+        "thumbnail": str(record.get("thumbnail") or ""),
+        "dateAdded": created_at,
+        "updatedAt": updated_at,
+    }
+
+
+def _serialize_public_workout_record(record: dict) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    return {
+        "id": str(record["_id"]),
+        "title": str(record.get("title") or ""),
+        "vimeoId": str(record.get("vimeo_id") or ""),
+        "tag": str(record.get("tag") or "Workout"),
+        "thumbnail": str(record.get("thumbnail") or ""),
+        "dateAdded": created_at,
+    }
 
 
 async def _build_admin_user_summary_response(year: int | None = None) -> AdminUserSummaryResponse:

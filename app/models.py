@@ -31,6 +31,15 @@ class TokenResponse(BaseModel):
     user: dict
 
 
+class MeResponse(BaseModel):
+    id: str
+    name: str
+    email: EmailStr
+    is_verified: bool
+    role: str = "user"
+    is_admin: bool = False
+
+
 class UserOut(BaseModel):
     id: str
     name: str
@@ -238,3 +247,55 @@ class AdminUserUpdateRequest(BaseModel):
     contactNumber: str | None = Field(default=None, max_length=40)
     country: str | None = Field(default=None, max_length=80)
     profileImage: str | None = Field(default=None, max_length=500)
+
+
+class AdminWorkoutItem(BaseModel):
+    id: str
+    title: str
+    vimeoId: str
+    tag: str
+    visibility: str
+    thumbnail: str
+    dateAdded: datetime
+    updatedAt: datetime
+
+
+class AdminWorkoutListResponse(BaseModel):
+    total: int = 0
+    workouts: list[AdminWorkoutItem] = Field(default_factory=list)
+
+
+class AdminWorkoutRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=160)
+    vimeoId: str = Field(min_length=1, max_length=80)
+    tag: str = Field(min_length=1, max_length=80)
+    visibility: str = Field(pattern=r"^(Published|Draft)$")
+    thumbnail: str | None = Field(default=None, max_length=500)
+
+
+class AdminWorkoutSyncResponse(BaseModel):
+    status: str = "success"
+    message: str
+    syncedCount: int = 0
+
+
+class WorkoutLibraryItem(BaseModel):
+    id: str
+    title: str
+    vimeoId: str
+    tag: str
+    thumbnail: str
+    dateAdded: datetime
+
+
+class WorkoutLibraryCategory(BaseModel):
+    id: str
+    name: str
+    count: int = 0
+    image: str = ""
+
+
+class WorkoutLibraryResponse(BaseModel):
+    featuredWorkout: WorkoutLibraryItem | None = None
+    workouts: list[WorkoutLibraryItem] = Field(default_factory=list)
+    categories: list[WorkoutLibraryCategory] = Field(default_factory=list)

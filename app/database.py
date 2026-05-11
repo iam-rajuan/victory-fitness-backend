@@ -24,6 +24,7 @@ nutrition_plans_collection = db["nutrition_plans"]
 coach_victor_threads_collection = db["coach_victor_threads"]
 coach_victor_archives_collection = db["coach_victor_archives"]
 journal_entries_collection = db["journal_entries"]
+workouts_collection = db["workouts"]
 
 
 async def ensure_indexes() -> None:
@@ -35,3 +36,5 @@ async def ensure_indexes() -> None:
     await coach_victor_archives_collection.create_index([("thread_id", 1), ("created_at", 1)])
     await coach_victor_archives_collection.create_index([("user_id", 1), ("created_at", -1)])
     await journal_entries_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await workouts_collection.create_index([("created_at", -1)])
+    await workouts_collection.create_index("vimeo_id", unique=True)
