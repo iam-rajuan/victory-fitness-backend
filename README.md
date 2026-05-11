@@ -27,6 +27,7 @@ Update `.env` before running:
 - `FRONTEND_ORIGIN`: Expo web origin, usually `http://localhost:8081`.
 - `FRONTEND_ORIGIN_REGEX`: `.*` allows all origins for development. Use a strict regex or remove it in production.
 - `COOKIE_SECURE`: use `false` for local HTTP, `true` for production HTTPS.
+- `ADMIN_SEED_ENABLED`, `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`: startup seed settings for a verified admin account. On startup, if the admin email does not exist yet, the backend inserts it automatically.
 
 ## Run
 

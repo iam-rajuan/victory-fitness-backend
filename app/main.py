@@ -155,6 +155,7 @@ async def _require_access_user(
 async def startup() -> None:
     logger.info("startup_begin")
     await ensure_indexes()
+    await _seed_admin_user()
     logger.info("startup_complete")
 
 
@@ -187,6 +188,8 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "email": email,
             "password_hash": hash_password(payload.password),
             "is_verified": False,
+            "role": "user",
+            "is_admin": False,
             "verification_code_hash": hash_password(code),
             "verification_code_expires_at": now + timedelta(minutes=10),
             "updated_at": now,
@@ -744,8 +747,56 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
             "name": user["name"],
             "email": user["email"],
             "is_verified": bool(user.get("is_verified")),
+            "role": str(user.get("role") or ("admin" if user.get("is_admin") else "user")),
+            "is_admin": bool(user.get("is_admin")),
         },
     )
+
+
+async def _seed_admin_user() -> None:
+    if not settings.admin_seed_enabled:
+        logger.info("admin_seed_skipped reason=disabled")
+        return
+
+    if not settings.admin_email or not settings.admin_password:
+        logger.info("admin_seed_skipped reason=missing_credentials")
+        return
+
+    now = datetime.now(timezone.utc)
+    existing_user = await users_collection.find_one({"email": settings.admin_email})
+    if existing_user:
+        await users_collection.update_one(
+            {"_id": existing_user["_id"]},
+            {
+                "$set": {
+                    "name": existing_user.get("name") or settings.admin_name,
+                    "role": "admin",
+                    "is_admin": True,
+                    "is_verified": True,
+                    "updated_at": now,
+                },
+                "$unset": {
+                    "verification_code_hash": "",
+                    "verification_code_expires_at": "",
+                },
+            },
+        )
+        logger.info("admin_seed_exists email=%s", settings.admin_email)
+        return
+
+    await users_collection.insert_one(
+        {
+            "name": settings.admin_name,
+            "email": settings.admin_email,
+            "password_hash": hash_password(settings.admin_password),
+            "is_verified": True,
+            "role": "admin",
+            "is_admin": True,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    logger.info("admin_seed_created email=%s", settings.admin_email)
 
 
 def _as_utc(value: datetime) -> datetime:
