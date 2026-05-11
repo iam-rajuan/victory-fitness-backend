@@ -147,6 +147,7 @@ class NutritionPlanResponse(BaseModel):
     goal_label: str
     days: list[NutritionDayPlan]
     shopping_list: list[NutritionShoppingSection] = Field(default_factory=list)
+    meal_completions: dict[str, dict[str, bool]] = Field(default_factory=dict)
     profile: dict | None = None
 
 
@@ -169,6 +170,22 @@ class NutritionAdviceResponse(BaseModel):
 class NutritionPlanSaveResponse(BaseModel):
     status: str = "success"
     plan: NutritionPlanResponse
+
+
+class NutritionPlanJobResponse(BaseModel):
+    job_id: str
+    status: str
+    plan_id: str | None = None
+    plan: NutritionPlanResponse | None = None
+    error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class NutritionMealCompletionUpdateRequest(BaseModel):
+    day: str = Field(pattern=r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$")
+    meal_key: str = Field(pattern=r"^(breakfast|lunch|dinner)$")
+    completed: bool = True
 
 
 class DashboardOverviewChartPoint(BaseModel):

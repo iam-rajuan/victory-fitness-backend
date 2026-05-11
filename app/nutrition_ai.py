@@ -1,5 +1,7 @@
 import json
+from copy import deepcopy
 from dataclasses import dataclass
+from hashlib import sha256
 import time
 from urllib import error, request
 
@@ -112,6 +114,8 @@ NUTRITION_PLAN_JSON_SCHEMA = {
     },
 }
 
+_NUTRITION_PLAN_MEMORY_CACHE: dict[str, dict] = {}
+
 
 @dataclass
 class NutritionResult:
@@ -163,20 +167,46 @@ class StructuredNutritionPlan(BaseModel):
 
 
 def generate_nutrition_plan(payload: dict) -> NutritionResult:
+    cache_key = build_nutrition_plan_signature(payload)
+    cached_plan = _NUTRITION_PLAN_MEMORY_CACHE.get(cache_key)
+    if cached_plan is not None:
+        return NutritionResult(data=deepcopy(cached_plan))
+
     prompt = _build_nutrition_plan_prompt(payload)
-    candidates, provider_errors = _collect_nutrition_plan_candidates(prompt)
+    plan_text = _generate_nutrition_plan_json(prompt)
+    plan = _parse_or_repair_nutrition_plan(plan_text)
+    if plan is None:
+        raise RuntimeError("The nutrition model did not return valid plan JSON")
 
-    for text in candidates:
-        plan = _parse_or_repair_nutrition_plan(text)
-        if plan is not None:
-            return NutritionResult(data=plan)
+    _NUTRITION_PLAN_MEMORY_CACHE[cache_key] = deepcopy(plan)
+    return NutritionResult(data=plan)
 
-    if provider_errors:
-        raise RuntimeError(
-            "The nutrition model did not return valid plan JSON. "
-            f"Provider details: {' | '.join(_compact_error(error) for error in provider_errors[:3])}"
-        )
-    raise RuntimeError("The nutrition model did not return valid plan JSON")
+
+def build_nutrition_plan_signature(payload: dict) -> str:
+    normalized_profile = {
+        "provider": "openai" if settings.openai_api_key else "anthropic" if settings.anthropic_api_key else "none",
+        "openai_model": settings.openai_model,
+        "anthropic_model": settings.anthropic_model,
+        "goal": _normalize_text(payload.get("goal"), ""),
+        "cuisine": _normalize_text(payload.get("cuisine"), ""),
+        "favorite_meal": _normalize_text(payload.get("favorite_meal"), ""),
+        "diet": _normalize_text(payload.get("diet"), ""),
+        "allergies": _normalize_text(payload.get("allergies"), ""),
+        "activity_level": _normalize_text(payload.get("activity_level"), ""),
+        "age": _normalize_text(payload.get("age"), ""),
+        "gender": _normalize_text(payload.get("gender"), ""),
+        "height": _normalize_text(payload.get("height"), ""),
+        "weight": _normalize_text(payload.get("weight"), ""),
+        "health_conditions": sorted(
+            {
+                str(item).strip()
+                for item in (payload.get("health_conditions") or [])
+                if str(item).strip()
+            }
+        ),
+    }
+    payload_json = json.dumps(normalized_profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(payload_json.encode("utf-8")).hexdigest()
 
 
 def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
@@ -211,6 +241,16 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
         raise RuntimeError("OpenAI nutrition advice response was missing text") from exc
 
     return NutritionAdviceResult(reply=reply)
+
+
+def _generate_nutrition_plan_json(prompt: str) -> str:
+    if settings.openai_api_key:
+        return _openai_structured_nutrition_plan_json(prompt)
+
+    if settings.anthropic_api_key:
+        return _anthropic_nutrition_plan_json(prompt)
+
+    raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
 
 
 def _openai_responses_json_with_retry(payload: dict) -> dict:
@@ -397,6 +437,33 @@ def _collect_nutrition_plan_candidates(prompt: str) -> tuple[list[str], list[str
             provider_errors.append(str(exc))
 
     return candidates, provider_errors
+
+
+def _openai_structured_nutrition_plan_json(prompt: str) -> str:
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    request_payload = {
+        "model": settings.openai_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": NUTRITION_PLAN_SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            },
+        ],
+        "text": {"format": NUTRITION_PLAN_JSON_SCHEMA},
+        "max_output_tokens": 2200,
+    }
+
+    data = _openai_responses_json_with_retry(request_payload)
+    try:
+        return _extract_response_text(data, NutritionPlanRefusalError).strip()
+    except (KeyError, IndexError, AttributeError, TypeError) as exc:
+        raise RuntimeError("OpenAI nutrition plan response was missing JSON text") from exc
 
 
 def _anthropic_nutrition_plan_json(prompt: str) -> str:

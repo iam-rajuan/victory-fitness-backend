@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from uuid import uuid4
 from calendar import month_abbr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -53,6 +54,8 @@ from .models import (
     MeResponse,
     NutritionAdviceRequest,
     NutritionAdviceResponse,
+    NutritionMealCompletionUpdateRequest,
+    NutritionPlanJobResponse,
     NutritionPlanRequest,
     NutritionPlanResponse,
     NutritionPlanSaveResponse,
@@ -69,10 +72,12 @@ from .database import (
     coach_victor_threads_collection,
     journal_entries_collection,
     nutrition_plans_collection,
+    nutrition_plan_jobs_collection,
     workouts_collection,
 )
 from .nutrition_ai import (
     NutritionPlanRefusalError,
+    build_nutrition_plan_signature,
     generate_nutrition_advice,
     generate_nutrition_plan,
 )
@@ -893,8 +898,28 @@ async def nutrition_plan(
     user: dict = Depends(_require_access_user),
 ) -> NutritionPlanSaveResponse:
     logger.info("nutrition_plan_attempt user_id=%s", str(user["_id"]))
+    payload_data = payload.model_dump()
+    profile_hash = build_nutrition_plan_signature(payload_data)
+
+    cached_record = await nutrition_plans_collection.find_one(
+        {
+            "user_id": str(user["_id"]),
+            "profile_hash": profile_hash,
+        },
+        sort=[("created_at", -1)],
+    )
+    if cached_record and cached_record.get("plan"):
+        plan_data = dict(cached_record["plan"])
+        plan_data["plan_id"] = str(cached_record["_id"])
+        logger.info(
+            "nutrition_plan_cache_hit user_id=%s plan_id=%s",
+            str(user["_id"]),
+            plan_data["plan_id"],
+        )
+        return NutritionPlanSaveResponse(plan=NutritionPlanResponse(**plan_data))
+
     try:
-        result = generate_nutrition_plan(payload.model_dump())
+        result = generate_nutrition_plan(payload_data)
     except NutritionPlanRefusalError as exc:
         raise HTTPException(status_code=422, detail=f"Nutrition plan refused: {exc}") from exc
     except RuntimeError as exc:
@@ -905,6 +930,7 @@ async def nutrition_plan(
     insert_result = await nutrition_plans_collection.insert_one(
         {
             "user_id": str(user["_id"]),
+            "profile_hash": profile_hash,
             "plan": plan.model_dump(),
             "created_at": created_at,
             "updated_at": created_at,
@@ -919,6 +945,83 @@ async def nutrition_plan(
     )
 
     return NutritionPlanSaveResponse(plan=plan)
+
+
+@app.post("/ai/nutrition/plan/jobs", response_model=NutritionPlanJobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def nutrition_plan_job(
+    payload: NutritionPlanRequest,
+    user: dict = Depends(_require_access_user),
+) -> NutritionPlanJobResponse:
+    logger.info("nutrition_plan_job_attempt user_id=%s", str(user["_id"]))
+    payload_data = payload.model_dump()
+    profile_hash = build_nutrition_plan_signature(payload_data)
+
+    cached_record = await nutrition_plans_collection.find_one(
+        {
+            "user_id": str(user["_id"]),
+            "profile_hash": profile_hash,
+        },
+        sort=[("created_at", -1)],
+    )
+    if cached_record and cached_record.get("plan"):
+        plan_data = dict(cached_record["plan"])
+        plan_data["plan_id"] = str(cached_record["_id"])
+        job_id = f"cached-{cached_record['_id']}"
+        now = datetime.now(timezone.utc)
+        logger.info("nutrition_plan_job_cache_hit user_id=%s plan_id=%s", str(user["_id"]), plan_data["plan_id"])
+        return NutritionPlanJobResponse(
+            job_id=job_id,
+            status="completed",
+            plan_id=plan_data["plan_id"],
+            plan=NutritionPlanResponse(**plan_data),
+            created_at=now,
+            updated_at=now,
+        )
+
+    created_at = datetime.now(timezone.utc)
+    job_id = str(uuid4())
+    await nutrition_plan_jobs_collection.insert_one(
+        {
+            "_id": job_id,
+            "user_id": str(user["_id"]),
+            "profile_hash": profile_hash,
+            "status": "queued",
+            "plan_id": None,
+            "plan": None,
+            "error": None,
+            "payload": payload_data,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+
+    asyncio.create_task(_process_nutrition_plan_job(job_id, str(user["_id"]), payload_data, profile_hash))
+
+    logger.info("nutrition_plan_job_queued user_id=%s job_id=%s", str(user["_id"]), job_id)
+    return NutritionPlanJobResponse(
+        job_id=job_id,
+        status="queued",
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
+@app.get("/ai/nutrition/plan/jobs/{job_id}", response_model=NutritionPlanJobResponse)
+async def nutrition_plan_job_status(
+    job_id: str,
+    user: dict = Depends(_require_access_user),
+) -> NutritionPlanJobResponse:
+    logger.info("nutrition_plan_job_status_attempt user_id=%s job_id=%s", str(user["_id"]), job_id)
+    record = await nutrition_plan_jobs_collection.find_one(
+        {
+            "_id": job_id,
+            "user_id": str(user["_id"]),
+        }
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Nutrition plan job not found")
+
+    return _serialize_nutrition_plan_job(record)
 
 
 @app.get("/ai/nutrition/plan/latest", response_model=NutritionPlanResponse)
@@ -939,6 +1042,51 @@ async def nutrition_latest_plan(
     return NutritionPlanResponse(**plan_data)
 
 
+@app.patch("/ai/nutrition/plan/latest/completions", response_model=NutritionPlanResponse)
+async def nutrition_latest_plan_completion(
+    payload: NutritionMealCompletionUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> NutritionPlanResponse:
+    logger.info(
+        "nutrition_plan_completion_update_attempt user_id=%s day=%s meal_key=%s completed=%s",
+        str(user["_id"]),
+        payload.day,
+        payload.meal_key,
+        payload.completed,
+    )
+    record = await nutrition_plans_collection.find_one(
+        {"user_id": str(user["_id"])},
+        sort=[("created_at", -1)],
+    )
+    if not record or not record.get("plan"):
+        raise HTTPException(status_code=404, detail="Nutrition plan not found")
+
+    plan_data = dict(record["plan"])
+    meal_completions = dict(plan_data.get("meal_completions") or {})
+    day_completions = dict(meal_completions.get(payload.day) or {})
+    day_completions[payload.meal_key] = payload.completed
+    meal_completions[payload.day] = day_completions
+    plan_data["meal_completions"] = meal_completions
+    plan_data["plan_id"] = str(record["_id"])
+
+    await nutrition_plans_collection.update_one(
+        {"_id": record["_id"]},
+        {
+            "$set": {
+                "plan": plan_data,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    logger.info(
+        "nutrition_plan_completion_update_success user_id=%s plan_id=%s",
+        str(user["_id"]),
+        plan_data["plan_id"],
+    )
+    return NutritionPlanResponse(**plan_data)
+
+
 @app.post("/ai/nutrition/advice", response_model=NutritionAdviceResponse)
 async def nutrition_advice(
     payload: NutritionAdviceRequest,
@@ -952,6 +1100,106 @@ async def nutrition_advice(
 
     logger.info("nutrition_advice_success user_id=%s", str(user["_id"]))
     return NutritionAdviceResponse(reply=result.reply)
+
+
+async def _process_nutrition_plan_job(job_id: str, user_id: str, payload_data: dict, profile_hash: str) -> None:
+    started_at = datetime.now(timezone.utc)
+    await nutrition_plan_jobs_collection.update_one(
+        {"_id": job_id, "user_id": user_id},
+        {
+            "$set": {
+                "status": "processing",
+                "updated_at": started_at,
+            }
+        },
+    )
+
+    try:
+        cached_record = await nutrition_plans_collection.find_one(
+            {
+                "user_id": user_id,
+                "profile_hash": profile_hash,
+            },
+            sort=[("created_at", -1)],
+        )
+        if cached_record and cached_record.get("plan"):
+            plan_data = dict(cached_record["plan"])
+            plan_data["plan_id"] = str(cached_record["_id"])
+            await nutrition_plan_jobs_collection.update_one(
+                {"_id": job_id, "user_id": user_id},
+                {
+                    "$set": {
+                        "status": "completed",
+                        "plan_id": plan_data["plan_id"],
+                        "plan": plan_data,
+                        "error": None,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                },
+            )
+            return
+
+        result = await asyncio.to_thread(generate_nutrition_plan, payload_data)
+        plan = NutritionPlanResponse(**result.data, profile=payload_data)
+        created_at = datetime.now(timezone.utc)
+        insert_result = await nutrition_plans_collection.insert_one(
+            {
+                "user_id": user_id,
+                "profile_hash": profile_hash,
+                "plan": plan.model_dump(),
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        )
+        plan.plan_id = str(insert_result.inserted_id)
+        await nutrition_plan_jobs_collection.update_one(
+            {"_id": job_id, "user_id": user_id},
+            {
+                "$set": {
+                    "status": "completed",
+                    "plan_id": plan.plan_id,
+                    "plan": plan.model_dump(),
+                    "error": None,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+    except NutritionPlanRefusalError as exc:
+        await nutrition_plan_jobs_collection.update_one(
+            {"_id": job_id, "user_id": user_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "error": f"Nutrition plan refused: {exc}",
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        await nutrition_plan_jobs_collection.update_one(
+            {"_id": job_id, "user_id": user_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "error": f"Nutrition plan unavailable: {exc}",
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+
+
+def _serialize_nutrition_plan_job(record: dict) -> NutritionPlanJobResponse:
+    plan_data = record.get("plan")
+    plan = NutritionPlanResponse(**plan_data) if isinstance(plan_data, dict) else None
+    return NutritionPlanJobResponse(
+        job_id=str(record.get("_id")),
+        status=str(record.get("status") or "queued"),
+        plan_id=str(record["plan_id"]) if record.get("plan_id") else None,
+        plan=plan,
+        error=str(record["error"]) if record.get("error") else None,
+        created_at=record["created_at"],
+        updated_at=record["updated_at"],
+    )
 
 
 def _get_thread_recent_messages(thread: dict | None) -> list[dict]:
