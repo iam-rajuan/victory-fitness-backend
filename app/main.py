@@ -1,9 +1,11 @@
 import logging
 from calendar import month_abbr
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from time import perf_counter
 
 from bson import ObjectId
+from dotenv import dotenv_values
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -354,7 +356,7 @@ async def admin_dashboard_overview(
         totalUsers=total_users,
         workoutsThisWeek=0,
         challengeCompletions=0,
-        vimeoApiStatus="CONFIGURED" if settings.vimeo_access_token else "MISSING",
+        vimeoApiStatus=_get_vimeo_status(),
         userChart=user_chart,
         recentUsers=recent_users,
     )
@@ -877,6 +879,13 @@ async def _seed_admin_user() -> None:
         }
     )
     logger.info("admin_seed_created email=%s", settings.admin_email)
+
+
+def _get_vimeo_status() -> str:
+    env_path = Path(__file__).resolve().parents[1] / ".env"
+    env_values = dotenv_values(env_path)
+    token = str(env_values.get("VIMEO_ACCESS_TOKEN") or "").strip()
+    return "CONFIGURED" if token else "MISSING"
 
 
 def _as_utc(value: datetime) -> datetime:
