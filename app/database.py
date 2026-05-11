@@ -29,6 +29,7 @@ journal_entries_collection = db["journal_entries"]
 async def ensure_indexes() -> None:
     await client.admin.command("ping")
     await users_collection.create_index("email", unique=True)
+    await users_collection.create_index([("is_admin", 1), ("created_at", -1)])
     await nutrition_plans_collection.create_index([("user_id", 1), ("created_at", -1)])
     await coach_victor_threads_collection.create_index([("user_id", 1), ("updated_at", -1)])
     await coach_victor_archives_collection.create_index([("thread_id", 1), ("created_at", 1)])

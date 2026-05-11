@@ -184,3 +184,57 @@ class DashboardOverviewResponse(BaseModel):
     vimeoApiStatus: str
     userChart: list[DashboardOverviewChartPoint] = Field(default_factory=list)
     recentUsers: list[DashboardOverviewRecentUser] = Field(default_factory=list)
+
+
+class AdminUserListItem(BaseModel):
+    id: str
+    fullName: str
+    email: EmailStr
+    role: str
+    status: str
+    isVerified: bool
+    contactNumber: str = ""
+    country: str = ""
+    createdAt: datetime
+    updatedAt: datetime
+    profileImage: str = ""
+
+
+class AdminUserDetailResponse(AdminUserListItem):
+    pass
+
+
+class AdminUserListResponse(BaseModel):
+    total: int = 0
+    page: int = 1
+    limit: int = 10
+    users: list[AdminUserListItem] = Field(default_factory=list)
+
+
+class AdminUserChartPoint(BaseModel):
+    month: str
+    userCount: int = 0
+    activeUserCount: int = 0
+
+
+class AdminUserSummaryResponse(BaseModel):
+    totalUsers: int = 0
+    activeUsers: int = 0
+    pendingUsers: int = 0
+    userChart: list[AdminUserChartPoint] = Field(default_factory=list)
+
+
+class AdminUserManagementOverviewResponse(BaseModel):
+    summary: AdminUserSummaryResponse
+    table: AdminUserListResponse
+
+
+class AdminUserUpdateRequest(BaseModel):
+    fullName: str | None = Field(default=None, min_length=2, max_length=100)
+    email: EmailStr | None = None
+    role: str | None = Field(default=None, min_length=1, max_length=50)
+    status: str | None = Field(default=None, pattern=r"^(ACTIVE|INACTIVE|PENDING)$")
+    isVerified: bool | None = None
+    contactNumber: str | None = Field(default=None, max_length=40)
+    country: str | None = Field(default=None, max_length=80)
+    profileImage: str | None = Field(default=None, max_length=500)

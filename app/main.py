@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import re
 from calendar import month_abbr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +31,13 @@ from .models import (
     CoachVictorChatResponse,
     CoachVictorHistoryResponse,
     DashboardOverviewChartPoint,
+    AdminUserChartPoint,
+    AdminUserDetailResponse,
+    AdminUserListItem,
+    AdminUserListResponse,
+    AdminUserManagementOverviewResponse,
+    AdminUserSummaryResponse,
+    AdminUserUpdateRequest,
     DashboardOverviewRecentUser,
     DashboardOverviewResponse,
     JournalAnalysisRequest,
@@ -360,6 +369,139 @@ async def admin_dashboard_overview(
         userChart=user_chart,
         recentUsers=recent_users,
     )
+
+
+@app.get("/admin/users/summary", response_model=AdminUserSummaryResponse)
+async def admin_user_summary(
+    year: int | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> AdminUserSummaryResponse:
+    return await _build_admin_user_summary_response(year)
+
+
+@app.get("/admin/users", response_model=AdminUserListResponse)
+async def admin_list_users(
+    page: int = 1,
+    limit: int = 10,
+    query: str | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> AdminUserListResponse:
+    return await _build_admin_user_list_response(page=page, limit=limit, query=query)
+
+
+@app.get("/admin/user-management", response_model=AdminUserManagementOverviewResponse)
+async def admin_user_management_overview(
+    page: int = 1,
+    limit: int = 10,
+    query: str | None = None,
+    year: int | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> AdminUserManagementOverviewResponse:
+    summary, table = await asyncio.gather(
+        _build_admin_user_summary_response(year),
+        _build_admin_user_list_response(page=page, limit=limit, query=query),
+    )
+    return AdminUserManagementOverviewResponse(summary=summary, table=table)
+
+
+@app.get("/admin/users/{user_id}", response_model=AdminUserDetailResponse)
+async def admin_get_user(
+    user_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> AdminUserDetailResponse:
+    try:
+        object_id = ObjectId(user_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid user id") from exc
+
+    record = await users_collection.find_one({"_id": object_id, "is_admin": {"$ne": True}})
+    if not record:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return AdminUserDetailResponse(**_serialize_admin_user_record(record))
+
+
+@app.patch("/admin/users/{user_id}", response_model=AdminUserDetailResponse)
+async def admin_update_user(
+    user_id: str,
+    payload: AdminUserUpdateRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> AdminUserDetailResponse:
+    try:
+        object_id = ObjectId(user_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid user id") from exc
+
+    record = await users_collection.find_one({"_id": object_id, "is_admin": {"$ne": True}})
+    if not record:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    update_doc: dict = {}
+
+    if payload.fullName is not None:
+        update_doc["name"] = payload.fullName.strip()
+    if payload.email is not None:
+        new_email = payload.email.lower()
+        existing_user = await users_collection.find_one({"email": new_email, "_id": {"$ne": object_id}})
+        if existing_user:
+            raise HTTPException(status_code=409, detail="Email already exists")
+        update_doc["email"] = new_email
+    if payload.contactNumber is not None:
+        update_doc["contact_number"] = payload.contactNumber.strip()
+    if payload.country is not None:
+        update_doc["country"] = payload.country.strip()
+    if payload.profileImage is not None:
+        update_doc["profile_image"] = payload.profileImage.strip()
+    if payload.role is not None:
+        normalized_role = payload.role.strip().lower()
+        if normalized_role not in {"user", "trainer", "moderator", "admin"}:
+            raise HTTPException(status_code=400, detail="Invalid role")
+        if record["_id"] == admin_user["_id"] and normalized_role != "admin":
+            raise HTTPException(status_code=400, detail="You cannot remove your own admin access")
+        update_doc["role"] = normalized_role
+        update_doc["is_admin"] = normalized_role == "admin"
+    if payload.status is not None:
+        normalized_status = payload.status.upper()
+        update_doc["status"] = normalized_status
+        update_doc["is_verified"] = normalized_status == "ACTIVE"
+    if payload.isVerified is not None:
+        update_doc["is_verified"] = payload.isVerified
+        update_doc["status"] = "ACTIVE" if payload.isVerified else "PENDING"
+
+    if not update_doc:
+        return AdminUserDetailResponse(**_serialize_admin_user_record(record))
+
+    update_doc["updated_at"] = datetime.now(timezone.utc)
+    await users_collection.update_one({"_id": object_id}, {"$set": update_doc})
+
+    updated_record = await users_collection.find_one({"_id": object_id})
+    if not updated_record:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return AdminUserDetailResponse(**_serialize_admin_user_record(updated_record))
+
+
+@app.delete("/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: str,
+    admin_user: dict = Depends(_require_admin_user),
+) -> dict[str, str]:
+    try:
+        object_id = ObjectId(user_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid user id") from exc
+
+    record = await users_collection.find_one({"_id": object_id, "is_admin": {"$ne": True}})
+    if not record:
+        raise HTTPException(status_code=404, detail="User not found")
+    if record["_id"] == admin_user["_id"]:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    delete_result = await users_collection.delete_one({"_id": object_id, "is_admin": {"$ne": True}})
+    if delete_result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"status": "success", "message": "User deleted"}
 
 
 @app.post("/journal/entries", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
@@ -886,6 +1028,146 @@ def _get_vimeo_status() -> str:
     env_values = dotenv_values(env_path)
     token = str(env_values.get("VIMEO_ACCESS_TOKEN") or "").strip()
     return "CONFIGURED" if token else "MISSING"
+
+
+def _normalize_admin_user_status(record: dict) -> str:
+    status = str(record.get("status") or "").strip().upper()
+    if status in {"ACTIVE", "INACTIVE", "PENDING"}:
+        return status
+    return "ACTIVE" if record.get("is_verified") else "PENDING"
+
+
+def _serialize_admin_user_record(record: dict) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    updated_at = _as_utc(record.get("updated_at") or created_at)
+    role = str(record.get("role") or ("admin" if record.get("is_admin") else "user"))
+
+    return {
+        "id": str(record["_id"]),
+        "fullName": str(record.get("name") or "Unknown"),
+        "email": str(record.get("email") or ""),
+        "role": role,
+        "status": _normalize_admin_user_status(record),
+        "isVerified": bool(record.get("is_verified")),
+        "contactNumber": str(record.get("contact_number") or ""),
+        "country": str(record.get("country") or ""),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+        "profileImage": str(record.get("profile_image") or ""),
+    }
+
+
+def _build_admin_user_query(query: str | None) -> dict:
+    base_query: dict = {"is_admin": {"$ne": True}}
+    search = (query or "").strip()
+    if not search:
+        return base_query
+
+    escaped = re.escape(search)
+    base_query["$or"] = [
+        {"name": {"$regex": escaped, "$options": "i"}},
+        {"email": {"$regex": escaped, "$options": "i"}},
+        {"contact_number": {"$regex": escaped, "$options": "i"}},
+        {"country": {"$regex": escaped, "$options": "i"}},
+        {"role": {"$regex": escaped, "$options": "i"}},
+    ]
+    return base_query
+
+
+async def _build_admin_user_summary_response(year: int | None = None) -> AdminUserSummaryResponse:
+    selected_year = year or datetime.now(timezone.utc).year
+    year_start = datetime(selected_year, 1, 1, tzinfo=timezone.utc)
+    next_year_start = datetime(selected_year + 1, 1, 1, tzinfo=timezone.utc)
+    non_admin_filter = {"is_admin": {"$ne": True}}
+
+    total_users = await users_collection.count_documents(non_admin_filter)
+    active_users = await users_collection.count_documents({**non_admin_filter, "is_verified": True})
+    pending_users = max(total_users - active_users, 0)
+
+    monthly_records = await users_collection.aggregate(
+        [
+            {
+                "$match": {
+                    **non_admin_filter,
+                    "created_at": {
+                        "$gte": year_start,
+                        "$lt": next_year_start,
+                    },
+                }
+            },
+            {
+                "$group": {
+                    "_id": {"$month": "$created_at"},
+                    "userCount": {"$sum": 1},
+                }
+            },
+            {"$sort": {"_id": 1}},
+        ]
+    ).to_list(length=12)
+
+    active_monthly_records = await users_collection.aggregate(
+        [
+            {
+                "$match": {
+                    **non_admin_filter,
+                    "is_verified": True,
+                    "created_at": {
+                        "$gte": year_start,
+                        "$lt": next_year_start,
+                    },
+                }
+            },
+            {
+                "$group": {
+                    "_id": {"$month": "$created_at"},
+                    "userCount": {"$sum": 1},
+                }
+            },
+            {"$sort": {"_id": 1}},
+        ]
+    ).to_list(length=12)
+
+    monthly_map = {int(item["_id"]): int(item.get("userCount", 0)) for item in monthly_records}
+    active_monthly_map = {int(item["_id"]): int(item.get("userCount", 0)) for item in active_monthly_records}
+    user_chart = [
+        AdminUserChartPoint(
+            month=month_abbr[month_number],
+            userCount=monthly_map.get(month_number, 0),
+            activeUserCount=active_monthly_map.get(month_number, 0),
+        )
+        for month_number in range(1, 13)
+    ]
+
+    return AdminUserSummaryResponse(
+        totalUsers=total_users,
+        activeUsers=active_users,
+        pendingUsers=pending_users,
+        userChart=user_chart,
+    )
+
+
+async def _build_admin_user_list_response(
+    page: int = 1,
+    limit: int = 10,
+    query: str | None = None,
+) -> AdminUserListResponse:
+    page = max(page, 1)
+    limit = min(max(limit, 1), 100)
+    skip = (page - 1) * limit
+    filter_doc = _build_admin_user_query(query)
+
+    total = await users_collection.count_documents(filter_doc)
+    records = await users_collection.find(
+        filter_doc,
+        sort=[("created_at", -1), ("_id", -1)],
+    ).skip(skip).limit(limit).to_list(length=limit)
+
+    return AdminUserListResponse(
+        total=total,
+        page=page,
+        limit=limit,
+        users=[AdminUserListItem(**_serialize_admin_user_record(record)) for record in records],
+    )
 
 
 def _as_utc(value: datetime) -> datetime:
