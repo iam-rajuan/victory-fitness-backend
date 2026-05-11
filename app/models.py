@@ -38,6 +38,15 @@ class MeResponse(BaseModel):
     is_verified: bool
     role: str = "user"
     is_admin: bool = False
+    country: str = ""
+    profileImage: str = ""
+
+
+class UpdateMeRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=100)
+    email: EmailStr | None = None
+    country: str | None = Field(default=None, max_length=120)
+    profileImage: str | None = Field(default=None, max_length=500)
 
 
 class UserOut(BaseModel):

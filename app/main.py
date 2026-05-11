@@ -63,6 +63,7 @@ from .models import (
     NutritionPlanSaveResponse,
     RefreshRequest,
     RegisterRequest,
+    UpdateMeRequest,
     TokenResponse,
     VerifyEmailRequest,
     WorkoutLibraryCategory,
@@ -367,14 +368,44 @@ async def validate_authorization(user: dict = Depends(_require_access_user)) -> 
 
 @app.get("/me", response_model=MeResponse)
 async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
-    return MeResponse(
-        id=str(user["_id"]),
-        name=str(user.get("name") or ""),
-        email=user["email"],
-        is_verified=bool(user.get("is_verified")),
-        role=str(user.get("role") or ("admin" if user.get("is_admin") else "user")),
-        is_admin=bool(user.get("is_admin")),
-    )
+    return MeResponse(**_serialize_me_record(user))
+
+
+@app.patch("/me", response_model=MeResponse)
+async def update_me(
+    payload: UpdateMeRequest,
+    user: dict = Depends(_require_access_user),
+) -> MeResponse:
+    user_id = user["_id"]
+    update_doc: dict = {}
+
+    if payload.name is not None:
+        update_doc["name"] = payload.name.strip()
+
+    if payload.email is not None:
+        new_email = payload.email.lower().strip()
+        existing_user = await users_collection.find_one({"email": new_email, "_id": {"$ne": user_id}})
+        if existing_user:
+            raise HTTPException(status_code=409, detail="Email already exists")
+        update_doc["email"] = new_email
+
+    if payload.country is not None:
+        update_doc["country"] = payload.country.strip()
+
+    if payload.profileImage is not None:
+        update_doc["profile_image"] = payload.profileImage.strip()
+
+    if not update_doc:
+        return MeResponse(**_serialize_me_record(user))
+
+    update_doc["updated_at"] = datetime.now(timezone.utc)
+    await users_collection.update_one({"_id": user_id}, {"$set": update_doc})
+
+    updated_user = await users_collection.find_one({"_id": user_id})
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return MeResponse(**_serialize_me_record(updated_user))
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -1488,6 +1519,19 @@ def _normalize_admin_user_status(record: dict) -> str:
     if status in {"ACTIVE", "INACTIVE", "PENDING"}:
         return status
     return "ACTIVE" if record.get("is_verified") else "PENDING"
+
+
+def _serialize_me_record(record: dict) -> dict:
+    return {
+        "id": str(record["_id"]),
+        "name": str(record.get("name") or ""),
+        "email": str(record.get("email") or ""),
+        "is_verified": bool(record.get("is_verified")),
+        "role": str(record.get("role") or ("admin" if record.get("is_admin") else "user")),
+        "is_admin": bool(record.get("is_admin")),
+        "country": str(record.get("country") or ""),
+        "profileImage": str(record.get("profile_image") or ""),
+    }
 
 
 def _serialize_admin_user_record(record: dict) -> dict:
