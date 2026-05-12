@@ -71,6 +71,8 @@ from .models import (
     UpdateBodyMetricsRequest,
     UpdateMeRequest,
     UpdatePrivacyPolicyRequest,
+    UpdateTermsConditionRequest,
+    TermsConditionResponse,
     TokenResponse,
     VerifyEmailRequest,
     WorkoutLibraryCategory,
@@ -111,6 +113,7 @@ logger = logging.getLogger("victory_fitness.api")
 STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
 PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 PRIVACY_POLICY_KEY = "privacy_policy"
+TERMS_CONDITION_KEY = "terms_condition"
 DEFAULT_PRIVACY_POLICY_TITLE = "Privacy Policy"
 DEFAULT_PRIVACY_POLICY_HTML = """
 <p>Last Updated: May 13, 2026</p>
@@ -126,6 +129,22 @@ DEFAULT_PRIVACY_POLICY_HTML = """
 <p>Depending on your location, you may have rights to access, correct, delete, or restrict the use of your personal information.</p>
 <h2>6. Contact</h2>
 <p>If you have questions about this policy, contact Victory Fitness support.</p>
+""".strip()
+DEFAULT_TERMS_CONDITION_TITLE = "Terms & Conditions"
+DEFAULT_TERMS_CONDITION_HTML = """
+<p>Last Updated: May 13, 2026</p>
+<h2>1. Agreement</h2>
+<p>By using Victory Fitness, you agree to these Terms & Conditions and our related policies.</p>
+<h2>2. Use of the Service</h2>
+<p>You agree to use the app lawfully and only for its intended fitness, wellness, and account-management purposes.</p>
+<h2>3. Accounts</h2>
+<p>You are responsible for maintaining the confidentiality of your account credentials and for activities under your account.</p>
+<h2>4. Health Disclaimer</h2>
+<p>Victory Fitness provides educational and informational content only and does not replace professional medical advice.</p>
+<h2>5. Termination</h2>
+<p>We may suspend or terminate access if these terms are violated or if the service is misused.</p>
+<h2>6. Contact</h2>
+<p>If you have questions about these terms, contact Victory Fitness support.</p>
 """.strip()
 
 app.add_middleware(
@@ -555,6 +574,39 @@ async def admin_update_privacy_policy(
     if not record:
         raise HTTPException(status_code=500, detail="Privacy policy could not be saved")
     return _serialize_privacy_policy_record(record)
+
+
+@app.get("/admin/content/terms-condition", response_model=TermsConditionResponse)
+async def admin_get_terms_condition(_: dict = Depends(_require_admin_user)) -> TermsConditionResponse:
+    record = await _ensure_terms_condition_record()
+    return _serialize_terms_condition_record(record)
+
+
+@app.put("/admin/content/terms-condition", response_model=TermsConditionResponse)
+async def admin_update_terms_condition(
+    payload: UpdateTermsConditionRequest,
+    _: dict = Depends(_require_admin_user),
+) -> TermsConditionResponse:
+    now = datetime.now(timezone.utc)
+    await app_content_collection.update_one(
+        {"key": TERMS_CONDITION_KEY},
+        {
+            "$set": {
+                "key": TERMS_CONDITION_KEY,
+                "title": payload.title.strip(),
+                "html_content": payload.html_content.strip(),
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    record = await app_content_collection.find_one({"key": TERMS_CONDITION_KEY})
+    if not record:
+        raise HTTPException(status_code=500, detail="Terms & Conditions could not be saved")
+    return _serialize_terms_condition_record(record)
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -1778,6 +1830,28 @@ async def _ensure_privacy_policy_record() -> dict:
     return saved or record
 
 
+async def _ensure_terms_condition_record() -> dict:
+    record = await app_content_collection.find_one({"key": TERMS_CONDITION_KEY})
+    if record:
+        return record
+
+    now = datetime.now(timezone.utc)
+    record = {
+        "key": TERMS_CONDITION_KEY,
+        "title": DEFAULT_TERMS_CONDITION_TITLE,
+        "html_content": DEFAULT_TERMS_CONDITION_HTML,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await app_content_collection.update_one(
+        {"key": TERMS_CONDITION_KEY},
+        {"$setOnInsert": record},
+        upsert=True,
+    )
+    saved = await app_content_collection.find_one({"key": TERMS_CONDITION_KEY})
+    return saved or record
+
+
 def _serialize_privacy_policy_record(record: dict) -> PrivacyPolicyResponse:
     html_content = str(record.get("html_content") or "")
     plain_text = _html_to_plain_text(html_content)
@@ -1785,6 +1859,19 @@ def _serialize_privacy_policy_record(record: dict) -> PrivacyPolicyResponse:
     return PrivacyPolicyResponse(
         key=PRIVACY_POLICY_KEY,
         title=str(record.get("title") or DEFAULT_PRIVACY_POLICY_TITLE),
+        html_content=html_content,
+        plain_text=plain_text,
+        updated_at=updated_at,
+    )
+
+
+def _serialize_terms_condition_record(record: dict) -> TermsConditionResponse:
+    html_content = str(record.get("html_content") or "")
+    plain_text = _html_to_plain_text(html_content)
+    updated_at = _as_utc(record.get("updated_at") or datetime.now(timezone.utc))
+    return TermsConditionResponse(
+        key=TERMS_CONDITION_KEY,
+        title=str(record.get("title") or DEFAULT_TERMS_CONDITION_TITLE),
         html_content=html_content,
         plain_text=plain_text,
         updated_at=updated_at,

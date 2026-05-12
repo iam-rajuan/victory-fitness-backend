@@ -86,6 +86,19 @@ class UpdatePrivacyPolicyRequest(BaseModel):
     html_content: str = Field(min_length=1, max_length=200000)
 
 
+class TermsConditionResponse(BaseModel):
+    key: str = "terms_condition"
+    title: str
+    html_content: str
+    plain_text: str
+    updated_at: datetime
+
+
+class UpdateTermsConditionRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    html_content: str = Field(min_length=1, max_length=200000)
+
+
 class UserOut(BaseModel):
     id: str
     name: str
