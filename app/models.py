@@ -144,6 +144,14 @@ class CommunityCommentResponse(BaseModel):
     created_at: datetime
 
 
+class CommunityReactionUserResponse(BaseModel):
+    user_id: str
+    user_name: str
+    user_role: str
+    user_profile_image: str = ""
+    created_at: datetime
+
+
 class CommunityPostResponse(BaseModel):
     id: str
     author_name: str
@@ -156,6 +164,7 @@ class CommunityPostResponse(BaseModel):
     comment_count: int = 0
     viewer_has_liked: bool = False
     comments: list[CommunityCommentResponse] = Field(default_factory=list)
+    reactions: list[CommunityReactionUserResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

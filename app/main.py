@@ -43,6 +43,7 @@ from .models import (
     CommunityPostCreateRequest,
     CommunityPostListResponse,
     CommunityPostResponse,
+    CommunityReactionUserResponse,
     CommunityReactionToggleResponse,
     DashboardOverviewChartPoint,
     AdminUserChartPoint,
@@ -920,7 +921,7 @@ async def admin_get_community_posts(_: dict = Depends(_require_admin_user)) -> C
         sort=[("created_at", -1), ("_id", -1)],
         limit=200,
     ).to_list(length=200)
-    posts = await _serialize_community_post_records(records, None)
+    posts = await _serialize_community_post_records(records, None, comment_limit_per_post=200, include_reactions=True)
     return CommunityPostListResponse(
         posts=[CommunityPostResponse(**post) for post in posts]
     )
@@ -960,7 +961,7 @@ async def admin_create_community_post(
         "updated_at": now,
     }
     await community_posts_collection.insert_one(document)
-    serialized = await _serialize_community_post_records([document], str(admin_user["_id"]))
+    serialized = await _serialize_community_post_records([document], str(admin_user["_id"]), comment_limit_per_post=200, include_reactions=True)
     return CommunityPostResponse(**serialized[0])
 
 
@@ -1003,7 +1004,7 @@ async def admin_update_community_post(
     updated_record = await community_posts_collection.find_one({"_id": object_id})
     if not updated_record:
         raise HTTPException(status_code=500, detail="Community post could not be updated")
-    serialized = await _serialize_community_post_records([updated_record], None)
+    serialized = await _serialize_community_post_records([updated_record], None, comment_limit_per_post=200, include_reactions=True)
     return CommunityPostResponse(**serialized[0])
 
 
@@ -2375,6 +2376,7 @@ def _serialize_community_post_record(record: dict) -> dict:
         "comment_count": int(record.get("comment_count") or 0),
         "viewer_has_liked": False,
         "comments": [],
+        "reactions": [],
         "created_at": created_at,
         "updated_at": updated_at,
     }
@@ -2393,13 +2395,37 @@ def _serialize_community_comment_record(record: dict) -> dict:
     }
 
 
+def _serialize_community_reaction_user_record(record: dict, user_record: dict | None) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    role = ""
+    if user_record:
+        role = str(user_record.get("role") or ("admin" if user_record.get("is_admin") else "user"))
+    return {
+        "user_id": str(record.get("user_id") or ""),
+        "user_name": str((user_record or {}).get("name") or "Member"),
+        "user_role": role or "user",
+        "user_profile_image": str((user_record or {}).get("profile_image") or ""),
+        "created_at": created_at,
+    }
+
+
 async def _serialize_community_post_records(records: list[dict], viewer_user_id: str | None) -> list[dict]:
+    return await _serialize_community_post_records_with_options(records, viewer_user_id)
+
+
+async def _serialize_community_post_records_with_options(
+    records: list[dict],
+    viewer_user_id: str | None,
+    comment_limit_per_post: int = 3,
+    include_reactions: bool = False,
+) -> list[dict]:
     if not records:
         return []
 
     post_ids = [str(record.get("_id")) for record in records if record.get("_id")]
-    comments_by_post = await _load_community_comments(records)
+    comments_by_post = await _load_community_comments(records, limit_per_post=comment_limit_per_post)
     liked_post_ids = await _load_community_liked_post_ids(post_ids, viewer_user_id)
+    reactions_by_post = await _load_community_reactions(records) if include_reactions else {}
 
     serialized_posts: list[dict] = []
     for record in records:
@@ -2407,6 +2433,7 @@ async def _serialize_community_post_records(records: list[dict], viewer_user_id:
         post_id = serialized["id"]
         serialized["viewer_has_liked"] = post_id in liked_post_ids
         serialized["comments"] = comments_by_post.get(post_id, [])
+        serialized["reactions"] = reactions_by_post.get(post_id, [])
         serialized_posts.append(serialized)
     return serialized_posts
 
@@ -2446,6 +2473,45 @@ async def _load_community_liked_post_ids(post_ids: list[str], viewer_user_id: st
         {"post_id": 1},
     ).to_list(length=len(post_ids))
     return {str(reaction.get("post_id") or "") for reaction in reactions if reaction.get("post_id")}
+
+
+async def _load_community_reactions(records: list[dict]) -> dict[str, list[dict]]:
+    post_ids = [str(record.get("_id")) for record in records if record.get("_id")]
+    if not post_ids:
+        return {}
+
+    reactions = await community_reactions_collection.find(
+        {"post_id": {"$in": post_ids}},
+        sort=[("created_at", -1), ("_id", -1)],
+    ).to_list(length=5000)
+
+    user_ids = []
+    for reaction in reactions:
+        user_id = str(reaction.get("user_id") or "")
+        if user_id:
+            user_ids.append(user_id)
+
+    object_ids: list[ObjectId] = []
+    for user_id in set(user_ids):
+        try:
+            object_ids.append(ObjectId(user_id))
+        except Exception:
+            continue
+
+    user_records = await users_collection.find({"_id": {"$in": object_ids}}).to_list(length=len(object_ids)) if object_ids else []
+    users_by_id = {str(user_record.get("_id")): user_record for user_record in user_records}
+
+    reactions_by_post: dict[str, list[dict]] = {post_id: [] for post_id in post_ids}
+    for reaction in reactions:
+        post_id = str(reaction.get("post_id") or "")
+        if not post_id:
+          continue
+        user_id = str(reaction.get("user_id") or "")
+        reactions_by_post.setdefault(post_id, []).append(
+            _serialize_community_reaction_user_record(reaction, users_by_id.get(user_id))
+        )
+
+    return reactions_by_post
 
 
 async def _get_community_post_or_404(post_id: str) -> dict:
