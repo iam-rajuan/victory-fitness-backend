@@ -30,10 +30,15 @@ from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
 from .models import (
     AboutUsResponse,
+    AdminCommunityPostCreateRequest,
+    AdminCommunityPostUpdateRequest,
     BodyMetricsResponse,
     CoachVictorChatRequest,
     CoachVictorChatResponse,
     CoachVictorHistoryResponse,
+    CommunityPostCreateRequest,
+    CommunityPostListResponse,
+    CommunityPostResponse,
     DashboardOverviewChartPoint,
     AdminUserChartPoint,
     AdminUserDetailResponse,
@@ -85,6 +90,7 @@ from .database import (
     app_content_collection,
     coach_victor_archives_collection,
     coach_victor_threads_collection,
+    community_posts_collection,
     nutrition_progressive_plan_jobs_collection,
     nutrition_progressive_plans_collection,
     journal_entries_collection,
@@ -660,6 +666,126 @@ async def admin_update_about_us(
     if not record:
         raise HTTPException(status_code=500, detail="About Us could not be saved")
     return _serialize_about_us_record(record)
+
+
+@app.get("/community/posts", response_model=CommunityPostListResponse)
+async def get_community_posts(user: dict = Depends(_require_access_user)) -> CommunityPostListResponse:
+    allowed_audiences = _get_allowed_community_audiences(user)
+    records = await community_posts_collection.find(
+        {"audience": {"$in": allowed_audiences}},
+        sort=[("created_at", -1), ("_id", -1)],
+        limit=100,
+    ).to_list(length=100)
+    return CommunityPostListResponse(
+        posts=[CommunityPostResponse(**_serialize_community_post_record(record)) for record in records]
+    )
+
+
+@app.post("/community/posts", response_model=CommunityPostResponse, status_code=status.HTTP_201_CREATED)
+async def create_community_post(
+    payload: CommunityPostCreateRequest,
+    user: dict = Depends(_require_access_user),
+) -> CommunityPostResponse:
+    now = datetime.now(timezone.utc)
+    document = {
+        "_id": ObjectId(),
+        "author_id": str(user["_id"]),
+        "author_name": str(user.get("name") or "Member").strip() or "Member",
+        "author_role": "admin" if user.get("is_admin") else "user",
+        "author_profile_image": str(user.get("profile_image") or "").strip(),
+        "audience": "ALL",
+        "content": payload.content.strip(),
+        "image_url": str(payload.image_url or "").strip(),
+        "like_count": 0,
+        "comment_count": 0,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await community_posts_collection.insert_one(document)
+    return CommunityPostResponse(**_serialize_community_post_record(document))
+
+
+@app.get("/admin/community/posts", response_model=CommunityPostListResponse)
+async def admin_get_community_posts(_: dict = Depends(_require_admin_user)) -> CommunityPostListResponse:
+    records = await community_posts_collection.find(
+        {},
+        sort=[("created_at", -1), ("_id", -1)],
+        limit=200,
+    ).to_list(length=200)
+    return CommunityPostListResponse(
+        posts=[CommunityPostResponse(**_serialize_community_post_record(record)) for record in records]
+    )
+
+
+@app.post("/admin/community/posts", response_model=CommunityPostResponse, status_code=status.HTTP_201_CREATED)
+async def admin_create_community_post(
+    payload: AdminCommunityPostCreateRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> CommunityPostResponse:
+    now = datetime.now(timezone.utc)
+    document = {
+        "_id": ObjectId(),
+        "author_id": str(admin_user["_id"]),
+        "author_name": str(admin_user.get("name") or "Admin").strip() or "Admin",
+        "author_role": "admin",
+        "author_profile_image": str(admin_user.get("profile_image") or "").strip(),
+        "audience": payload.audience.strip(),
+        "content": payload.content.strip(),
+        "image_url": str(payload.image_url or "").strip(),
+        "like_count": 0,
+        "comment_count": 0,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await community_posts_collection.insert_one(document)
+    return CommunityPostResponse(**_serialize_community_post_record(document))
+
+
+@app.patch("/admin/community/posts/{post_id}", response_model=CommunityPostResponse)
+async def admin_update_community_post(
+    post_id: str,
+    payload: AdminCommunityPostUpdateRequest,
+    _: dict = Depends(_require_admin_user),
+) -> CommunityPostResponse:
+    try:
+        object_id = ObjectId(post_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid community post id") from exc
+
+    existing_record = await community_posts_collection.find_one({"_id": object_id})
+    if not existing_record:
+        raise HTTPException(status_code=404, detail="Community post not found")
+
+    update_doc: dict = {"updated_at": datetime.now(timezone.utc)}
+    if payload.content is not None:
+        update_doc["content"] = payload.content.strip()
+    if payload.image_url is not None:
+        update_doc["image_url"] = payload.image_url.strip()
+    if payload.audience is not None:
+        update_doc["audience"] = payload.audience.strip()
+
+    await community_posts_collection.update_one({"_id": object_id}, {"$set": update_doc})
+    updated_record = await community_posts_collection.find_one({"_id": object_id})
+    if not updated_record:
+        raise HTTPException(status_code=500, detail="Community post could not be updated")
+    return CommunityPostResponse(**_serialize_community_post_record(updated_record))
+
+
+@app.delete("/admin/community/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def admin_delete_community_post(
+    post_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> Response:
+    try:
+        object_id = ObjectId(post_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid community post id") from exc
+
+    delete_result = await community_posts_collection.delete_one({"_id": object_id})
+    if delete_result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Community post not found")
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -1964,6 +2090,34 @@ def _serialize_about_us_record(record: dict) -> AboutUsResponse:
         plain_text=plain_text,
         updated_at=updated_at,
     )
+
+
+def _get_allowed_community_audiences(user: dict) -> list[str]:
+    role = str(user.get("role") or "").strip().upper()
+    membership = str(user.get("subscription_tier") or user.get("tier") or "").strip().upper().replace(" ", "_")
+    allowed = ["ALL"]
+    for candidate in (role, membership):
+        if candidate in {"SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"} and candidate not in allowed:
+            allowed.append(candidate)
+    return allowed
+
+
+def _serialize_community_post_record(record: dict) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    updated_at = _as_utc(record.get("updated_at") or created_at)
+    return {
+        "id": str(record.get("_id")),
+        "author_name": str(record.get("author_name") or "Member"),
+        "author_role": str(record.get("author_role") or "user"),
+        "author_profile_image": str(record.get("author_profile_image") or ""),
+        "audience": str(record.get("audience") or "ALL"),
+        "content": str(record.get("content") or ""),
+        "image_url": str(record.get("image_url") or ""),
+        "like_count": int(record.get("like_count") or 0),
+        "comment_count": int(record.get("comment_count") or 0),
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }
 
 
 def _html_to_plain_text(html_content: str) -> str:

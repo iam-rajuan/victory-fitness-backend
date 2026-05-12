@@ -29,6 +29,7 @@ coach_victor_threads_collection = db["coach_victor_threads"]
 coach_victor_archives_collection = db["coach_victor_archives"]
 journal_entries_collection = db["journal_entries"]
 workouts_collection = db["workouts"]
+community_posts_collection = db["community_posts"]
 
 
 async def ensure_indexes() -> None:
@@ -52,3 +53,5 @@ async def ensure_indexes() -> None:
     await journal_entries_collection.create_index([("user_id", 1), ("created_at", -1)])
     await workouts_collection.create_index([("created_at", -1)])
     await workouts_collection.create_index("vimeo_id", unique=True)
+    await community_posts_collection.create_index([("created_at", -1)])
+    await community_posts_collection.create_index([("audience", 1), ("created_at", -1)])

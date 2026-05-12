@@ -112,6 +112,41 @@ class UpdateAboutUsRequest(BaseModel):
     html_content: str = Field(min_length=1, max_length=200000)
 
 
+class CommunityPostResponse(BaseModel):
+    id: str
+    author_name: str
+    author_role: str
+    author_profile_image: str = ""
+    audience: str = "ALL"
+    content: str
+    image_url: str = ""
+    like_count: int = 0
+    comment_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class CommunityPostListResponse(BaseModel):
+    posts: list[CommunityPostResponse] = Field(default_factory=list)
+
+
+class CommunityPostCreateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
+    image_url: str | None = Field(default=None, max_length=500)
+
+
+class AdminCommunityPostCreateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
+    image_url: str | None = Field(default=None, max_length=500)
+    audience: str = Field(default="ALL", pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+
+
+class AdminCommunityPostUpdateRequest(BaseModel):
+    content: str | None = Field(default=None, min_length=1, max_length=5000)
+    image_url: str | None = Field(default=None, max_length=500)
+    audience: str | None = Field(default=None, pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+
+
 class UserOut(BaseModel):
     id: str
     name: str
