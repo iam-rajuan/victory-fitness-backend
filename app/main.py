@@ -483,6 +483,7 @@ async def update_me(
     if not updated_user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    await _sync_community_author_profile(updated_user)
     return MeResponse(**_serialize_me_record(updated_user))
 
 
@@ -517,6 +518,10 @@ async def upload_profile_image(
         },
     )
 
+    updated_user = await users_collection.find_one({"_id": user["_id"]})
+    if updated_user:
+        await _sync_community_author_profile(updated_user)
+
     logger.info("profile_image_upload_success user_id=%s", user_id)
     return ProfileImageUploadResponse(image_url=image_url)
 
@@ -550,6 +555,7 @@ async def update_admin_profile(
     if not updated_admin:
         raise HTTPException(status_code=404, detail="Admin user not found")
 
+    await _sync_community_author_profile(updated_admin)
     return AdminProfileResponse(**_serialize_admin_profile_record(updated_admin))
 
 
@@ -583,6 +589,10 @@ async def upload_admin_profile_image(
             }
         },
     )
+
+    updated_admin = await users_collection.find_one({"_id": admin_user["_id"]})
+    if updated_admin:
+        await _sync_community_author_profile(updated_admin)
 
     logger.info("admin_profile_image_upload_success user_id=%s", user_id)
     return ProfileImageUploadResponse(image_url=image_url)
@@ -2539,6 +2549,38 @@ async def _get_community_post_or_404(post_id: str) -> dict:
     if not record:
         raise HTTPException(status_code=404, detail="Community post not found")
     return record
+
+
+async def _sync_community_author_profile(user_record: dict) -> None:
+    author_id = str(user_record.get("_id") or "")
+    if not author_id:
+        return
+
+    author_name = str(user_record.get("name") or "Member").strip() or "Member"
+    author_role = str(user_record.get("role") or ("admin" if user_record.get("is_admin") else "user")).strip() or "user"
+    author_profile_image = str(user_record.get("profile_image") or "").strip()
+    updated_at = datetime.now(timezone.utc)
+
+    post_update = {
+        "author_name": author_name,
+        "author_role": author_role,
+        "author_profile_image": author_profile_image,
+        "updated_at": updated_at,
+    }
+    comment_update = {
+        "author_name": author_name,
+        "author_role": author_role,
+        "author_profile_image": author_profile_image,
+    }
+
+    await community_posts_collection.update_many(
+        {"author_id": author_id},
+        {"$set": post_update},
+    )
+    await community_comments_collection.update_many(
+        {"author_id": author_id},
+        {"$set": comment_update},
+    )
 
 
 def _can_manage_community_post(record: dict, user: dict) -> bool:
