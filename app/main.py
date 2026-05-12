@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import re
 from uuid import uuid4
@@ -56,6 +57,8 @@ from .models import (
     MeResponse,
     NutritionAdviceRequest,
     NutritionAdviceResponse,
+    ProfileImageUploadRequest,
+    ProfileImageUploadResponse,
     NutritionMealCompletionUpdateRequest,
     NutritionPlanJobResponse,
     NutritionPlanRequest,
@@ -411,6 +414,41 @@ async def update_me(
         raise HTTPException(status_code=404, detail="User not found")
 
     return MeResponse(**_serialize_me_record(updated_user))
+
+
+@app.post("/me/profile-image", response_model=ProfileImageUploadResponse)
+async def upload_profile_image(
+    payload: ProfileImageUploadRequest,
+    user: dict = Depends(_require_access_user),
+) -> ProfileImageUploadResponse:
+    user_id = str(user["_id"])
+    logger.info("profile_image_upload_attempt user_id=%s", user_id)
+
+    try:
+        image_url = await asyncio.to_thread(
+            _upload_profile_image_to_s3,
+            user_id,
+            payload.image_base64,
+            payload.mime_type,
+            payload.file_name,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "profile_image": image_url,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    logger.info("profile_image_upload_success user_id=%s", user_id)
+    return ProfileImageUploadResponse(image_url=image_url)
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -1537,6 +1575,65 @@ def _serialize_nutrition_plan_job(record: dict) -> NutritionPlanJobResponse:
         created_at=record["created_at"],
         updated_at=record["updated_at"],
     )
+
+
+def _upload_profile_image_to_s3(
+    user_id: str,
+    image_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    if not s3_archive_enabled():
+        raise RuntimeError("AWS S3 is not configured for profile image uploads")
+
+    normalized_mime = str(mime_type or "image/jpeg").strip().lower()
+    allowed_types = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }
+    extension = allowed_types.get(normalized_mime)
+    if extension is None:
+        raise ValueError("Only JPEG, PNG, and WEBP profile images are supported")
+
+    try:
+        payload = base64.b64decode(image_base64, validate=True)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError("Profile image payload is not valid base64") from exc
+
+    if len(payload) > 10 * 1024 * 1024:
+        raise ValueError("Profile image must be 10MB or smaller")
+
+    sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
+    suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
+    if suffix and not extension.endswith(suffix):
+        sanitized_file_name = ""
+
+    object_name = sanitized_file_name or f"{uuid4().hex}{extension}"
+    key_prefix = f"{settings.aws_s3_prefix}/profile-images/{user_id}".strip("/")
+    object_key = f"{key_prefix}/{object_name}"
+
+    try:
+        import boto3
+    except ImportError as exc:
+        raise RuntimeError("boto3 is required for S3 profile image uploads") from exc
+
+    client = boto3.client(
+        "s3",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
+    client.put_object(
+        Bucket=settings.aws_s3_bucket,
+        Key=object_key,
+        Body=payload,
+        ContentType=normalized_mime,
+        CacheControl="public, max-age=31536000",
+    )
+
+    return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
 
 
 def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[dict], payload_data: dict) -> dict:

@@ -49,6 +49,16 @@ class UpdateMeRequest(BaseModel):
     profileImage: str | None = Field(default=None, max_length=500)
 
 
+class ProfileImageUploadRequest(BaseModel):
+    image_base64: str = Field(min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
+
+
+class ProfileImageUploadResponse(BaseModel):
+    image_url: str
+
+
 class UserOut(BaseModel):
     id: str
     name: str
