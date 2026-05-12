@@ -60,6 +60,7 @@ from .models import (
     NutritionAdviceResponse,
     ProfileImageUploadRequest,
     ProfileImageUploadResponse,
+    PrivacyPolicyResponse,
     NutritionMealCompletionUpdateRequest,
     NutritionPlanJobResponse,
     NutritionPlanRequest,
@@ -69,6 +70,7 @@ from .models import (
     RegisterRequest,
     UpdateBodyMetricsRequest,
     UpdateMeRequest,
+    UpdatePrivacyPolicyRequest,
     TokenResponse,
     VerifyEmailRequest,
     WorkoutLibraryCategory,
@@ -76,6 +78,7 @@ from .models import (
     WorkoutLibraryResponse,
 )
 from .database import (
+    app_content_collection,
     coach_victor_archives_collection,
     coach_victor_threads_collection,
     nutrition_progressive_plan_jobs_collection,
@@ -107,6 +110,23 @@ bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger("victory_fitness.api")
 STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
 PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
+PRIVACY_POLICY_KEY = "privacy_policy"
+DEFAULT_PRIVACY_POLICY_TITLE = "Privacy Policy"
+DEFAULT_PRIVACY_POLICY_HTML = """
+<p>Last Updated: May 13, 2026</p>
+<h2>1. Introduction</h2>
+<p>Welcome to Victory Fitness. We are committed to protecting your personal information and your right to privacy.</p>
+<h2>2. Information We Collect</h2>
+<p>We collect information you provide directly to us, including account details and fitness-related profile information.</p>
+<h2>3. How We Use Your Information</h2>
+<p>We use your information to operate the app, personalize coaching, improve recommendations, and support your account.</p>
+<h2>4. Data Security</h2>
+<p>We use reasonable technical and organizational measures to protect your information, but no system can be guaranteed fully secure.</p>
+<h2>5. Your Rights</h2>
+<p>Depending on your location, you may have rights to access, correct, delete, or restrict the use of your personal information.</p>
+<h2>6. Contact</h2>
+<p>If you have questions about this policy, contact Victory Fitness support.</p>
+""".strip()
 
 app.add_middleware(
     CORSMiddleware,
@@ -496,6 +516,45 @@ async def update_body_metrics(
         weight=str(next_metrics.get("weight") or ""),
         gender=str(next_metrics.get("gender") or ""),
     )
+
+
+@app.get("/content/privacy-policy", response_model=PrivacyPolicyResponse)
+async def get_privacy_policy() -> PrivacyPolicyResponse:
+    record = await _ensure_privacy_policy_record()
+    return _serialize_privacy_policy_record(record)
+
+
+@app.get("/admin/content/privacy-policy", response_model=PrivacyPolicyResponse)
+async def admin_get_privacy_policy(_: dict = Depends(_require_admin_user)) -> PrivacyPolicyResponse:
+    record = await _ensure_privacy_policy_record()
+    return _serialize_privacy_policy_record(record)
+
+
+@app.put("/admin/content/privacy-policy", response_model=PrivacyPolicyResponse)
+async def admin_update_privacy_policy(
+    payload: UpdatePrivacyPolicyRequest,
+    _: dict = Depends(_require_admin_user),
+) -> PrivacyPolicyResponse:
+    now = datetime.now(timezone.utc)
+    await app_content_collection.update_one(
+        {"key": PRIVACY_POLICY_KEY},
+        {
+            "$set": {
+                "key": PRIVACY_POLICY_KEY,
+                "title": payload.title.strip(),
+                "html_content": payload.html_content.strip(),
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    record = await app_content_collection.find_one({"key": PRIVACY_POLICY_KEY})
+    if not record:
+        raise HTTPException(status_code=500, detail="Privacy policy could not be saved")
+    return _serialize_privacy_policy_record(record)
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -1695,6 +1754,53 @@ def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[d
         "profile": payload_data,
     }
     return plan
+
+
+async def _ensure_privacy_policy_record() -> dict:
+    record = await app_content_collection.find_one({"key": PRIVACY_POLICY_KEY})
+    if record:
+        return record
+
+    now = datetime.now(timezone.utc)
+    record = {
+        "key": PRIVACY_POLICY_KEY,
+        "title": DEFAULT_PRIVACY_POLICY_TITLE,
+        "html_content": DEFAULT_PRIVACY_POLICY_HTML,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await app_content_collection.update_one(
+        {"key": PRIVACY_POLICY_KEY},
+        {"$setOnInsert": record},
+        upsert=True,
+    )
+    saved = await app_content_collection.find_one({"key": PRIVACY_POLICY_KEY})
+    return saved or record
+
+
+def _serialize_privacy_policy_record(record: dict) -> PrivacyPolicyResponse:
+    html_content = str(record.get("html_content") or "")
+    plain_text = _html_to_plain_text(html_content)
+    updated_at = _as_utc(record.get("updated_at") or datetime.now(timezone.utc))
+    return PrivacyPolicyResponse(
+        key=PRIVACY_POLICY_KEY,
+        title=str(record.get("title") or DEFAULT_PRIVACY_POLICY_TITLE),
+        html_content=html_content,
+        plain_text=plain_text,
+        updated_at=updated_at,
+    )
+
+
+def _html_to_plain_text(html_content: str) -> str:
+    text = re.sub(r"(?i)<br\s*/?>", "\n", html_content)
+    text = re.sub(r"(?i)</p\s*>", "\n\n", text)
+    text = re.sub(r"(?i)</h[1-6]\s*>", "\n\n", text)
+    text = re.sub(r"(?i)<li\s*>", "- ", text)
+    text = re.sub(r"(?i)</li\s*>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _build_progressive_shopping_list(days: list[dict]) -> list[dict]:
