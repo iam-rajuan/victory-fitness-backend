@@ -122,6 +122,64 @@ NUTRITION_PLAN_JSON_SCHEMA = {
     },
 }
 
+NUTRITION_PLAN_MONDAY_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "nutrition_plan_monday",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "goal_label", "day"],
+        "properties": {
+            "summary": {"type": "string"},
+            "goal_label": {"type": "string"},
+            "day": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["day", "breakfast", "lunch", "dinner"],
+                "properties": {
+                    "day": {
+                        "type": "string",
+                        "enum": ["Mon"],
+                    },
+                    "breakfast": MEAL_ENTRY_SCHEMA,
+                    "lunch": MEAL_ENTRY_SCHEMA,
+                    "dinner": MEAL_ENTRY_SCHEMA,
+                },
+            },
+        },
+    },
+}
+
+NUTRITION_PLAN_DAY_JSON_SCHEMA = {
+    "type": "json_schema",
+    "name": "nutrition_plan_day",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "goal_label", "day"],
+        "properties": {
+            "summary": {"type": "string"},
+            "goal_label": {"type": "string"},
+            "day": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["day", "breakfast", "lunch", "dinner"],
+                "properties": {
+                    "day": {
+                        "type": "string",
+                        "enum": PLAN_DAY_ORDER,
+                    },
+                    "breakfast": MEAL_ENTRY_SCHEMA,
+                    "lunch": MEAL_ENTRY_SCHEMA,
+                    "dinner": MEAL_ENTRY_SCHEMA,
+                },
+            },
+        },
+    },
+}
+
 MEAL_IMAGE_ANALYSIS_JSON_SCHEMA = {
     "type": "json_schema",
     "name": "meal_image_analysis",
@@ -222,6 +280,49 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
         raise RuntimeError("The nutrition model did not return valid plan JSON")
 
     _NUTRITION_PLAN_MEMORY_CACHE[cache_key] = deepcopy(plan)
+    return NutritionResult(data=plan)
+
+
+def generate_progressive_nutrition_plan_monday(payload: dict) -> NutritionResult:
+    prompt = _build_progressive_nutrition_plan_monday_prompt(payload)
+    plan_text = _generate_nutrition_plan_monday_json(prompt)
+    plan = _parse_or_repair_nutrition_plan_monday(plan_text)
+    if plan is None:
+        raise RuntimeError("The nutrition model did not return valid Monday plan JSON")
+
+    return NutritionResult(data=plan)
+
+
+def generate_progressive_nutrition_plan_completion(payload: dict, monday_plan: dict) -> NutritionResult:
+    prompt = _build_progressive_nutrition_plan_completion_prompt(payload, monday_plan)
+    plan_text = _generate_nutrition_plan_completion_json(prompt)
+    plan = _parse_or_repair_nutrition_plan(plan_text)
+    if plan is None:
+        raise RuntimeError("The nutrition model did not return valid completion plan JSON")
+
+    monday_days = _normalize_plan_days(monday_plan.get("days", []), day_order=["Mon"])
+    if monday_days:
+        remaining_days = [day for day in plan["days"] if day.get("day") != "Mon"]
+        plan["days"] = monday_days + remaining_days
+
+    return NutritionResult(data=_validate_nutrition_plan(plan))
+
+
+def generate_progressive_nutrition_plan_day(
+    payload: dict,
+    day_name: str,
+    previous_days: list[dict],
+) -> NutritionResult:
+    normalized_day = str(day_name).strip().title()[:3]
+    if normalized_day not in PLAN_DAY_ORDER:
+        normalized_day = PLAN_DAY_ORDER[0]
+
+    prompt = _build_progressive_nutrition_plan_day_prompt(payload, normalized_day, previous_days)
+    plan_text = _generate_nutrition_plan_day_json(prompt)
+    plan = _parse_or_repair_nutrition_day_plan(plan_text, normalized_day)
+    if plan is None:
+        raise RuntimeError(f"The nutrition model did not return valid {normalized_day} plan JSON")
+
     return NutritionResult(data=plan)
 
 
@@ -357,6 +458,56 @@ def _generate_nutrition_plan_json(prompt: str) -> str:
     raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
 
 
+def _generate_nutrition_plan_monday_json(prompt: str) -> str:
+    if settings.openai_api_key:
+        try:
+            return _openai_structured_json(
+                prompt,
+                NUTRITION_PLAN_MONDAY_JSON_SCHEMA,
+                system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
+                max_output_tokens=1200,
+            )
+        except RuntimeError:
+            pass
+
+    if settings.anthropic_api_key:
+        return _anthropic_json_with_schema(
+            prompt,
+            schema=NUTRITION_PLAN_MONDAY_JSON_SCHEMA["schema"],
+            system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
+            max_tokens=1600,
+        )
+
+    raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
+
+
+def _generate_nutrition_plan_day_json(prompt: str) -> str:
+    if settings.openai_api_key:
+        try:
+            return _openai_structured_json(
+                prompt,
+                NUTRITION_PLAN_DAY_JSON_SCHEMA,
+                system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
+                max_output_tokens=1200,
+            )
+        except RuntimeError:
+            pass
+
+    if settings.anthropic_api_key:
+        return _anthropic_json_with_schema(
+            prompt,
+            schema=NUTRITION_PLAN_DAY_JSON_SCHEMA["schema"],
+            system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
+            max_tokens=1600,
+        )
+
+    raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
+
+
+def _generate_nutrition_plan_completion_json(prompt: str) -> str:
+    return _generate_nutrition_plan_json(prompt)
+
+
 def _openai_responses_json_with_retry(payload: dict) -> dict:
     last_error: Exception | None = None
 
@@ -399,6 +550,39 @@ def _openai_responses_json(payload: dict) -> dict:
         raise RuntimeError(f"OpenAI request failed: {detail}") from exc
     except error.URLError as exc:
         raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+
+
+def _openai_structured_json(
+    prompt: str,
+    schema: dict,
+    *,
+    system_prompt: str,
+    max_output_tokens: int,
+) -> str:
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    request_payload = {
+        "model": settings.openai_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            },
+        ],
+        "text": {"format": schema},
+        "max_output_tokens": max_output_tokens,
+    }
+
+    data = _openai_responses_json_with_retry(request_payload)
+    try:
+        return _extract_response_text(data, NutritionPlanRefusalError).strip()
+    except (KeyError, IndexError, AttributeError, TypeError) as exc:
+        raise RuntimeError("OpenAI nutrition response was missing JSON text") from exc
 
 
 def _langchain_openai_nutrition_plan_json(prompt: str) -> str:
@@ -490,6 +674,53 @@ def _build_nutrition_plan_prompt(payload: dict) -> str:
     )
 
 
+def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
+    return (
+        "Create only Monday for a 7-day nutrition plan in JSON with this exact structure:\n"
+        "{"
+        '"summary": string, '
+        '"goal_label": string, '
+        '"day": {"day":"Mon","breakfast":{...},"lunch":{...},"dinner":{...}}'
+        "}\n"
+        "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
+        "Keep Monday realistic, practical, safe, and aligned to the full weekly goal.\n"
+        f"User context: {json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_plan: dict) -> str:
+    return (
+        "Complete a 7-day nutrition plan in JSON with this exact top-level structure:\n"
+        "{"
+        '"summary": string, '
+        '"goal_label": string, '
+        '"days": [{"day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun","breakfast":{...},"lunch":{...},"dinner":{...}}], '
+        '"shopping_list": [{"category": string, "items": [{"name": string, "qty": string}]}]'
+        "}\n"
+        "Keep the provided Monday plan exactly consistent in food choices and meal structure.\n"
+        "Return the full 7-day plan, including Monday and the remaining days.\n"
+        "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
+        f"Locked Monday plan: {json.dumps(monday_plan, ensure_ascii=False)}\n"
+        f"User context: {json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+def _build_progressive_nutrition_plan_day_prompt(payload: dict, day_name: str, previous_days: list[dict]) -> str:
+    return (
+        f"Create only {day_name} for a 7-day nutrition plan in JSON with this exact structure:\n"
+        "{"
+        '"summary": string, '
+        '"goal_label": string, '
+        f'"day": {{"day":"{day_name}","breakfast":{{...}},"lunch":{{...}},"dinner":{{...}}}}'
+        "}\n"
+        "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
+        "Keep the day consistent with the prior generated days, the user's goal, and the weekly nutrition direction.\n"
+        "Do not repeat the previous meals unless it improves continuity.\n"
+        f"Previously generated days: {json.dumps(previous_days, ensure_ascii=False)}\n"
+        f"User context: {json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
 def _collect_nutrition_plan_candidates(prompt: str) -> tuple[list[str], list[str]]:
     candidates: list[str] = []
     provider_errors: list[str] = []
@@ -510,41 +741,30 @@ def _collect_nutrition_plan_candidates(prompt: str) -> tuple[list[str], list[str
 
 
 def _openai_structured_nutrition_plan_json(prompt: str) -> str:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
-
-    request_payload = {
-        "model": settings.openai_model,
-        "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": NUTRITION_PLAN_SYSTEM_PROMPT}],
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            },
-        ],
-        "text": {"format": NUTRITION_PLAN_JSON_SCHEMA},
-        "max_output_tokens": 2200,
-    }
-
-    data = _openai_responses_json_with_retry(request_payload)
-    try:
-        return _extract_response_text(data, NutritionPlanRefusalError).strip()
-    except (KeyError, IndexError, AttributeError, TypeError) as exc:
-        raise RuntimeError("OpenAI nutrition plan response was missing JSON text") from exc
+    return _openai_structured_json(
+        prompt,
+        NUTRITION_PLAN_JSON_SCHEMA,
+        system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
+        max_output_tokens=2200,
+    )
 
 
-def _anthropic_nutrition_plan_json(prompt: str) -> str:
+def _anthropic_json_with_schema(
+    prompt: str,
+    *,
+    schema: dict,
+    system_prompt: str,
+    max_tokens: int,
+) -> str:
     payload = {
         "model": settings.anthropic_model,
         "system": (
-            f"{NUTRITION_PLAN_SYSTEM_PROMPT} Return only one valid JSON object. "
-            "Do not include markdown fences, explanations, or commentary."
+            f"{system_prompt} Return only one valid JSON object. "
+            "Do not include markdown fences, explanations, or commentary. "
+            f"Required schema: {json.dumps(schema, ensure_ascii=False)}"
         ),
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 3000,
+        "max_tokens": max_tokens,
         "temperature": 0.2,
     }
 
@@ -578,7 +798,16 @@ def _anthropic_nutrition_plan_json(prompt: str) -> str:
             if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
         ).strip()
     except (KeyError, TypeError) as exc:
-        raise RuntimeError("Anthropic nutrition plan response was missing text") from exc
+        raise RuntimeError("Anthropic nutrition response was missing text") from exc
+
+
+def _anthropic_nutrition_plan_json(prompt: str) -> str:
+    return _anthropic_json_with_schema(
+        prompt,
+        schema=NUTRITION_PLAN_JSON_SCHEMA["schema"],
+        system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
+        max_tokens=3000,
+    )
 
 
 def _openai_chat_nutrition_plan_json(prompt: str) -> str:
@@ -873,6 +1102,46 @@ def _parse_or_repair_nutrition_plan(text: str) -> dict | None:
         return None
 
 
+def _parse_or_repair_nutrition_plan_monday(text: str) -> dict | None:
+    try:
+        return _normalize_nutrition_plan_monday(_parse_json_object(text))
+    except json.JSONDecodeError:
+        pass
+
+    repaired_text = _repair_json_with_schema(
+        text,
+        schema=NUTRITION_PLAN_MONDAY_JSON_SCHEMA["schema"],
+        schema_name="nutrition_plan_monday",
+    )
+    if not repaired_text:
+        return None
+
+    try:
+        return _normalize_nutrition_plan_monday(_parse_json_object(repaired_text))
+    except json.JSONDecodeError:
+        return None
+
+
+def _parse_or_repair_nutrition_day_plan(text: str, day_name: str) -> dict | None:
+    try:
+        return _normalize_nutrition_day_plan(_parse_json_object(text), day_name)
+    except json.JSONDecodeError:
+        pass
+
+    repaired_text = _repair_json_with_schema(
+        text,
+        schema=NUTRITION_PLAN_DAY_JSON_SCHEMA["schema"],
+        schema_name="nutrition_plan_day",
+    )
+    if not repaired_text:
+        return None
+
+    try:
+        return _normalize_nutrition_day_plan(_parse_json_object(repaired_text), day_name)
+    except json.JSONDecodeError:
+        return None
+
+
 def _validate_nutrition_plan(plan: dict) -> dict:
     validated = NutritionPlanResponse(**plan)
     return validated.model_dump(exclude_none=True, exclude={"plan_id", "profile"})
@@ -889,7 +1158,8 @@ def _compact_error(message: str) -> str:
     return compact[:220]
 
 
-def _normalize_plan_days(days: object) -> list[dict]:
+def _normalize_plan_days(days: object, day_order: list[str] | None = None) -> list[dict]:
+    ordered_days = day_order or PLAN_DAY_ORDER
     by_day: dict[str, dict] = {}
     if isinstance(days, list):
         for raw_day in days:
@@ -897,10 +1167,36 @@ def _normalize_plan_days(days: object) -> list[dict]:
                 continue
             normalized_day = _normalize_day_plan(raw_day)
             day_name = normalized_day["day"]
-            if day_name not in by_day:
+            if day_name in ordered_days and day_name not in by_day:
                 by_day[day_name] = normalized_day
 
-    return [by_day.get(day_name, _default_day_plan(day_name)) for day_name in PLAN_DAY_ORDER]
+    return [by_day.get(day_name, _default_day_plan(day_name)) for day_name in ordered_days]
+
+
+def _normalize_nutrition_plan_monday(plan: dict) -> dict:
+    raw_day = plan.get("day")
+    normalized_day = _normalize_day_plan(raw_day if isinstance(raw_day, dict) else {})
+    normalized_day["day"] = "Mon"
+    normalized_plan = {
+        "summary": _normalize_text(plan.get("summary"), "A practical Monday nutrition plan tailored to your profile."),
+        "goal_label": _normalize_text(plan.get("goal_label"), "Personalized Nutrition Plan"),
+        "days": [normalized_day],
+        "shopping_list": [],
+    }
+    return _validate_nutrition_plan(normalized_plan)
+
+
+def _normalize_nutrition_day_plan(plan: dict, day_name: str) -> dict:
+    raw_day = plan.get("day")
+    normalized_day = _normalize_day_plan(raw_day if isinstance(raw_day, dict) else {})
+    normalized_day["day"] = day_name
+    normalized_plan = {
+        "summary": _normalize_text(plan.get("summary"), "A practical nutrition plan tailored to your profile."),
+        "goal_label": _normalize_text(plan.get("goal_label"), "Personalized Nutrition Plan"),
+        "days": [normalized_day],
+        "shopping_list": [],
+    }
+    return _validate_nutrition_plan(normalized_plan)
 
 
 def _normalize_day_plan(day: dict) -> dict:
@@ -979,6 +1275,25 @@ def _normalize_shopping_list(shopping_list: object, days: list[dict]) -> list[di
     return [{"category": "Weekly Ingredients", "items": fallback_items[:40]}] if fallback_items else []
 
 
+def _repair_json_with_schema(raw_text: str, *, schema: dict, schema_name: str) -> str | None:
+    if not raw_text.strip():
+        return None
+
+    if settings.openai_api_key:
+        try:
+            return _openai_repair_json_with_schema(raw_text, schema=schema, schema_name=schema_name)
+        except RuntimeError:
+            pass
+
+    if settings.anthropic_api_key:
+        try:
+            return _anthropic_repair_json_with_schema(raw_text, schema=schema, schema_name=schema_name)
+        except RuntimeError:
+            pass
+
+    return None
+
+
 def _normalize_string_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
@@ -1002,6 +1317,117 @@ def _normalize_int(value: object, fallback: int, min_value: int, max_value: int)
         normalized = fallback
 
     return max(min_value, min(max_value, normalized))
+
+
+def _openai_repair_json_with_schema(raw_text: str, *, schema: dict, schema_name: str) -> str:
+    payload = {
+        "model": settings.openai_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You repair malformed JSON into one valid JSON object. "
+                    "Return exactly one valid JSON object that matches the required schema. "
+                    "Do not add markdown, commentary, or extra keys. "
+                    f"Schema name: {schema_name}. "
+                    f"Schema requirement: {json.dumps(schema, ensure_ascii=False)}"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Repair this text into valid JSON while preserving the intended meal content when possible.\n\n"
+                    f"{raw_text}"
+                ),
+            },
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+        "max_tokens": 3200,
+    }
+
+    req = request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with request.urlopen(req, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError("OpenAI JSON repair request timed out") from exc
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"OpenAI JSON repair request failed: {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"OpenAI JSON repair request failed: {exc.reason}") from exc
+
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, AttributeError, TypeError) as exc:
+        raise RuntimeError("OpenAI JSON repair response was missing text") from exc
+
+
+def _anthropic_repair_json_with_schema(raw_text: str, *, schema: dict, schema_name: str) -> str:
+    payload = {
+        "model": settings.anthropic_model,
+        "system": (
+            "You repair malformed JSON into one valid JSON object. "
+            "Return exactly one valid JSON object that matches the required schema. "
+            "Do not add markdown, commentary, or extra keys. "
+            f"Schema name: {schema_name}. "
+            f"Schema requirement: {json.dumps(schema, ensure_ascii=False)}"
+        ),
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Repair this text into valid JSON while preserving the intended meal content when possible.\n\n"
+                    f"{raw_text}"
+                ),
+            }
+        ],
+        "max_tokens": 3200,
+        "temperature": 0,
+    }
+
+    req = request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-api-key": settings.anthropic_api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with request.urlopen(req, timeout=OPENAI_REQUEST_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError("Anthropic JSON repair request timed out") from exc
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Anthropic JSON repair request failed: {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Anthropic JSON repair request failed: {exc.reason}") from exc
+
+    try:
+        return "".join(
+            part["text"]
+            for part in data["content"]
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        ).strip()
+    except (KeyError, TypeError) as exc:
+        raise RuntimeError("Anthropic JSON repair response was missing text") from exc
 
 
 def _default_day_plan(day_name: str) -> dict:

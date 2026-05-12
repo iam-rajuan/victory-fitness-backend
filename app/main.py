@@ -73,6 +73,8 @@ from .models import (
 from .database import (
     coach_victor_archives_collection,
     coach_victor_threads_collection,
+    nutrition_progressive_plan_jobs_collection,
+    nutrition_progressive_plans_collection,
     journal_entries_collection,
     nutrition_plans_collection,
     nutrition_plan_jobs_collection,
@@ -84,6 +86,7 @@ from .nutrition_ai import (
     generate_meal_image_analysis,
     generate_nutrition_advice,
     generate_nutrition_plan,
+    generate_progressive_nutrition_plan_day,
 )
 from .security import (
     create_token,
@@ -97,6 +100,8 @@ from .security import (
 app = FastAPI(title=settings.app_name)
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger("victory_fitness.api")
+STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
+PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 
 app.add_middleware(
     CORSMiddleware,
@@ -952,10 +957,7 @@ async def nutrition_plan(
     profile_hash = build_nutrition_plan_signature(payload_data)
 
     cached_record = await nutrition_plans_collection.find_one(
-        {
-            "user_id": str(user["_id"]),
-            "profile_hash": profile_hash,
-        },
+        _standard_nutrition_filter(str(user["_id"]), profile_hash),
         sort=[("created_at", -1)],
     )
     if cached_record and cached_record.get("plan"):
@@ -981,6 +983,7 @@ async def nutrition_plan(
         {
             "user_id": str(user["_id"]),
             "profile_hash": profile_hash,
+            "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
             "plan": plan.model_dump(),
             "created_at": created_at,
             "updated_at": created_at,
@@ -1007,10 +1010,7 @@ async def nutrition_plan_job(
     profile_hash = build_nutrition_plan_signature(payload_data)
 
     cached_record = await nutrition_plans_collection.find_one(
-        {
-            "user_id": str(user["_id"]),
-            "profile_hash": profile_hash,
-        },
+        _standard_nutrition_filter(str(user["_id"]), profile_hash),
         sort=[("created_at", -1)],
     )
     if cached_record and cached_record.get("plan"):
@@ -1035,6 +1035,7 @@ async def nutrition_plan_job(
             "_id": job_id,
             "user_id": str(user["_id"]),
             "profile_hash": profile_hash,
+            "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
             "status": "queued",
             "plan_id": None,
             "plan": None,
@@ -1080,7 +1081,7 @@ async def nutrition_latest_plan(
 ) -> NutritionPlanResponse:
     logger.info("nutrition_latest_attempt user_id=%s", str(user["_id"]))
     record = await nutrition_plans_collection.find_one(
-        {"user_id": str(user["_id"])},
+        _standard_nutrition_filter(str(user["_id"])),
         sort=[("created_at", -1)],
     )
     if not record or not record.get("plan"):
@@ -1105,7 +1106,7 @@ async def nutrition_latest_plan_completion(
         payload.completed,
     )
     record = await nutrition_plans_collection.find_one(
-        {"user_id": str(user["_id"])},
+        _standard_nutrition_filter(str(user["_id"])),
         sort=[("created_at", -1)],
     )
     if not record or not record.get("plan"):
@@ -1166,10 +1167,7 @@ async def _process_nutrition_plan_job(job_id: str, user_id: str, payload_data: d
 
     try:
         cached_record = await nutrition_plans_collection.find_one(
-            {
-                "user_id": user_id,
-                "profile_hash": profile_hash,
-            },
+            _standard_nutrition_filter(user_id, profile_hash),
             sort=[("created_at", -1)],
         )
         if cached_record and cached_record.get("plan"):
@@ -1196,6 +1194,7 @@ async def _process_nutrition_plan_job(job_id: str, user_id: str, payload_data: d
             {
                 "user_id": user_id,
                 "profile_hash": profile_hash,
+                "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
                 "plan": plan.model_dump(),
                 "created_at": created_at,
                 "updated_at": created_at,
@@ -1238,6 +1237,294 @@ async def _process_nutrition_plan_job(job_id: str, user_id: str, payload_data: d
         )
 
 
+@app.post("/ai/nutrition/plan/progressive/jobs", response_model=NutritionPlanJobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def progressive_nutrition_plan_job(
+    payload: NutritionPlanRequest,
+    user: dict = Depends(_require_access_user),
+) -> NutritionPlanJobResponse:
+    logger.info("progressive_nutrition_plan_job_attempt user_id=%s", str(user["_id"]))
+    payload_data = payload.model_dump()
+    profile_hash = build_nutrition_plan_signature(payload_data)
+    user_id = str(user["_id"])
+
+    cached_record = await nutrition_progressive_plans_collection.find_one(
+        {
+            "user_id": user_id,
+            "profile_hash": profile_hash,
+            "is_complete": True,
+            "generation_mode": PROGRESSIVE_NUTRITION_PLAN_MODE,
+        },
+        sort=[("created_at", -1)],
+    )
+    if cached_record and cached_record.get("plan"):
+        plan_data = dict(cached_record["plan"])
+        plan_data["plan_id"] = str(cached_record["_id"])
+        now = datetime.now(timezone.utc)
+        return NutritionPlanJobResponse(
+            job_id=f"cached-progressive-{cached_record['_id']}",
+            status="completed",
+            plan_id=plan_data["plan_id"],
+            plan=NutritionPlanResponse(**plan_data),
+            created_at=now,
+            updated_at=now,
+        )
+
+    created_at = datetime.now(timezone.utc)
+    job_id = str(uuid4())
+    await nutrition_progressive_plan_jobs_collection.insert_one(
+        {
+            "_id": job_id,
+            "user_id": user_id,
+            "profile_hash": profile_hash,
+            "generation_mode": PROGRESSIVE_NUTRITION_PLAN_MODE,
+            "status": "queued",
+            "plan_id": None,
+            "plan": None,
+            "error": None,
+            "payload": payload_data,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+
+    asyncio.create_task(_process_progressive_nutrition_plan_job(job_id, user_id, payload_data, profile_hash))
+
+    return NutritionPlanJobResponse(
+        job_id=job_id,
+        status="queued",
+        created_at=created_at,
+        updated_at=created_at,
+    )
+
+
+@app.get("/ai/nutrition/plan/progressive/jobs/{job_id}", response_model=NutritionPlanJobResponse)
+async def progressive_nutrition_plan_job_status(
+    job_id: str,
+    user: dict = Depends(_require_access_user),
+) -> NutritionPlanJobResponse:
+    record = await nutrition_progressive_plan_jobs_collection.find_one(
+        {
+            "_id": job_id,
+            "user_id": str(user["_id"]),
+            "generation_mode": PROGRESSIVE_NUTRITION_PLAN_MODE,
+        }
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Progressive nutrition plan job not found")
+
+    return _serialize_nutrition_plan_job(record)
+
+
+@app.get("/ai/nutrition/plan/progressive/latest", response_model=NutritionPlanResponse)
+async def progressive_nutrition_latest_plan(
+    user: dict = Depends(_require_access_user),
+) -> NutritionPlanResponse:
+    record = await nutrition_progressive_plans_collection.find_one(
+        {
+            "user_id": str(user["_id"]),
+            "generation_mode": PROGRESSIVE_NUTRITION_PLAN_MODE,
+        },
+        sort=[("created_at", -1)],
+    )
+    if not record or not record.get("plan"):
+        raise HTTPException(status_code=404, detail="Progressive nutrition plan not found")
+
+    plan_data = dict(record["plan"])
+    plan_data["plan_id"] = str(record["_id"])
+    return NutritionPlanResponse(**plan_data)
+
+
+@app.patch("/ai/nutrition/plan/progressive/latest/completions", response_model=NutritionPlanResponse)
+async def progressive_nutrition_latest_plan_completion(
+    payload: NutritionMealCompletionUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> NutritionPlanResponse:
+    record = await nutrition_progressive_plans_collection.find_one(
+        {
+            "user_id": str(user["_id"]),
+            "generation_mode": PROGRESSIVE_NUTRITION_PLAN_MODE,
+        },
+        sort=[("created_at", -1)],
+    )
+    if not record or not record.get("plan"):
+        raise HTTPException(status_code=404, detail="Progressive nutrition plan not found")
+
+    plan_data = dict(record["plan"])
+    meal_completions = dict(plan_data.get("meal_completions") or {})
+    day_completions = dict(meal_completions.get(payload.day) or {})
+    day_completions[payload.meal_key] = payload.completed
+    meal_completions[payload.day] = day_completions
+    plan_data["meal_completions"] = meal_completions
+    plan_data["plan_id"] = str(record["_id"])
+
+    await nutrition_progressive_plans_collection.update_one(
+        {"_id": record["_id"]},
+        {
+            "$set": {
+                "plan": plan_data,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    return NutritionPlanResponse(**plan_data)
+
+
+async def _process_progressive_nutrition_plan_job(
+    job_id: str,
+    user_id: str,
+    payload_data: dict,
+    profile_hash: str,
+) -> None:
+    await nutrition_progressive_plan_jobs_collection.update_one(
+        {"_id": job_id, "user_id": user_id},
+        {
+            "$set": {
+                "status": "generating_monday",
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    partial_plan_id: ObjectId | None = None
+    partial_plan_data: dict | None = None
+    generated_days: list[dict] = []
+    summary_text = ""
+    goal_label = ""
+
+    try:
+        for index, day_name in enumerate(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]):
+            if index == 0:
+                status_name = "generating_monday"
+            else:
+                status_name = f"generating_{day_name.lower()}"
+
+            await nutrition_progressive_plan_jobs_collection.update_one(
+                {"_id": job_id, "user_id": user_id},
+                {
+                    "$set": {
+                        "status": status_name,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                },
+            )
+
+            day_result = await asyncio.to_thread(
+                generate_progressive_nutrition_plan_day,
+                payload_data,
+                day_name,
+                generated_days,
+            )
+            day_plan = dict(day_result.data["days"][0])
+            generated_days.append(day_plan)
+
+            if not summary_text:
+                summary_text = str(day_result.data.get("summary") or "").strip()
+            if not goal_label:
+                goal_label = str(day_result.data.get("goal_label") or "").strip()
+
+            if partial_plan_id is None:
+                created_at = datetime.now(timezone.utc)
+                snapshot = _build_progressive_plan_snapshot(summary_text, goal_label, generated_days, payload_data)
+                insert_result = await nutrition_progressive_plans_collection.insert_one(
+                    {
+                        "user_id": user_id,
+                        "profile_hash": profile_hash,
+                        "generation_mode": PROGRESSIVE_NUTRITION_PLAN_MODE,
+                        "is_complete": False,
+                        "plan": snapshot,
+                        "created_at": created_at,
+                        "updated_at": created_at,
+                    }
+                )
+                partial_plan_id = insert_result.inserted_id
+            else:
+                snapshot = _build_progressive_plan_snapshot(summary_text, goal_label, generated_days, payload_data)
+                await nutrition_progressive_plans_collection.update_one(
+                    {"_id": partial_plan_id, "user_id": user_id},
+                    {
+                        "$set": {
+                            "plan": snapshot,
+                            "updated_at": datetime.now(timezone.utc),
+                        }
+                    },
+                )
+
+            current_plan = NutritionPlanResponse(
+                **snapshot,
+                profile=payload_data,
+            )
+            current_plan.plan_id = str(partial_plan_id)
+            partial_plan_data = current_plan.model_dump()
+
+            await nutrition_progressive_plan_jobs_collection.update_one(
+                {"_id": job_id, "user_id": user_id},
+                {
+                    "$set": {
+                        "status": f"{day_name.lower()}_ready",
+                        "plan_id": current_plan.plan_id,
+                        "plan": partial_plan_data,
+                        "error": None,
+                        "updated_at": datetime.now(timezone.utc),
+                    }
+                },
+            )
+
+        final_snapshot = _build_progressive_plan_snapshot(summary_text, goal_label, generated_days, payload_data)
+        final_plan = NutritionPlanResponse(**final_snapshot, profile=payload_data)
+        final_plan.plan_id = str(partial_plan_id)
+        final_plan_data = final_plan.model_dump()
+
+        await nutrition_progressive_plans_collection.update_one(
+            {"_id": partial_plan_id, "user_id": user_id},
+            {
+                "$set": {
+                    "plan": final_plan_data,
+                    "is_complete": True,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+        await nutrition_progressive_plan_jobs_collection.update_one(
+            {"_id": job_id, "user_id": user_id},
+            {
+                "$set": {
+                    "status": "completed",
+                    "plan_id": final_plan.plan_id,
+                    "plan": final_plan_data,
+                    "error": None,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+    except NutritionPlanRefusalError as exc:
+        await nutrition_progressive_plan_jobs_collection.update_one(
+            {"_id": job_id, "user_id": user_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "plan_id": str(partial_plan_id) if partial_plan_id else None,
+                    "plan": partial_plan_data,
+                    "error": f"Nutrition plan refused: {exc}",
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        await nutrition_progressive_plan_jobs_collection.update_one(
+            {"_id": job_id, "user_id": user_id},
+            {
+                "$set": {
+                    "status": "failed",
+                    "plan_id": str(partial_plan_id) if partial_plan_id else None,
+                    "plan": partial_plan_data,
+                    "error": f"Nutrition plan unavailable: {exc}",
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+
+
 def _serialize_nutrition_plan_job(record: dict) -> NutritionPlanJobResponse:
     plan_data = record.get("plan")
     plan = NutritionPlanResponse(**plan_data) if isinstance(plan_data, dict) else None
@@ -1250,6 +1537,51 @@ def _serialize_nutrition_plan_job(record: dict) -> NutritionPlanJobResponse:
         created_at=record["created_at"],
         updated_at=record["updated_at"],
     )
+
+
+def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[dict], payload_data: dict) -> dict:
+    normalized_days = [dict(day) for day in days]
+    shopping_list = _build_progressive_shopping_list(normalized_days)
+    plan = {
+        "summary": summary or "A practical weekly nutrition plan tailored to your profile.",
+        "goal_label": goal_label or "Personalized Nutrition Plan",
+        "days": normalized_days,
+        "shopping_list": shopping_list,
+        "meal_completions": {},
+        "profile": payload_data,
+    }
+    return plan
+
+
+def _build_progressive_shopping_list(days: list[dict]) -> list[dict]:
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for day in days:
+        for meal_key in ("breakfast", "lunch", "dinner"):
+            meal = day.get(meal_key, {})
+            if not isinstance(meal, dict):
+                continue
+            for ingredient in meal.get("ingredients", []):
+                label = str(ingredient).strip()
+                lowered = label.lower()
+                if label and lowered not in seen:
+                    seen.add(lowered)
+                    items.append({"name": label, "qty": "1 serving"})
+
+    return [{"category": "Weekly Ingredients", "items": items[:60]}] if items else []
+
+
+def _standard_nutrition_filter(user_id: str, profile_hash: str | None = None) -> dict:
+    filter_doc: dict = {
+        "user_id": user_id,
+        "$or": [
+            {"generation_mode": {"$exists": False}},
+            {"generation_mode": STANDARD_NUTRITION_PLAN_MODE},
+        ],
+    }
+    if profile_hash is not None:
+        filter_doc["profile_hash"] = profile_hash
+    return filter_doc
 
 
 def _get_thread_recent_messages(thread: dict | None) -> list[dict]:
