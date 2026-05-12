@@ -728,9 +728,10 @@ async def create_community_post(
 @app.get("/community/posts/{post_id}/comments", response_model=list[CommunityCommentResponse])
 async def get_community_post_comments(
     post_id: str,
-    _: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_access_user),
 ) -> list[CommunityCommentResponse]:
     record = await _get_community_post_or_404(post_id)
+    _ensure_community_post_access(record, user)
     comments = await _load_community_comments([record], limit_per_post=200)
     return [CommunityCommentResponse(**comment) for comment in comments.get(str(record["_id"]), [])]
 
@@ -742,6 +743,7 @@ async def create_community_post_comment(
     user: dict = Depends(_require_access_user),
 ) -> CommunityCommentResponse:
     record = await _get_community_post_or_404(post_id)
+    _ensure_community_post_access(record, user)
     now = datetime.now(timezone.utc)
     comment_document = {
         "_id": ObjectId(),
@@ -770,6 +772,7 @@ async def toggle_community_post_reaction(
     user: dict = Depends(_require_access_user),
 ) -> CommunityReactionToggleResponse:
     record = await _get_community_post_or_404(post_id)
+    _ensure_community_post_access(record, user)
     reaction_filter = {"post_id": str(record["_id"]), "user_id": str(user["_id"])}
     existing = await community_reactions_collection.find_one(reaction_filter)
     now = datetime.now(timezone.utc)
@@ -2360,6 +2363,12 @@ async def _get_community_post_or_404(post_id: str) -> dict:
     if not record:
         raise HTTPException(status_code=404, detail="Community post not found")
     return record
+
+
+def _ensure_community_post_access(record: dict, user: dict) -> None:
+    audience = str(record.get("audience") or "ALL").strip().upper()
+    if audience not in _get_allowed_community_audiences(user):
+        raise HTTPException(status_code=404, detail="Community post not found")
 
 
 def _html_to_plain_text(html_content: str) -> str:
