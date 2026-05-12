@@ -99,6 +99,19 @@ class UpdateTermsConditionRequest(BaseModel):
     html_content: str = Field(min_length=1, max_length=200000)
 
 
+class AboutUsResponse(BaseModel):
+    key: str = "about_us"
+    title: str
+    html_content: str
+    plain_text: str
+    updated_at: datetime
+
+
+class UpdateAboutUsRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    html_content: str = Field(min_length=1, max_length=200000)
+
+
 class UserOut(BaseModel):
     id: str
     name: str

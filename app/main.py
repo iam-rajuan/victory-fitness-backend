@@ -29,6 +29,7 @@ from .database import DatabaseNotConfiguredError, ensure_indexes, users_collecti
 from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
 from .models import (
+    AboutUsResponse,
     BodyMetricsResponse,
     CoachVictorChatRequest,
     CoachVictorChatResponse,
@@ -68,6 +69,7 @@ from .models import (
     NutritionPlanSaveResponse,
     RefreshRequest,
     RegisterRequest,
+    UpdateAboutUsRequest,
     UpdateBodyMetricsRequest,
     UpdateMeRequest,
     UpdatePrivacyPolicyRequest,
@@ -114,6 +116,7 @@ STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
 PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 PRIVACY_POLICY_KEY = "privacy_policy"
 TERMS_CONDITION_KEY = "terms_condition"
+ABOUT_US_KEY = "about_us"
 DEFAULT_PRIVACY_POLICY_TITLE = "Privacy Policy"
 DEFAULT_PRIVACY_POLICY_HTML = """
 <p>Last Updated: May 13, 2026</p>
@@ -145,6 +148,17 @@ DEFAULT_TERMS_CONDITION_HTML = """
 <p>We may suspend or terminate access if these terms are violated or if the service is misused.</p>
 <h2>6. Contact</h2>
 <p>If you have questions about these terms, contact Victory Fitness support.</p>
+""".strip()
+DEFAULT_ABOUT_US_TITLE = "About Us"
+DEFAULT_ABOUT_US_HTML = """
+<h2>About Victory Fitness</h2>
+<p>Victory Fitness is built to help people train with more structure, eat with more clarity, and stay consistent for the long term.</p>
+<h2>Our Mission</h2>
+<p>We combine coaching, personalized planning, and practical fitness tools so users can build healthier routines that fit real life.</p>
+<h2>What We Offer</h2>
+<p>Victory Fitness brings together workout support, nutrition guidance, journaling, accountability, and progress tracking in one place.</p>
+<h2>Our Focus</h2>
+<p>We focus on practical, sustainable progress instead of extreme plans, helping users improve strength, energy, recovery, and confidence.</p>
 """.strip()
 
 app.add_middleware(
@@ -607,6 +621,45 @@ async def admin_update_terms_condition(
     if not record:
         raise HTTPException(status_code=500, detail="Terms & Conditions could not be saved")
     return _serialize_terms_condition_record(record)
+
+
+@app.get("/content/about-us", response_model=AboutUsResponse)
+async def get_about_us() -> AboutUsResponse:
+    record = await _ensure_about_us_record()
+    return _serialize_about_us_record(record)
+
+
+@app.get("/admin/content/about-us", response_model=AboutUsResponse)
+async def admin_get_about_us(_: dict = Depends(_require_admin_user)) -> AboutUsResponse:
+    record = await _ensure_about_us_record()
+    return _serialize_about_us_record(record)
+
+
+@app.put("/admin/content/about-us", response_model=AboutUsResponse)
+async def admin_update_about_us(
+    payload: UpdateAboutUsRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AboutUsResponse:
+    now = datetime.now(timezone.utc)
+    await app_content_collection.update_one(
+        {"key": ABOUT_US_KEY},
+        {
+            "$set": {
+                "key": ABOUT_US_KEY,
+                "title": payload.title.strip(),
+                "html_content": payload.html_content.strip(),
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+    record = await app_content_collection.find_one({"key": ABOUT_US_KEY})
+    if not record:
+        raise HTTPException(status_code=500, detail="About Us could not be saved")
+    return _serialize_about_us_record(record)
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -1852,6 +1905,28 @@ async def _ensure_terms_condition_record() -> dict:
     return saved or record
 
 
+async def _ensure_about_us_record() -> dict:
+    record = await app_content_collection.find_one({"key": ABOUT_US_KEY})
+    if record:
+        return record
+
+    now = datetime.now(timezone.utc)
+    record = {
+        "key": ABOUT_US_KEY,
+        "title": DEFAULT_ABOUT_US_TITLE,
+        "html_content": DEFAULT_ABOUT_US_HTML,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await app_content_collection.update_one(
+        {"key": ABOUT_US_KEY},
+        {"$setOnInsert": record},
+        upsert=True,
+    )
+    saved = await app_content_collection.find_one({"key": ABOUT_US_KEY})
+    return saved or record
+
+
 def _serialize_privacy_policy_record(record: dict) -> PrivacyPolicyResponse:
     html_content = str(record.get("html_content") or "")
     plain_text = _html_to_plain_text(html_content)
@@ -1872,6 +1947,19 @@ def _serialize_terms_condition_record(record: dict) -> TermsConditionResponse:
     return TermsConditionResponse(
         key=TERMS_CONDITION_KEY,
         title=str(record.get("title") or DEFAULT_TERMS_CONDITION_TITLE),
+        html_content=html_content,
+        plain_text=plain_text,
+        updated_at=updated_at,
+    )
+
+
+def _serialize_about_us_record(record: dict) -> AboutUsResponse:
+    html_content = str(record.get("html_content") or "")
+    plain_text = _html_to_plain_text(html_content)
+    updated_at = _as_utc(record.get("updated_at") or datetime.now(timezone.utc))
+    return AboutUsResponse(
+        key=ABOUT_US_KEY,
+        title=str(record.get("title") or DEFAULT_ABOUT_US_TITLE),
         html_content=html_content,
         plain_text=plain_text,
         updated_at=updated_at,
