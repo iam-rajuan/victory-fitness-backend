@@ -21,6 +21,11 @@ def _get_mongodb_uri() -> str:
     return value
 
 
+def _get_csv_list(name: str, default: str) -> list[str]:
+    raw = os.getenv(name, default)
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 class Settings:
     app_name = os.getenv("APP_NAME", "Victory Fitness API")
     environment = os.getenv("ENVIRONMENT", "development")
@@ -58,7 +63,11 @@ class Settings:
     aws_s3_bucket = os.getenv("AWS_S3_BUCKET", "").strip()
     aws_s3_prefix = os.getenv("AWS_S3_PREFIX", "coach-archives").strip().strip("/")
 
-    frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:8081")
+    frontend_origins = _get_csv_list(
+        "FRONTEND_ORIGINS",
+        "http://localhost:8081,http://localhost:5173",
+    )
+    frontend_origin = os.getenv("FRONTEND_ORIGIN", frontend_origins[0] if frontend_origins else "http://localhost:8081")
     frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", ".*")
     cookie_secure = _get_bool("COOKIE_SECURE", environment == "production")
     cookie_samesite = os.getenv("COOKIE_SAMESITE", "none" if environment == "production" else "lax").strip().lower()
