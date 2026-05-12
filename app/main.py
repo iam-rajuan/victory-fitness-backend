@@ -777,7 +777,7 @@ async def get_community_posts(user: dict = Depends(_require_access_user)) -> Com
         sort=[("created_at", -1), ("_id", -1)],
         limit=100,
     ).to_list(length=100)
-    posts = await _serialize_community_post_records(records, str(user["_id"]))
+    posts = await _serialize_community_post_records(records, str(user["_id"]), include_reactions=False)
     return CommunityPostListResponse(
         posts=[CommunityPostResponse(**post) for post in posts]
     )
@@ -817,8 +817,24 @@ async def create_community_post(
         "updated_at": now,
     }
     await community_posts_collection.insert_one(document)
-    serialized = await _serialize_community_post_records([document], str(user["_id"]))
+    serialized = await _serialize_community_post_records([document], str(user["_id"]), include_reactions=False)
     return CommunityPostResponse(**serialized[0])
+
+
+@app.delete("/community/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_own_community_post(
+    post_id: str,
+    user: dict = Depends(_require_access_user),
+) -> Response:
+    record = await _get_community_post_or_404(post_id)
+    _ensure_community_post_access(record, user)
+    if not _can_manage_community_post(record, user):
+        raise HTTPException(status_code=403, detail="You can only delete your own post")
+
+    await community_posts_collection.delete_one({"_id": record["_id"]})
+    await community_comments_collection.delete_many({"post_id": str(record["_id"])})
+    await community_reactions_collection.delete_many({"post_id": str(record["_id"])})
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/community/posts/{post_id}/comments", response_model=list[CommunityCommentResponse])
@@ -2366,6 +2382,7 @@ def _serialize_community_post_record(record: dict) -> dict:
     updated_at = _as_utc(record.get("updated_at") or created_at)
     return {
         "id": str(record.get("_id")),
+        "author_id": str(record.get("author_id") or ""),
         "author_name": str(record.get("author_name") or "Member"),
         "author_role": str(record.get("author_role") or "user"),
         "author_profile_image": str(record.get("author_profile_image") or ""),
@@ -2375,6 +2392,7 @@ def _serialize_community_post_record(record: dict) -> dict:
         "like_count": int(record.get("like_count") or 0),
         "comment_count": int(record.get("comment_count") or 0),
         "viewer_has_liked": False,
+        "can_delete": False,
         "comments": [],
         "reactions": [],
         "created_at": created_at,
@@ -2409,11 +2427,7 @@ def _serialize_community_reaction_user_record(record: dict, user_record: dict | 
     }
 
 
-async def _serialize_community_post_records(records: list[dict], viewer_user_id: str | None) -> list[dict]:
-    return await _serialize_community_post_records_with_options(records, viewer_user_id)
-
-
-async def _serialize_community_post_records_with_options(
+async def _serialize_community_post_records(
     records: list[dict],
     viewer_user_id: str | None,
     comment_limit_per_post: int = 3,
@@ -2432,6 +2446,7 @@ async def _serialize_community_post_records_with_options(
         serialized = _serialize_community_post_record(record)
         post_id = serialized["id"]
         serialized["viewer_has_liked"] = post_id in liked_post_ids
+        serialized["can_delete"] = bool(viewer_user_id) and _can_manage_community_post(record, {"_id": viewer_user_id, "is_admin": False})
         serialized["comments"] = comments_by_post.get(post_id, [])
         serialized["reactions"] = reactions_by_post.get(post_id, [])
         serialized_posts.append(serialized)
@@ -2524,6 +2539,12 @@ async def _get_community_post_or_404(post_id: str) -> dict:
     if not record:
         raise HTTPException(status_code=404, detail="Community post not found")
     return record
+
+
+def _can_manage_community_post(record: dict, user: dict) -> bool:
+    if user.get("is_admin"):
+        return True
+    return str(record.get("author_id") or "") == str(user.get("_id") or "")
 
 
 def _ensure_community_post_access(record: dict, user: dict) -> None:
