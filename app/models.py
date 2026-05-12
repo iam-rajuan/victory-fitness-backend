@@ -59,6 +59,28 @@ class ProfileImageUploadResponse(BaseModel):
     image_url: str
 
 
+class AdminProfileResponse(BaseModel):
+    id: str
+    fullName: str
+    email: EmailStr
+    role: str = "admin"
+    country: str = ""
+    contactNumber: str = ""
+    profileImage: str = ""
+    isVerified: bool = True
+
+
+class UpdateAdminProfileRequest(BaseModel):
+    fullName: str | None = Field(default=None, min_length=2, max_length=100)
+    country: str | None = Field(default=None, max_length=120)
+    contactNumber: str | None = Field(default=None, max_length=40)
+
+
+class AdminChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class BodyMetricsResponse(BaseModel):
     age: str = ""
     height: str = ""
