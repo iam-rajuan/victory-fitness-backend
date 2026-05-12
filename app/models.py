@@ -59,6 +59,20 @@ class ProfileImageUploadResponse(BaseModel):
     image_url: str
 
 
+class BodyMetricsResponse(BaseModel):
+    age: str = ""
+    height: str = ""
+    weight: str = ""
+    gender: str = ""
+
+
+class UpdateBodyMetricsRequest(BaseModel):
+    age: str | None = Field(default=None, max_length=20)
+    height: str | None = Field(default=None, max_length=20)
+    weight: str | None = Field(default=None, max_length=20)
+    gender: str | None = Field(default=None, max_length=40)
+
+
 class UserOut(BaseModel):
     id: str
     name: str

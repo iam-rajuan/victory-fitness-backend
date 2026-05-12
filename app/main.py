@@ -29,6 +29,7 @@ from .database import DatabaseNotConfiguredError, ensure_indexes, users_collecti
 from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
 from .models import (
+    BodyMetricsResponse,
     CoachVictorChatRequest,
     CoachVictorChatResponse,
     CoachVictorHistoryResponse,
@@ -66,6 +67,7 @@ from .models import (
     NutritionPlanSaveResponse,
     RefreshRequest,
     RegisterRequest,
+    UpdateBodyMetricsRequest,
     UpdateMeRequest,
     TokenResponse,
     VerifyEmailRequest,
@@ -449,6 +451,51 @@ async def upload_profile_image(
 
     logger.info("profile_image_upload_success user_id=%s", user_id)
     return ProfileImageUploadResponse(image_url=image_url)
+
+
+@app.get("/me/body-metrics", response_model=BodyMetricsResponse)
+async def get_body_metrics(user: dict = Depends(_require_access_user)) -> BodyMetricsResponse:
+    metrics = dict(user.get("body_metrics") or {})
+    return BodyMetricsResponse(
+        age=str(metrics.get("age") or ""),
+        height=str(metrics.get("height") or ""),
+        weight=str(metrics.get("weight") or ""),
+        gender=str(metrics.get("gender") or ""),
+    )
+
+
+@app.patch("/me/body-metrics", response_model=BodyMetricsResponse)
+async def update_body_metrics(
+    payload: UpdateBodyMetricsRequest,
+    user: dict = Depends(_require_access_user),
+) -> BodyMetricsResponse:
+    next_metrics = dict(user.get("body_metrics") or {})
+
+    if payload.age is not None:
+        next_metrics["age"] = payload.age.strip()
+    if payload.height is not None:
+        next_metrics["height"] = payload.height.strip()
+    if payload.weight is not None:
+        next_metrics["weight"] = payload.weight.strip()
+    if payload.gender is not None:
+        next_metrics["gender"] = payload.gender.strip()
+
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "body_metrics": next_metrics,
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
+    return BodyMetricsResponse(
+        age=str(next_metrics.get("age") or ""),
+        height=str(next_metrics.get("height") or ""),
+        weight=str(next_metrics.get("weight") or ""),
+        gender=str(next_metrics.get("gender") or ""),
+    )
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
