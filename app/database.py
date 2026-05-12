@@ -30,6 +30,8 @@ coach_victor_archives_collection = db["coach_victor_archives"]
 journal_entries_collection = db["journal_entries"]
 workouts_collection = db["workouts"]
 community_posts_collection = db["community_posts"]
+community_comments_collection = db["community_comments"]
+community_reactions_collection = db["community_reactions"]
 
 
 async def ensure_indexes() -> None:
@@ -55,3 +57,7 @@ async def ensure_indexes() -> None:
     await workouts_collection.create_index("vimeo_id", unique=True)
     await community_posts_collection.create_index([("created_at", -1)])
     await community_posts_collection.create_index([("audience", 1), ("created_at", -1)])
+    await community_comments_collection.create_index([("post_id", 1), ("created_at", 1)])
+    await community_comments_collection.create_index([("author_id", 1), ("created_at", -1)])
+    await community_reactions_collection.create_index([("post_id", 1), ("created_at", -1)])
+    await community_reactions_collection.create_index([("post_id", 1), ("user_id", 1)], unique=True)

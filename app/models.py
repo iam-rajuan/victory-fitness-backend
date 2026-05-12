@@ -112,6 +112,16 @@ class UpdateAboutUsRequest(BaseModel):
     html_content: str = Field(min_length=1, max_length=200000)
 
 
+class CommunityCommentResponse(BaseModel):
+    id: str
+    post_id: str
+    author_name: str
+    author_role: str
+    author_profile_image: str = ""
+    content: str
+    created_at: datetime
+
+
 class CommunityPostResponse(BaseModel):
     id: str
     author_name: str
@@ -122,6 +132,8 @@ class CommunityPostResponse(BaseModel):
     image_url: str = ""
     like_count: int = 0
     comment_count: int = 0
+    viewer_has_liked: bool = False
+    comments: list[CommunityCommentResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -132,19 +144,36 @@ class CommunityPostListResponse(BaseModel):
 
 class CommunityPostCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=5000)
-    image_url: str | None = Field(default=None, max_length=500)
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
+
+
+class CommunityCommentCreateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class CommunityReactionToggleResponse(BaseModel):
+    post_id: str
+    like_count: int = 0
+    viewer_has_liked: bool = False
 
 
 class AdminCommunityPostCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=5000)
-    image_url: str | None = Field(default=None, max_length=500)
     audience: str = Field(default="ALL", pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
 
 
 class AdminCommunityPostUpdateRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=5000)
-    image_url: str | None = Field(default=None, max_length=500)
     audience: str | None = Field(default=None, pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
+    clear_image: bool = False
 
 
 class UserOut(BaseModel):

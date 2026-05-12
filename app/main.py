@@ -36,9 +36,12 @@ from .models import (
     CoachVictorChatRequest,
     CoachVictorChatResponse,
     CoachVictorHistoryResponse,
+    CommunityCommentCreateRequest,
+    CommunityCommentResponse,
     CommunityPostCreateRequest,
     CommunityPostListResponse,
     CommunityPostResponse,
+    CommunityReactionToggleResponse,
     DashboardOverviewChartPoint,
     AdminUserChartPoint,
     AdminUserDetailResponse,
@@ -90,7 +93,9 @@ from .database import (
     app_content_collection,
     coach_victor_archives_collection,
     coach_victor_threads_collection,
+    community_comments_collection,
     community_posts_collection,
+    community_reactions_collection,
     nutrition_progressive_plan_jobs_collection,
     nutrition_progressive_plans_collection,
     journal_entries_collection,
@@ -676,8 +681,9 @@ async def get_community_posts(user: dict = Depends(_require_access_user)) -> Com
         sort=[("created_at", -1), ("_id", -1)],
         limit=100,
     ).to_list(length=100)
+    posts = await _serialize_community_post_records(records, str(user["_id"]))
     return CommunityPostListResponse(
-        posts=[CommunityPostResponse(**_serialize_community_post_record(record)) for record in records]
+        posts=[CommunityPostResponse(**post) for post in posts]
     )
 
 
@@ -687,6 +693,19 @@ async def create_community_post(
     user: dict = Depends(_require_access_user),
 ) -> CommunityPostResponse:
     now = datetime.now(timezone.utc)
+    image_url = ""
+    if payload.image_base64:
+        try:
+            image_url = _upload_community_image_to_s3(
+                str(user["_id"]),
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
     document = {
         "_id": ObjectId(),
         "author_id": str(user["_id"]),
@@ -695,14 +714,105 @@ async def create_community_post(
         "author_profile_image": str(user.get("profile_image") or "").strip(),
         "audience": "ALL",
         "content": payload.content.strip(),
-        "image_url": str(payload.image_url or "").strip(),
+        "image_url": image_url,
         "like_count": 0,
         "comment_count": 0,
         "created_at": now,
         "updated_at": now,
     }
     await community_posts_collection.insert_one(document)
-    return CommunityPostResponse(**_serialize_community_post_record(document))
+    serialized = await _serialize_community_post_records([document], str(user["_id"]))
+    return CommunityPostResponse(**serialized[0])
+
+
+@app.get("/community/posts/{post_id}/comments", response_model=list[CommunityCommentResponse])
+async def get_community_post_comments(
+    post_id: str,
+    _: dict = Depends(_require_access_user),
+) -> list[CommunityCommentResponse]:
+    record = await _get_community_post_or_404(post_id)
+    comments = await _load_community_comments([record], limit_per_post=200)
+    return [CommunityCommentResponse(**comment) for comment in comments.get(str(record["_id"]), [])]
+
+
+@app.post("/community/posts/{post_id}/comments", response_model=CommunityCommentResponse, status_code=status.HTTP_201_CREATED)
+async def create_community_post_comment(
+    post_id: str,
+    payload: CommunityCommentCreateRequest,
+    user: dict = Depends(_require_access_user),
+) -> CommunityCommentResponse:
+    record = await _get_community_post_or_404(post_id)
+    now = datetime.now(timezone.utc)
+    comment_document = {
+        "_id": ObjectId(),
+        "post_id": str(record["_id"]),
+        "author_id": str(user["_id"]),
+        "author_name": str(user.get("name") or "Member").strip() or "Member",
+        "author_role": "admin" if user.get("is_admin") else "user",
+        "author_profile_image": str(user.get("profile_image") or "").strip(),
+        "content": payload.content.strip(),
+        "created_at": now,
+    }
+    await community_comments_collection.insert_one(comment_document)
+    await community_posts_collection.update_one(
+        {"_id": record["_id"]},
+        {
+            "$inc": {"comment_count": 1},
+            "$set": {"updated_at": now},
+        },
+    )
+    return CommunityCommentResponse(**_serialize_community_comment_record(comment_document))
+
+
+@app.post("/community/posts/{post_id}/reactions/toggle", response_model=CommunityReactionToggleResponse)
+async def toggle_community_post_reaction(
+    post_id: str,
+    user: dict = Depends(_require_access_user),
+) -> CommunityReactionToggleResponse:
+    record = await _get_community_post_or_404(post_id)
+    reaction_filter = {"post_id": str(record["_id"]), "user_id": str(user["_id"])}
+    existing = await community_reactions_collection.find_one(reaction_filter)
+    now = datetime.now(timezone.utc)
+
+    if existing:
+        await community_reactions_collection.delete_one({"_id": existing["_id"]})
+        await community_posts_collection.update_one(
+            {"_id": record["_id"]},
+            {
+                "$inc": {"like_count": -1},
+                "$set": {"updated_at": now},
+            },
+        )
+        viewer_has_liked = False
+    else:
+        await community_reactions_collection.insert_one(
+            {
+                "_id": ObjectId(),
+                "post_id": str(record["_id"]),
+                "user_id": str(user["_id"]),
+                "created_at": now,
+            }
+        )
+        await community_posts_collection.update_one(
+            {"_id": record["_id"]},
+            {
+                "$inc": {"like_count": 1},
+                "$set": {"updated_at": now},
+            },
+        )
+        viewer_has_liked = True
+
+    updated_record = await community_posts_collection.find_one({"_id": record["_id"]})
+    like_count = int((updated_record or {}).get("like_count") or 0)
+    if like_count < 0:
+        like_count = 0
+        await community_posts_collection.update_one({"_id": record["_id"]}, {"$set": {"like_count": 0}})
+
+    return CommunityReactionToggleResponse(
+        post_id=str(record["_id"]),
+        like_count=like_count,
+        viewer_has_liked=viewer_has_liked,
+    )
 
 
 @app.get("/admin/community/posts", response_model=CommunityPostListResponse)
@@ -712,8 +822,9 @@ async def admin_get_community_posts(_: dict = Depends(_require_admin_user)) -> C
         sort=[("created_at", -1), ("_id", -1)],
         limit=200,
     ).to_list(length=200)
+    posts = await _serialize_community_post_records(records, None)
     return CommunityPostListResponse(
-        posts=[CommunityPostResponse(**_serialize_community_post_record(record)) for record in records]
+        posts=[CommunityPostResponse(**post) for post in posts]
     )
 
 
@@ -723,6 +834,19 @@ async def admin_create_community_post(
     admin_user: dict = Depends(_require_admin_user),
 ) -> CommunityPostResponse:
     now = datetime.now(timezone.utc)
+    image_url = ""
+    if payload.image_base64:
+        try:
+            image_url = _upload_community_image_to_s3(
+                str(admin_user["_id"]),
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
     document = {
         "_id": ObjectId(),
         "author_id": str(admin_user["_id"]),
@@ -731,14 +855,15 @@ async def admin_create_community_post(
         "author_profile_image": str(admin_user.get("profile_image") or "").strip(),
         "audience": payload.audience.strip(),
         "content": payload.content.strip(),
-        "image_url": str(payload.image_url or "").strip(),
+        "image_url": image_url,
         "like_count": 0,
         "comment_count": 0,
         "created_at": now,
         "updated_at": now,
     }
     await community_posts_collection.insert_one(document)
-    return CommunityPostResponse(**_serialize_community_post_record(document))
+    serialized = await _serialize_community_post_records([document], str(admin_user["_id"]))
+    return CommunityPostResponse(**serialized[0])
 
 
 @app.patch("/admin/community/posts/{post_id}", response_model=CommunityPostResponse)
@@ -759,16 +884,29 @@ async def admin_update_community_post(
     update_doc: dict = {"updated_at": datetime.now(timezone.utc)}
     if payload.content is not None:
         update_doc["content"] = payload.content.strip()
-    if payload.image_url is not None:
-        update_doc["image_url"] = payload.image_url.strip()
     if payload.audience is not None:
         update_doc["audience"] = payload.audience.strip()
+    if payload.clear_image:
+        update_doc["image_url"] = ""
+    elif payload.image_base64:
+        try:
+            update_doc["image_url"] = _upload_community_image_to_s3(
+                str(existing_record.get("author_id") or ""),
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
 
     await community_posts_collection.update_one({"_id": object_id}, {"$set": update_doc})
     updated_record = await community_posts_collection.find_one({"_id": object_id})
     if not updated_record:
         raise HTTPException(status_code=500, detail="Community post could not be updated")
-    return CommunityPostResponse(**_serialize_community_post_record(updated_record))
+    serialized = await _serialize_community_post_records([updated_record], None)
+    return CommunityPostResponse(**serialized[0])
 
 
 @app.delete("/admin/community/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -784,6 +922,8 @@ async def admin_delete_community_post(
     delete_result = await community_posts_collection.delete_one({"_id": object_id})
     if delete_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Community post not found")
+    await community_comments_collection.delete_many({"post_id": str(object_id)})
+    await community_reactions_collection.delete_many({"post_id": str(object_id)})
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -1920,8 +2060,27 @@ def _upload_profile_image_to_s3(
     mime_type: str,
     file_name: str | None,
 ) -> str:
+    return _upload_image_to_s3("profile-images", user_id, image_base64, mime_type, file_name)
+
+
+def _upload_community_image_to_s3(
+    user_id: str,
+    image_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_image_to_s3("community-images", user_id, image_base64, mime_type, file_name)
+
+
+def _upload_image_to_s3(
+    folder_name: str,
+    user_id: str,
+    image_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
     if not s3_archive_enabled():
-        raise RuntimeError("AWS S3 is not configured for profile image uploads")
+        raise RuntimeError("AWS S3 is not configured for image uploads")
 
     normalized_mime = str(mime_type or "image/jpeg").strip().lower()
     allowed_types = {
@@ -1948,7 +2107,8 @@ def _upload_profile_image_to_s3(
         sanitized_file_name = ""
 
     object_name = sanitized_file_name or f"{uuid4().hex}{extension}"
-    key_prefix = f"{settings.aws_s3_prefix}/profile-images/{user_id}".strip("/")
+    normalized_owner = re.sub(r"[^a-zA-Z0-9_-]", "-", str(user_id or "anonymous")).strip("-") or "anonymous"
+    key_prefix = f"{settings.aws_s3_prefix}/{folder_name}/{normalized_owner}".strip("/")
     object_key = f"{key_prefix}/{object_name}"
 
     try:
@@ -2115,9 +2275,91 @@ def _serialize_community_post_record(record: dict) -> dict:
         "image_url": str(record.get("image_url") or ""),
         "like_count": int(record.get("like_count") or 0),
         "comment_count": int(record.get("comment_count") or 0),
+        "viewer_has_liked": False,
+        "comments": [],
         "created_at": created_at,
         "updated_at": updated_at,
     }
+
+
+def _serialize_community_comment_record(record: dict) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    return {
+        "id": str(record.get("_id")),
+        "post_id": str(record.get("post_id") or ""),
+        "author_name": str(record.get("author_name") or "Member"),
+        "author_role": str(record.get("author_role") or "user"),
+        "author_profile_image": str(record.get("author_profile_image") or ""),
+        "content": str(record.get("content") or ""),
+        "created_at": created_at,
+    }
+
+
+async def _serialize_community_post_records(records: list[dict], viewer_user_id: str | None) -> list[dict]:
+    if not records:
+        return []
+
+    post_ids = [str(record.get("_id")) for record in records if record.get("_id")]
+    comments_by_post = await _load_community_comments(records)
+    liked_post_ids = await _load_community_liked_post_ids(post_ids, viewer_user_id)
+
+    serialized_posts: list[dict] = []
+    for record in records:
+        serialized = _serialize_community_post_record(record)
+        post_id = serialized["id"]
+        serialized["viewer_has_liked"] = post_id in liked_post_ids
+        serialized["comments"] = comments_by_post.get(post_id, [])
+        serialized_posts.append(serialized)
+    return serialized_posts
+
+
+async def _load_community_comments(records: list[dict], limit_per_post: int = 3) -> dict[str, list[dict]]:
+    post_ids = [str(record.get("_id")) for record in records if record.get("_id")]
+    if not post_ids:
+        return {}
+
+    comments = await community_comments_collection.find(
+        {"post_id": {"$in": post_ids}},
+        sort=[("created_at", 1), ("_id", 1)],
+    ).to_list(length=1000)
+
+    comments_by_post: dict[str, list[dict]] = {post_id: [] for post_id in post_ids}
+    for comment in comments:
+        post_id = str(comment.get("post_id") or "")
+        if not post_id:
+            continue
+        comments_by_post.setdefault(post_id, []).append(_serialize_community_comment_record(comment))
+
+    if limit_per_post > 0:
+        return {
+            post_id: post_comments[-limit_per_post:]
+            for post_id, post_comments in comments_by_post.items()
+        }
+
+    return comments_by_post
+
+
+async def _load_community_liked_post_ids(post_ids: list[str], viewer_user_id: str | None) -> set[str]:
+    if not viewer_user_id or not post_ids:
+        return set()
+
+    reactions = await community_reactions_collection.find(
+        {"post_id": {"$in": post_ids}, "user_id": viewer_user_id},
+        {"post_id": 1},
+    ).to_list(length=len(post_ids))
+    return {str(reaction.get("post_id") or "") for reaction in reactions if reaction.get("post_id")}
+
+
+async def _get_community_post_or_404(post_id: str) -> dict:
+    try:
+        object_id = ObjectId(post_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid community post id") from exc
+
+    record = await community_posts_collection.find_one({"_id": object_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Community post not found")
+    return record
 
 
 def _html_to_plain_text(html_content: str) -> str:
