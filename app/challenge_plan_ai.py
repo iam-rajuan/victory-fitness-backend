@@ -21,17 +21,28 @@ class ChallengePlanGenerationInput:
 def generate_challenge_plan(input_data: ChallengePlanGenerationInput) -> dict:
     if settings.openai_api_key:
         try:
-            return _openai_challenge_plan_json(input_data)
+            candidate = _openai_challenge_plan_json(input_data)
+            if _looks_like_plan(candidate):
+                return candidate
         except RuntimeError:
             pass
 
     if settings.anthropic_api_key:
         try:
-            return _anthropic_challenge_plan_json(input_data)
+            candidate = _anthropic_challenge_plan_json(input_data)
+            if _looks_like_plan(candidate):
+                return candidate
         except RuntimeError:
             pass
 
     return _build_fallback_plan(input_data)
+
+
+def _looks_like_plan(value: dict | None) -> bool:
+    if not isinstance(value, dict):
+        return False
+    plan_days = value.get("plan_days")
+    return isinstance(plan_days, list) and len(plan_days) > 0
 
 
 def _challenge_plan_prompt(input_data: ChallengePlanGenerationInput) -> str:
