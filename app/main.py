@@ -1140,7 +1140,7 @@ async def get_challenge_chat_thread(
         points=max(int(challenge.get("points") or 0), 0),
         difficulty=str(challenge.get("difficulty") or "BEGINNER"),
         status=str(challenge.get("status") or "ACTIVE"),
-        thumbnail=str(challenge.get("thumbnail") or ""),
+        thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
         participant_count=participant_count,
         viewer_membership_status=str(membership.get("status") or "ACTIVE"),
         viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
@@ -1767,7 +1767,7 @@ async def admin_create_challenge(
     plan_days = _normalize_challenge_plan_days(payload.planDays)
     derived_duration_days = max(_extract_plan_day_numbers(plan_days), default=payload.durationDays)
     plan_text = _build_challenge_plan_text(plan_days) if plan_days else str(payload.planText or "").strip()
-    thumbnail = (payload.thumbnail or "").strip()
+    thumbnail = _normalize_challenge_thumbnail(payload.thumbnail)
     if payload.image_base64:
         try:
             thumbnail = _upload_challenge_thumbnail_to_s3(
@@ -1814,7 +1814,7 @@ async def admin_update_challenge(
     if not existing:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
-    thumbnail = (payload.thumbnail or "").strip()
+    thumbnail = _normalize_challenge_thumbnail(payload.thumbnail)
     if payload.image_base64:
         try:
             thumbnail = _upload_challenge_thumbnail_to_s3(
@@ -1893,7 +1893,7 @@ async def admin_get_challenge_chat_thread(
         points=max(int(challenge.get("points") or 0), 0),
         difficulty=str(challenge.get("difficulty") or "BEGINNER"),
         status=str(challenge.get("status") or "ACTIVE"),
-        thumbnail=str(challenge.get("thumbnail") or ""),
+        thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
         participant_count=participant_count,
         viewer_membership_status="ADMIN",
         viewer_progress_days_completed=0,
@@ -3935,6 +3935,16 @@ def _challenge_color(category: str, difficulty: str) -> str:
     return category_map.get(category_key, _difficulty_color(difficulty))
 
 
+LEGACY_DEFAULT_CHALLENGE_THUMBNAIL = "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?q=80&w=300&auto=format&fit=crop"
+
+
+def _normalize_challenge_thumbnail(value: str | None) -> str:
+    thumbnail = str(value or "").strip()
+    if thumbnail == LEGACY_DEFAULT_CHALLENGE_THUMBNAIL:
+        return ""
+    return thumbnail
+
+
 def _slugify_challenge_plan_id(value: str, fallback: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
     return slug[:60] or fallback
@@ -4099,7 +4109,7 @@ def _serialize_admin_challenge_record(
         "points": max(int(record.get("points") or 0), 0),
         "difficulty": str(record.get("difficulty") or "BEGINNER"),
         "status": str(record.get("status") or "DRAFT"),
-        "thumbnail": str(record.get("thumbnail") or ""),
+        "thumbnail": _normalize_challenge_thumbnail(record.get("thumbnail")),
         "participantCount": int(stats.get("participants", 0)),
         "completionCount": int(stats.get("completions", 0)),
         "createdAt": created_at,
@@ -4540,7 +4550,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
                 last_message=str(chat_by_challenge.get(challenge_id, {}).get("content") or "Coach: Stay consistent today."),
                 last_message_at=_as_utc(chat_by_challenge[challenge_id]["created_at"]) if challenge_id in chat_by_challenge and isinstance(chat_by_challenge[challenge_id].get("created_at"), datetime) else None,
                 unread_count=unread_count,
-                avatar=str(challenges_by_id[challenge_id].get("thumbnail") or ""),
+                avatar=_normalize_challenge_thumbnail(challenges_by_id[challenge_id].get("thumbnail")),
             )
         )
 
@@ -4566,7 +4576,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
             difficulty=str(record.get("difficulty") or "BEGINNER"),
             difficulty_color=_difficulty_color(str(record.get("difficulty") or "")),
             status=str(record.get("status") or "ACTIVE"),
-            thumbnail=str(record.get("thumbnail") or ""),
+            thumbnail=_normalize_challenge_thumbnail(record.get("thumbnail")),
         )
         for record in ready_records
     ]
