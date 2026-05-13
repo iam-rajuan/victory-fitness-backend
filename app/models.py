@@ -192,6 +192,96 @@ class CommunityReactionToggleResponse(BaseModel):
     viewer_has_liked: bool = False
 
 
+class ChallengeChatSummaryResponse(BaseModel):
+    id: str
+    challenge_id: str
+    name: str
+    last_message: str = ""
+    last_message_at: datetime | None = None
+    unread_count: int = 0
+    avatar: str = ""
+
+
+class UserActiveChallengeResponse(BaseModel):
+    id: str
+    challenge_id: str
+    title: str
+    type: str
+    days_left: int = 0
+    total_days: int = 0
+    progress: float = 0
+    points: int = 0
+    color: str = "#4F8EF7"
+
+
+class UserCompletedChallengeResponse(BaseModel):
+    id: str
+    challenge_id: str
+    title: str
+    type: str
+    earned_points: int = 0
+    completed_at: datetime
+    color: str = "#22C55E"
+
+
+class UserReadyChallengeResponse(BaseModel):
+    id: str
+    title: str
+    description: str
+    duration_days: int = 0
+    type: str
+    points: int = 0
+    participants: int = 0
+    difficulty: str
+    difficulty_color: str = "#22C55E"
+    status: str
+    thumbnail: str = ""
+
+
+class ChallengeOverviewResponse(BaseModel):
+    active_chats: list[ChallengeChatSummaryResponse] = Field(default_factory=list)
+    active_challenges: list[UserActiveChallengeResponse] = Field(default_factory=list)
+    completed_challenges: list[UserCompletedChallengeResponse] = Field(default_factory=list)
+    ready_to_start: list[UserReadyChallengeResponse] = Field(default_factory=list)
+
+
+class StartChallengeResponse(BaseModel):
+    status: str = "success"
+    membership_id: str
+
+
+class AdminChallengeItem(BaseModel):
+    id: str
+    title: str
+    description: str
+    category: str
+    durationDays: int
+    points: int = 0
+    difficulty: str
+    status: str
+    thumbnail: str = ""
+    participantCount: int = 0
+    completionCount: int = 0
+    createdAt: datetime
+    updatedAt: datetime
+
+
+class AdminChallengeListResponse(BaseModel):
+    total: int = 0
+    challenges: list[AdminChallengeItem] = Field(default_factory=list)
+
+
+class AdminChallengeRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=160)
+    description: str = Field(min_length=1, max_length=4000)
+    category: str = Field(min_length=1, max_length=80)
+    durationDays: int = Field(ge=1, le=365)
+    points: int = Field(ge=0, le=100000)
+    difficulty: str = Field(pattern=r"^(BEGINNER|INTERMEDIATE|ADVANCED)$")
+    status: str = Field(pattern=r"^(ACTIVE|UPCOMING|DRAFT|ARCHIVED)$")
+    thumbnail: str | None = Field(default=None, max_length=500)
+
+
 class AdminCommunityPostCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=5000)
     audience: str = Field(default="ALL", pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
@@ -393,6 +483,8 @@ class DashboardOverviewResponse(BaseModel):
     totalUsers: int = 0
     workoutsThisWeek: int = 0
     challengeCompletions: int = 0
+    activeChallenges: int = 0
+    readyChallenges: int = 0
     vimeoApiStatus: str
     userChart: list[DashboardOverviewChartPoint] = Field(default_factory=list)
     recentUsers: list[DashboardOverviewRecentUser] = Field(default_factory=list)

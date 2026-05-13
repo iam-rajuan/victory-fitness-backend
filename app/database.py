@@ -29,6 +29,9 @@ coach_victor_threads_collection = db["coach_victor_threads"]
 coach_victor_archives_collection = db["coach_victor_archives"]
 journal_entries_collection = db["journal_entries"]
 workouts_collection = db["workouts"]
+challenges_collection = db["challenges"]
+challenge_memberships_collection = db["challenge_memberships"]
+challenge_chat_messages_collection = db["challenge_chat_messages"]
 community_posts_collection = db["community_posts"]
 community_comments_collection = db["community_comments"]
 community_reactions_collection = db["community_reactions"]
@@ -55,6 +58,12 @@ async def ensure_indexes() -> None:
     await journal_entries_collection.create_index([("user_id", 1), ("created_at", -1)])
     await workouts_collection.create_index([("created_at", -1)])
     await workouts_collection.create_index("vimeo_id", unique=True)
+    await challenges_collection.create_index([("status", 1), ("created_at", -1)])
+    await challenges_collection.create_index([("category", 1), ("created_at", -1)])
+    await challenge_memberships_collection.create_index([("user_id", 1), ("status", 1), ("joined_at", -1)])
+    await challenge_memberships_collection.create_index([("challenge_id", 1), ("status", 1)])
+    await challenge_memberships_collection.create_index([("user_id", 1), ("challenge_id", 1)], unique=True)
+    await challenge_chat_messages_collection.create_index([("challenge_id", 1), ("created_at", -1)])
     await community_posts_collection.create_index([("created_at", -1)])
     await community_posts_collection.create_index([("audience", 1), ("created_at", -1)])
     await community_comments_collection.create_index([("post_id", 1), ("created_at", 1)])

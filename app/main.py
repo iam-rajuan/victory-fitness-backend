@@ -30,6 +30,9 @@ from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
 from .models import (
     AdminChangePasswordRequest,
+    AdminChallengeItem,
+    AdminChallengeListResponse,
+    AdminChallengeRequest,
     AdminProfileResponse,
     AboutUsResponse,
     AdminCommunityPostCreateRequest,
@@ -45,6 +48,8 @@ from .models import (
     CommunityPostResponse,
     CommunityReactionUserResponse,
     CommunityReactionToggleResponse,
+    ChallengeOverviewResponse,
+    ChallengeChatSummaryResponse,
     DashboardOverviewChartPoint,
     AdminUserChartPoint,
     AdminUserDetailResponse,
@@ -87,14 +92,21 @@ from .models import (
     UpdateTermsConditionRequest,
     TermsConditionResponse,
     TokenResponse,
+    StartChallengeResponse,
     UpdateAdminProfileRequest,
     VerifyEmailRequest,
+    UserActiveChallengeResponse,
+    UserCompletedChallengeResponse,
+    UserReadyChallengeResponse,
     WorkoutLibraryCategory,
     WorkoutLibraryItem,
     WorkoutLibraryResponse,
 )
 from .database import (
     app_content_collection,
+    challenge_chat_messages_collection,
+    challenge_memberships_collection,
+    challenges_collection,
     coach_victor_archives_collection,
     coach_victor_threads_collection,
     community_comments_collection,
@@ -815,9 +827,6 @@ async def create_community_post(
     document = {
         "_id": ObjectId(),
         "author_id": str(user["_id"]),
-        "author_name": str(user.get("name") or "Member").strip() or "Member",
-        "author_role": "admin" if user.get("is_admin") else "user",
-        "author_profile_image": str(user.get("profile_image") or "").strip(),
         "audience": "ALL",
         "content": payload.content.strip(),
         "image_url": image_url,
@@ -871,9 +880,6 @@ async def create_community_post_comment(
         "_id": ObjectId(),
         "post_id": str(record["_id"]),
         "author_id": str(user["_id"]),
-        "author_name": str(user.get("name") or "Member").strip() or "Member",
-        "author_role": "admin" if user.get("is_admin") else "user",
-        "author_profile_image": str(user.get("profile_image") or "").strip(),
         "content": payload.content.strip(),
         "created_at": now,
     }
@@ -885,7 +891,7 @@ async def create_community_post_comment(
             "$set": {"updated_at": now},
         },
     )
-    return CommunityCommentResponse(**_serialize_community_comment_record(comment_document))
+    return CommunityCommentResponse(**_serialize_community_comment_record(comment_document, user))
 
 
 @app.post("/community/posts/{post_id}/reactions/toggle", response_model=CommunityReactionToggleResponse)
@@ -975,9 +981,6 @@ async def admin_create_community_post(
     document = {
         "_id": ObjectId(),
         "author_id": str(admin_user["_id"]),
-        "author_name": str(admin_user.get("name") or "Admin").strip() or "Admin",
-        "author_role": "admin",
-        "author_profile_image": str(admin_user.get("profile_image") or "").strip(),
         "audience": payload.audience.strip(),
         "content": payload.content.strip(),
         "image_url": image_url,
@@ -1053,6 +1056,175 @@ async def admin_delete_community_post(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@app.get("/challenges/overview", response_model=ChallengeOverviewResponse)
+async def get_challenge_overview(
+    user: dict = Depends(_require_access_user),
+) -> ChallengeOverviewResponse:
+    return await _build_challenge_overview_response(str(user["_id"]))
+
+
+@app.post("/challenges/{challenge_id}/start", response_model=StartChallengeResponse, status_code=status.HTTP_201_CREATED)
+async def start_challenge(
+    challenge_id: str,
+    user: dict = Depends(_require_access_user),
+) -> StartChallengeResponse:
+    try:
+        object_id = ObjectId(challenge_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid challenge id") from exc
+
+    challenge = await challenges_collection.find_one({"_id": object_id})
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    if str(challenge.get("status") or "").upper() not in {"ACTIVE", "UPCOMING"}:
+        raise HTTPException(status_code=400, detail="This challenge cannot be started")
+
+    user_id = str(user["_id"])
+    existing_membership = await challenge_memberships_collection.find_one(
+        {"user_id": user_id, "challenge_id": challenge_id}
+    )
+    if existing_membership:
+        existing_status = str(existing_membership.get("status") or "").upper()
+        if existing_status == "ACTIVE":
+            raise HTTPException(status_code=409, detail="You already started this challenge")
+        if existing_status == "COMPLETED":
+            raise HTTPException(status_code=409, detail="You already completed this challenge")
+
+    now = datetime.now(timezone.utc)
+    document = {
+        "user_id": user_id,
+        "challenge_id": challenge_id,
+        "status": "ACTIVE",
+        "progress_days_completed": 0,
+        "joined_at": now,
+        "started_at": now,
+        "updated_at": now,
+    }
+    insert_result = await challenge_memberships_collection.insert_one(document)
+
+    await challenge_chat_messages_collection.update_one(
+        {"challenge_id": challenge_id, "author_id": "system", "message_type": "system_join"},
+        {
+            "$setOnInsert": {
+                "challenge_id": challenge_id,
+                "author_id": "system",
+                "author_name": "Coach",
+                "message": f"{user.get('name') or 'A member'} joined the challenge.",
+                "message_type": "system_join",
+                "created_at": now,
+            }
+        },
+        upsert=True,
+    )
+
+    return StartChallengeResponse(membership_id=str(insert_result.inserted_id))
+
+
+@app.get("/admin/challenges", response_model=AdminChallengeListResponse)
+async def admin_list_challenges(
+    query: str | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> AdminChallengeListResponse:
+    filter_doc = {}
+    search = (query or "").strip()
+    if search:
+        escaped = re.escape(search)
+        filter_doc["$or"] = [
+            {"title": {"$regex": escaped, "$options": "i"}},
+            {"category": {"$regex": escaped, "$options": "i"}},
+            {"difficulty": {"$regex": escaped, "$options": "i"}},
+            {"status": {"$regex": escaped, "$options": "i"}},
+        ]
+
+    records = await challenges_collection.find(
+        filter_doc,
+        sort=[("created_at", -1), ("_id", -1)],
+    ).to_list(length=None)
+    stats = await _load_challenge_stats_map([str(record["_id"]) for record in records])
+
+    return AdminChallengeListResponse(
+        total=len(records),
+        challenges=[AdminChallengeItem(**_serialize_admin_challenge_record(record, stats)) for record in records],
+    )
+
+
+@app.post("/admin/challenges", response_model=AdminChallengeItem, status_code=status.HTTP_201_CREATED)
+async def admin_create_challenge(
+    payload: AdminChallengeRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminChallengeItem:
+    now = datetime.now(timezone.utc)
+    document = {
+        "title": payload.title.strip(),
+        "description": payload.description.strip(),
+        "category": payload.category.strip(),
+        "duration_days": payload.durationDays,
+        "points": payload.points,
+        "difficulty": payload.difficulty,
+        "status": payload.status,
+        "thumbnail": (payload.thumbnail or "").strip(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    insert_result = await challenges_collection.insert_one(document)
+    document["_id"] = insert_result.inserted_id
+    return AdminChallengeItem(**_serialize_admin_challenge_record(document))
+
+
+@app.patch("/admin/challenges/{challenge_id}", response_model=AdminChallengeItem)
+async def admin_update_challenge(
+    challenge_id: str,
+    payload: AdminChallengeRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminChallengeItem:
+    try:
+        object_id = ObjectId(challenge_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid challenge id") from exc
+
+    existing = await challenges_collection.find_one({"_id": object_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+
+    update_doc = {
+        "title": payload.title.strip(),
+        "description": payload.description.strip(),
+        "category": payload.category.strip(),
+        "duration_days": payload.durationDays,
+        "points": payload.points,
+        "difficulty": payload.difficulty,
+        "status": payload.status,
+        "thumbnail": (payload.thumbnail or "").strip(),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await challenges_collection.update_one({"_id": object_id}, {"$set": update_doc})
+
+    updated = await challenges_collection.find_one({"_id": object_id})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    stats = await _load_challenge_stats_map([challenge_id])
+    return AdminChallengeItem(**_serialize_admin_challenge_record(updated, stats))
+
+
+@app.delete("/admin/challenges/{challenge_id}")
+async def admin_delete_challenge(
+    challenge_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, str]:
+    try:
+        object_id = ObjectId(challenge_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid challenge id") from exc
+
+    delete_result = await challenges_collection.delete_one({"_id": object_id})
+    if delete_result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+
+    await challenge_memberships_collection.delete_many({"challenge_id": challenge_id})
+    await challenge_chat_messages_collection.delete_many({"challenge_id": challenge_id})
+    return {"status": "success", "message": "Challenge deleted"}
+
+
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
 async def admin_dashboard_overview(
     year: int | None = None,
@@ -1061,9 +1233,16 @@ async def admin_dashboard_overview(
     selected_year = year or datetime.now(timezone.utc).year
     year_start = datetime(selected_year, 1, 1, tzinfo=timezone.utc)
     next_year_start = datetime(selected_year + 1, 1, 1, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    week_start = now - timedelta(days=now.weekday())
+    week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
     non_admin_filter = {"is_admin": {"$ne": True}}
 
     total_users = await users_collection.count_documents(non_admin_filter)
+    workouts_this_week = await workouts_collection.count_documents({"created_at": {"$gte": week_start}})
+    challenge_completions = await challenge_memberships_collection.count_documents({"status": "COMPLETED"})
+    active_challenges = await challenges_collection.count_documents({"status": "ACTIVE"})
+    ready_challenges = await challenges_collection.count_documents({"status": {"$in": ["ACTIVE", "UPCOMING"]}})
     recent_user_records = await users_collection.find(
         non_admin_filter,
         sort=[("created_at", -1)],
@@ -1115,8 +1294,10 @@ async def admin_dashboard_overview(
 
     return DashboardOverviewResponse(
         totalUsers=total_users,
-        workoutsThisWeek=0,
-        challengeCompletions=0,
+        workoutsThisWeek=workouts_this_week,
+        challengeCompletions=challenge_completions,
+        activeChallenges=active_challenges,
+        readyChallenges=ready_challenges,
         vimeoApiStatus=_get_vimeo_status(),
         userChart=user_chart,
         recentUsers=recent_users,
@@ -2387,15 +2568,22 @@ def _get_allowed_community_audiences(user: dict) -> list[str]:
     return allowed
 
 
-def _serialize_community_post_record(record: dict) -> dict:
+def _serialize_community_post_record(record: dict, author_record: dict | None = None) -> dict:
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
     updated_at = _as_utc(record.get("updated_at") or created_at)
+    author_role = str(record.get("author_role") or "user")
+    author_name = str(record.get("author_name") or "Member")
+    author_profile_image = str(record.get("author_profile_image") or "")
+    if author_record:
+        author_role = str(author_record.get("role") or ("admin" if author_record.get("is_admin") else "user")).strip() or "user"
+        author_name = str(author_record.get("name") or "Member").strip() or "Member"
+        author_profile_image = str(author_record.get("profile_image") or "").strip()
     return {
         "id": str(record.get("_id")),
         "author_id": str(record.get("author_id") or ""),
-        "author_name": str(record.get("author_name") or "Member"),
-        "author_role": str(record.get("author_role") or "user"),
-        "author_profile_image": str(record.get("author_profile_image") or ""),
+        "author_name": author_name,
+        "author_role": author_role,
+        "author_profile_image": author_profile_image,
         "audience": str(record.get("audience") or "ALL"),
         "content": str(record.get("content") or ""),
         "image_url": str(record.get("image_url") or ""),
@@ -2407,17 +2595,24 @@ def _serialize_community_post_record(record: dict) -> dict:
         "reactions": [],
         "created_at": created_at,
         "updated_at": updated_at,
-    }
+}
 
 
-def _serialize_community_comment_record(record: dict) -> dict:
+def _serialize_community_comment_record(record: dict, author_record: dict | None = None) -> dict:
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    author_role = str(record.get("author_role") or "user")
+    author_name = str(record.get("author_name") or "Member")
+    author_profile_image = str(record.get("author_profile_image") or "")
+    if author_record:
+        author_role = str(author_record.get("role") or ("admin" if author_record.get("is_admin") else "user")).strip() or "user"
+        author_name = str(author_record.get("name") or "Member").strip() or "Member"
+        author_profile_image = str(author_record.get("profile_image") or "").strip()
     return {
         "id": str(record.get("_id")),
         "post_id": str(record.get("post_id") or ""),
-        "author_name": str(record.get("author_name") or "Member"),
-        "author_role": str(record.get("author_role") or "user"),
-        "author_profile_image": str(record.get("author_profile_image") or ""),
+        "author_name": author_name,
+        "author_role": author_role,
+        "author_profile_image": author_profile_image,
         "content": str(record.get("content") or ""),
         "created_at": created_at,
     }
@@ -2446,6 +2641,7 @@ async def _serialize_community_post_records(
     if not records:
         return []
 
+    author_records_by_id = await _load_community_author_records(records)
     post_ids = [str(record.get("_id")) for record in records if record.get("_id")]
     comments_by_post = await _load_community_comments(records, limit_per_post=comment_limit_per_post)
     liked_post_ids = await _load_community_liked_post_ids(post_ids, viewer_user_id)
@@ -2453,7 +2649,8 @@ async def _serialize_community_post_records(
 
     serialized_posts: list[dict] = []
     for record in records:
-        serialized = _serialize_community_post_record(record)
+        author_id = str(record.get("author_id") or "")
+        serialized = _serialize_community_post_record(record, author_records_by_id.get(author_id))
         post_id = serialized["id"]
         serialized["viewer_has_liked"] = post_id in liked_post_ids
         serialized["can_delete"] = bool(viewer_user_id) and _can_manage_community_post(record, {"_id": viewer_user_id, "is_admin": False})
@@ -2472,13 +2669,17 @@ async def _load_community_comments(records: list[dict], limit_per_post: int = 3)
         {"post_id": {"$in": post_ids}},
         sort=[("created_at", 1), ("_id", 1)],
     ).to_list(length=1000)
+    author_records_by_id = await _load_community_author_records(comments)
 
     comments_by_post: dict[str, list[dict]] = {post_id: [] for post_id in post_ids}
     for comment in comments:
         post_id = str(comment.get("post_id") or "")
         if not post_id:
             continue
-        comments_by_post.setdefault(post_id, []).append(_serialize_community_comment_record(comment))
+        author_id = str(comment.get("author_id") or "")
+        comments_by_post.setdefault(post_id, []).append(
+            _serialize_community_comment_record(comment, author_records_by_id.get(author_id))
+        )
 
     if limit_per_post > 0:
         return {
@@ -2487,6 +2688,29 @@ async def _load_community_comments(records: list[dict], limit_per_post: int = 3)
         }
 
     return comments_by_post
+
+
+async def _load_community_author_records(records: list[dict]) -> dict[str, dict]:
+    author_ids = {
+        str(record.get("author_id") or "").strip()
+        for record in records
+        if str(record.get("author_id") or "").strip()
+    }
+    if not author_ids:
+        return {}
+
+    object_ids: list[ObjectId] = []
+    for author_id in author_ids:
+        try:
+            object_ids.append(ObjectId(author_id))
+        except Exception:
+            continue
+
+    if not object_ids:
+        return {}
+
+    author_records = await users_collection.find({"_id": {"$in": object_ids}}).to_list(length=len(object_ids))
+    return {str(author_record.get("_id")): author_record for author_record in author_records}
 
 
 async def _load_community_liked_post_ids(post_ids: list[str], viewer_user_id: str | None) -> set[str]:
@@ -2556,30 +2780,13 @@ async def _sync_community_author_profile(user_record: dict) -> None:
     if not author_id:
         return
 
-    author_name = str(user_record.get("name") or "Member").strip() or "Member"
-    author_role = str(user_record.get("role") or ("admin" if user_record.get("is_admin") else "user")).strip() or "user"
-    author_profile_image = str(user_record.get("profile_image") or "").strip()
-    updated_at = datetime.now(timezone.utc)
-
-    post_update = {
-        "author_name": author_name,
-        "author_role": author_role,
-        "author_profile_image": author_profile_image,
-        "updated_at": updated_at,
-    }
-    comment_update = {
-        "author_name": author_name,
-        "author_role": author_role,
-        "author_profile_image": author_profile_image,
-    }
-
     await community_posts_collection.update_many(
         {"author_id": author_id},
-        {"$set": post_update},
+        {"$unset": {"author_name": "", "author_role": "", "author_profile_image": ""}},
     )
     await community_comments_collection.update_many(
         {"author_id": author_id},
-        {"$set": comment_update},
+        {"$unset": {"author_name": "", "author_role": "", "author_profile_image": ""}},
     )
 
 
@@ -2985,6 +3192,52 @@ def _serialize_admin_workout_record(record: dict) -> dict:
     }
 
 
+def _difficulty_color(difficulty: str) -> str:
+    mapping = {
+        "BEGINNER": "#22C55E",
+        "INTERMEDIATE": "#F59E0B",
+        "ADVANCED": "#EF4444",
+    }
+    return mapping.get(str(difficulty or "").upper(), "#4F8EF7")
+
+
+def _challenge_color(category: str, difficulty: str) -> str:
+    category_key = str(category or "").strip().lower()
+    category_map = {
+        "strength": "#4F8EF7",
+        "cardio": "#06B6D4",
+        "mindfulness": "#22C55E",
+        "nutrition": "#F59E0B",
+        "family": "#A855F7",
+    }
+    return category_map.get(category_key, _difficulty_color(difficulty))
+
+
+def _serialize_admin_challenge_record(
+    record: dict,
+    stats_map: dict[str, dict[str, int]] | None = None,
+) -> dict:
+    challenge_id = str(record["_id"])
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    updated_at = _as_utc(record.get("updated_at") or created_at)
+    stats = (stats_map or {}).get(challenge_id, {})
+    return {
+        "id": challenge_id,
+        "title": str(record.get("title") or ""),
+        "description": str(record.get("description") or ""),
+        "category": str(record.get("category") or "Challenge"),
+        "durationDays": max(int(record.get("duration_days") or 0), 0),
+        "points": max(int(record.get("points") or 0), 0),
+        "difficulty": str(record.get("difficulty") or "BEGINNER"),
+        "status": str(record.get("status") or "DRAFT"),
+        "thumbnail": str(record.get("thumbnail") or ""),
+        "participantCount": int(stats.get("participants", 0)),
+        "completionCount": int(stats.get("completions", 0)),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }
+
+
 def _serialize_public_workout_record(record: dict) -> dict:
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
     return {
@@ -2995,6 +3248,155 @@ def _serialize_public_workout_record(record: dict) -> dict:
         "thumbnail": str(record.get("thumbnail") or ""),
         "dateAdded": created_at,
     }
+
+
+async def _load_challenge_stats_map(challenge_ids: list[str]) -> dict[str, dict[str, int]]:
+    if not challenge_ids:
+        return {}
+
+    participant_records = await challenge_memberships_collection.aggregate(
+        [
+            {"$match": {"challenge_id": {"$in": challenge_ids}}},
+            {"$group": {"_id": "$challenge_id", "participants": {"$sum": 1}}},
+        ]
+    ).to_list(length=len(challenge_ids))
+    completion_records = await challenge_memberships_collection.aggregate(
+        [
+            {"$match": {"challenge_id": {"$in": challenge_ids}, "status": "COMPLETED"}},
+            {"$group": {"_id": "$challenge_id", "completions": {"$sum": 1}}},
+        ]
+    ).to_list(length=len(challenge_ids))
+
+    stats_map: dict[str, dict[str, int]] = {challenge_id: {"participants": 0, "completions": 0} for challenge_id in challenge_ids}
+    for item in participant_records:
+        challenge_id = str(item.get("_id") or "")
+        if challenge_id:
+            stats_map.setdefault(challenge_id, {"participants": 0, "completions": 0})["participants"] = int(item.get("participants", 0))
+    for item in completion_records:
+        challenge_id = str(item.get("_id") or "")
+        if challenge_id:
+            stats_map.setdefault(challenge_id, {"participants": 0, "completions": 0})["completions"] = int(item.get("completions", 0))
+    return stats_map
+
+
+async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewResponse:
+    memberships = await challenge_memberships_collection.find(
+        {"user_id": user_id},
+        sort=[("joined_at", -1), ("_id", -1)],
+    ).to_list(length=None)
+    challenge_ids = [membership.get("challenge_id") for membership in memberships if membership.get("challenge_id")]
+    challenge_object_ids: list[ObjectId] = []
+    for challenge_id in challenge_ids:
+        try:
+            challenge_object_ids.append(ObjectId(str(challenge_id)))
+        except Exception:
+            continue
+
+    challenge_records = await challenges_collection.find({"_id": {"$in": challenge_object_ids}}).to_list(length=len(challenge_object_ids)) if challenge_object_ids else []
+    challenges_by_id = {str(record["_id"]): record for record in challenge_records}
+
+    active_memberships = [membership for membership in memberships if str(membership.get("status") or "").upper() == "ACTIVE"]
+    completed_memberships = [membership for membership in memberships if str(membership.get("status") or "").upper() == "COMPLETED"]
+
+    active_challenges: list[UserActiveChallengeResponse] = []
+    active_challenge_ids: list[str] = []
+    for membership in active_memberships:
+        challenge_id = str(membership.get("challenge_id") or "")
+        challenge = challenges_by_id.get(challenge_id)
+        if not challenge:
+            continue
+        total_days = max(int(challenge.get("duration_days") or 0), 1)
+        progress_days = min(max(int(membership.get("progress_days_completed") or 0), 0), total_days)
+        days_left = max(total_days - progress_days, 0)
+        active_challenge_ids.append(challenge_id)
+        active_challenges.append(
+            UserActiveChallengeResponse(
+                id=str(membership.get("_id") or challenge_id),
+                challenge_id=challenge_id,
+                title=str(challenge.get("title") or ""),
+                type=str(challenge.get("category") or "Challenge"),
+                days_left=days_left,
+                total_days=total_days,
+                progress=progress_days / total_days if total_days else 0,
+                points=max(int(challenge.get("points") or 0), 0),
+                color=_challenge_color(str(challenge.get("category") or ""), str(challenge.get("difficulty") or "")),
+            )
+        )
+
+    completed_challenges: list[UserCompletedChallengeResponse] = []
+    for membership in completed_memberships:
+        challenge_id = str(membership.get("challenge_id") or "")
+        challenge = challenges_by_id.get(challenge_id)
+        completed_at = membership.get("completed_at")
+        if not challenge or not isinstance(completed_at, datetime):
+            continue
+        completed_challenges.append(
+            UserCompletedChallengeResponse(
+                id=str(membership.get("_id") or challenge_id),
+                challenge_id=challenge_id,
+                title=str(challenge.get("title") or ""),
+                type=str(challenge.get("category") or "Challenge"),
+                earned_points=max(int(challenge.get("points") or 0), 0),
+                completed_at=_as_utc(completed_at),
+                color=_challenge_color(str(challenge.get("category") or ""), str(challenge.get("difficulty") or "")),
+            )
+        )
+
+    active_chat_messages = await challenge_chat_messages_collection.aggregate(
+        [
+            {"$match": {"challenge_id": {"$in": active_challenge_ids}}},
+            {"$sort": {"created_at": -1}},
+            {"$group": {"_id": "$challenge_id", "message": {"$first": "$message"}, "created_at": {"$first": "$created_at"}}},
+        ]
+    ).to_list(length=len(active_challenge_ids)) if active_challenge_ids else []
+    chat_by_challenge = {str(item.get("_id") or ""): item for item in active_chat_messages}
+
+    active_chats = [
+        ChallengeChatSummaryResponse(
+            id=f"chat-{challenge_id}",
+            challenge_id=challenge_id,
+            name=str(challenges_by_id[challenge_id].get("title") or ""),
+            last_message=str(chat_by_challenge.get(challenge_id, {}).get("message") or "Coach: Stay consistent today."),
+            last_message_at=_as_utc(chat_by_challenge[challenge_id]["created_at"]) if challenge_id in chat_by_challenge and isinstance(chat_by_challenge[challenge_id].get("created_at"), datetime) else None,
+            unread_count=0,
+            avatar=str(challenges_by_id[challenge_id].get("thumbnail") or ""),
+        )
+        for challenge_id in active_challenge_ids
+        if challenge_id in challenges_by_id
+    ]
+
+    excluded_challenge_ids = {str(membership.get("challenge_id") or "") for membership in memberships}
+    ready_records = await challenges_collection.find(
+        {
+            "status": {"$in": ["ACTIVE", "UPCOMING"]},
+            "_id": {"$nin": [ObjectId(challenge_id) for challenge_id in excluded_challenge_ids if ObjectId.is_valid(challenge_id)]},
+        },
+        sort=[("created_at", -1), ("_id", -1)],
+    ).limit(8).to_list(length=8)
+    ready_stats = await _load_challenge_stats_map([str(record["_id"]) for record in ready_records])
+    ready_to_start = [
+        UserReadyChallengeResponse(
+            id=str(record["_id"]),
+            title=str(record.get("title") or ""),
+            description=str(record.get("description") or ""),
+            duration_days=max(int(record.get("duration_days") or 0), 0),
+            type=str(record.get("category") or "Challenge"),
+            points=max(int(record.get("points") or 0), 0),
+            participants=int(ready_stats.get(str(record["_id"]), {}).get("participants", 0)),
+            difficulty=str(record.get("difficulty") or "BEGINNER"),
+            difficulty_color=_difficulty_color(str(record.get("difficulty") or "")),
+            status=str(record.get("status") or "ACTIVE"),
+            thumbnail=str(record.get("thumbnail") or ""),
+        )
+        for record in ready_records
+    ]
+
+    return ChallengeOverviewResponse(
+        active_chats=active_chats,
+        active_challenges=active_challenges,
+        completed_challenges=completed_challenges,
+        ready_to_start=ready_to_start,
+    )
 
 
 async def _build_admin_user_summary_response(year: int | None = None) -> AdminUserSummaryResponse:
