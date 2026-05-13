@@ -4162,7 +4162,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
     excluded_challenge_ids = {str(membership.get("challenge_id") or "") for membership in memberships}
     ready_records = await challenges_collection.find(
         {
-            "status": {"$in": ["ACTIVE", "UPCOMING"]},
+            "status": "ACTIVE",
             "_id": {"$nin": [ObjectId(challenge_id) for challenge_id in excluded_challenge_ids if ObjectId.is_valid(challenge_id)]},
         },
         sort=[("created_at", -1), ("_id", -1)],
