@@ -23,6 +23,7 @@ from .coach_archive import (
     s3_archive_enabled,
     store_thread_snapshot,
 )
+from .challenge_plan_ai import ChallengePlanGenerationInput, generate_challenge_plan
 from .coach_victor import generate_coach_victor_reply
 from .config import settings
 from .database import DatabaseNotConfiguredError, ensure_indexes, users_collection
@@ -32,6 +33,8 @@ from .models import (
     AdminChangePasswordRequest,
     AdminChallengeItem,
     AdminChallengeListResponse,
+    AdminChallengePlanGenerateRequest,
+    AdminChallengePlanGenerateResponse,
     AdminChallengeRequest,
     AdminProfileResponse,
     AboutUsResponse,
@@ -42,6 +45,10 @@ from .models import (
     ChallengeChatMessageUpdateRequest,
     ChallengeChatMessageResponse,
     ChallengeChatEventResponse,
+    ChallengePlanCompletionRequest,
+    ChallengePlanDay,
+    ChallengePlanDayProgressResponse,
+    ChallengePlanProgressResponse,
     ChallengeChatReactionToggleRequest,
     ChallengeChatThreadResponse,
     CoachVictorChatRequest,
@@ -1127,6 +1134,7 @@ async def get_challenge_chat_thread(
         title=str(challenge.get("title") or ""),
         description=str(challenge.get("description") or ""),
         plan_text=str(challenge.get("plan_text") or ""),
+        plan_days=[ChallengePlanDay(**day) for day in _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])],
         category=str(challenge.get("category") or "Challenge"),
         duration_days=max(int(challenge.get("duration_days") or 0), 0),
         points=max(int(challenge.get("points") or 0), 0),
@@ -1136,6 +1144,10 @@ async def get_challenge_chat_thread(
         participant_count=participant_count,
         viewer_membership_status=str(membership.get("status") or "ACTIVE"),
         viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
+        viewer_plan_progress=_build_viewer_plan_progress(
+            _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []),
+            membership,
+        ),
         unread_count=unread_count,
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
     )
@@ -1341,6 +1353,177 @@ async def toggle_challenge_chat_reaction(
     return ChallengeChatMessageResponse(**(await _serialize_single_challenge_chat_message(updated, str(user["_id"]))))
 
 
+async def _store_membership_plan_progress(
+    *,
+    challenge: dict,
+    membership: dict,
+    user: dict,
+    day_number: int,
+    completed_section_ids: list[str],
+    completed: bool,
+    emit_progress_message: bool,
+) -> ChallengePlanProgressResponse:
+    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
+    if not plan_day:
+        raise HTTPException(status_code=404, detail="Challenge plan day not found")
+
+    normalized_section_ids = []
+    valid_section_ids = {
+        str(section.get("id") or "")
+        for section in plan_day.get("sections") or []
+        if str(section.get("id") or "")
+    }
+    for section_id in completed_section_ids:
+        if section_id in valid_section_ids and section_id not in normalized_section_ids:
+            normalized_section_ids.append(section_id)
+
+    total_sections = len(valid_section_ids)
+    is_day_completed = bool(completed or (total_sections > 0 and len(normalized_section_ids) >= total_sections))
+    if total_sections == 0 and completed:
+        is_day_completed = True
+
+    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    next_plan_progress = dict(existing_progress)
+    next_plan_progress[str(day_number)] = {
+        "completed": is_day_completed,
+        "completed_section_ids": normalized_section_ids,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    progress_days_completed = _count_completed_plan_days(next_plan_progress)
+    duration_days = max(int(challenge.get("duration_days") or 0), 1)
+    next_status = "COMPLETED" if progress_days_completed >= duration_days else "ACTIVE"
+    now = datetime.now(timezone.utc)
+
+    update_doc = {
+        "plan_progress": next_plan_progress,
+        "progress_days_completed": progress_days_completed,
+        "status": next_status,
+        "updated_at": now,
+    }
+    update_operations: dict[str, dict] = {"$set": update_doc}
+    if next_status == "COMPLETED":
+        update_doc["completed_at"] = now
+    elif membership.get("completed_at"):
+        update_operations["$unset"] = {"completed_at": ""}
+
+    await challenge_memberships_collection.update_one(
+        {"_id": membership["_id"]},
+        update_operations,
+    )
+
+    if emit_progress_message and is_day_completed:
+        progress_payload = {
+            "completed_day": day_number,
+            "total_days": duration_days,
+            "membership_status": next_status,
+        }
+        message_document = {
+            "_id": ObjectId(),
+            "challenge_id": str(challenge["_id"]),
+            "author_id": str(user["_id"]),
+            "message_type": "progress_update",
+            "content": f"Completed day {day_number}.",
+            "image_url": "",
+            "reply_to_message_id": None,
+            "progress_payload": progress_payload,
+            "created_at": now,
+            "updated_at": now,
+        }
+        await challenge_chat_messages_collection.insert_one(message_document)
+        await _broadcast_challenge_chat_event("message_created", str(challenge["_id"]), message_document)
+
+    updated_membership = await challenge_memberships_collection.find_one({"_id": membership["_id"]})
+    if not updated_membership:
+        raise HTTPException(status_code=404, detail="Challenge membership not found")
+
+    return _serialize_challenge_plan_progress_response(str(challenge["_id"]), updated_membership, plan_days)
+
+
+@app.post("/challenges/{challenge_id}/plan/days/{day_number}/complete", response_model=ChallengePlanProgressResponse)
+async def complete_challenge_plan_day(
+    challenge_id: str,
+    day_number: int,
+    payload: ChallengePlanCompletionRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengePlanProgressResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership, challenge)
+    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
+    if not plan_day:
+        raise HTTPException(status_code=404, detail="Challenge plan day not found")
+    completed_section_ids = [
+        str(section.get("id") or "")
+        for section in plan_day.get("sections") or []
+        if str(section.get("id") or "")
+    ] if payload.completed else []
+    return await _store_membership_plan_progress(
+        challenge=challenge,
+        membership=membership,
+        user=user,
+        day_number=day_number,
+        completed_section_ids=completed_section_ids,
+        completed=payload.completed,
+        emit_progress_message=payload.completed,
+    )
+
+
+@app.post(
+    "/challenges/{challenge_id}/plan/days/{day_number}/sections/{section_id}/complete",
+    response_model=ChallengePlanProgressResponse,
+)
+async def complete_challenge_plan_section(
+    challenge_id: str,
+    day_number: int,
+    section_id: str,
+    payload: ChallengePlanCompletionRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengePlanProgressResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership, challenge)
+
+    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
+    if not plan_day:
+        raise HTTPException(status_code=404, detail="Challenge plan day not found")
+    valid_section_ids = {
+        str(section.get("id") or "")
+        for section in plan_day.get("sections") or []
+        if str(section.get("id") or "")
+    }
+    if section_id not in valid_section_ids:
+        raise HTTPException(status_code=404, detail="Challenge plan section not found")
+
+    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
+    completed_section_ids = [
+        str(value)
+        for value in existing_day_progress.get("completed_section_ids", [])
+        if isinstance(value, str) and value in valid_section_ids
+    ] if isinstance(existing_day_progress, dict) else []
+
+    if payload.completed and section_id not in completed_section_ids:
+        completed_section_ids.append(section_id)
+    if not payload.completed:
+        completed_section_ids = [value for value in completed_section_ids if value != section_id]
+
+    prior_completed = bool(isinstance(existing_day_progress, dict) and existing_day_progress.get("completed"))
+    will_complete_day = len(completed_section_ids) >= len(valid_section_ids) > 0
+    return await _store_membership_plan_progress(
+        challenge=challenge,
+        membership=membership,
+        user=user,
+        day_number=day_number,
+        completed_section_ids=completed_section_ids,
+        completed=will_complete_day,
+        emit_progress_message=will_complete_day and not prior_completed,
+    )
+
+
 @app.post("/challenges/{challenge_id}/progress", response_model=ChallengeChatMessageResponse, status_code=status.HTTP_201_CREATED)
 async def post_challenge_progress_update(
     challenge_id: str,
@@ -1356,6 +1539,21 @@ async def post_challenge_progress_update(
     current_progress = max(int(membership.get("progress_days_completed") or 0), 0)
     next_progress = max(current_progress, completed_day)
     next_status = "COMPLETED" if next_progress >= total_days else "ACTIVE"
+    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+    existing_plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    next_plan_progress = dict(existing_plan_progress)
+    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == completed_day), None)
+    if plan_day:
+        completed_section_ids = [
+            str(section.get("id") or "")
+            for section in plan_day.get("sections") or []
+            if str(section.get("id") or "")
+        ]
+        next_plan_progress[str(completed_day)] = {
+            "completed": True,
+            "completed_section_ids": completed_section_ids,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     image_url = ""
     if payload.image_base64:
@@ -1395,6 +1593,7 @@ async def post_challenge_progress_update(
 
     membership_update = {
         "progress_days_completed": next_progress,
+        "plan_progress": next_plan_progress,
         "status": next_status,
         "updated_at": now,
     }
@@ -1446,6 +1645,7 @@ async def start_challenge(
                 {
                     "$set": {
                         "status": "ACTIVE",
+                        "plan_progress": existing_membership.get("plan_progress") if isinstance(existing_membership.get("plan_progress"), dict) else {},
                         "updated_at": now,
                         "started_at": existing_membership.get("started_at") or now,
                     }
@@ -1475,6 +1675,7 @@ async def start_challenge(
         "challenge_id": challenge_id,
         "status": "ACTIVE",
         "progress_days_completed": 0,
+        "plan_progress": {},
         "joined_at": now,
         "started_at": now,
         "updated_at": now,
@@ -1529,12 +1730,43 @@ async def admin_list_challenges(
     )
 
 
+@app.post("/admin/challenges/generate-plan", response_model=AdminChallengePlanGenerateResponse)
+async def admin_generate_challenge_plan(
+    payload: AdminChallengePlanGenerateRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminChallengePlanGenerateResponse:
+    generated = generate_challenge_plan(
+        ChallengePlanGenerationInput(
+            title=payload.title.strip(),
+            description=payload.description.strip(),
+            category=payload.category.strip(),
+            difficulty=payload.difficulty.strip(),
+            duration_days=payload.durationDays,
+        )
+    )
+    plan_days = _normalize_challenge_plan_days(generated.get("plan_days") if isinstance(generated, dict) else [])
+    if not plan_days:
+        raise HTTPException(status_code=500, detail="Failed to generate challenge plan")
+    plan_text = _build_challenge_plan_text(plan_days)
+    duration_days = max(_extract_plan_day_numbers(plan_days), default=payload.durationDays)
+    return AdminChallengePlanGenerateResponse(
+        title=payload.title.strip(),
+        description=str(generated.get("summary") or payload.description).strip(),
+        planText=plan_text,
+        planDays=[ChallengePlanDay(**day) for day in plan_days],
+        durationDays=duration_days,
+    )
+
+
 @app.post("/admin/challenges", response_model=AdminChallengeItem, status_code=status.HTTP_201_CREATED)
 async def admin_create_challenge(
     payload: AdminChallengeRequest,
     admin_user: dict = Depends(_require_admin_user),
 ) -> AdminChallengeItem:
     now = datetime.now(timezone.utc)
+    plan_days = _normalize_challenge_plan_days(payload.planDays)
+    derived_duration_days = max(_extract_plan_day_numbers(plan_days), default=payload.durationDays)
+    plan_text = _build_challenge_plan_text(plan_days) if plan_days else str(payload.planText or "").strip()
     thumbnail = (payload.thumbnail or "").strip()
     if payload.image_base64:
         try:
@@ -1551,9 +1783,10 @@ async def admin_create_challenge(
     document = {
         "title": payload.title.strip(),
         "description": payload.description.strip(),
-        "plan_text": str(payload.planText or "").strip(),
+        "plan_text": plan_text,
+        "plan_days": plan_days,
         "category": payload.category.strip(),
-        "duration_days": payload.durationDays,
+        "duration_days": derived_duration_days,
         "points": payload.points,
         "difficulty": payload.difficulty,
         "status": payload.status,
@@ -1595,12 +1828,16 @@ async def admin_update_challenge(
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Challenge thumbnail upload failed: {exc}") from exc
 
+    plan_days = _normalize_challenge_plan_days(payload.planDays)
+    derived_duration_days = max(_extract_plan_day_numbers(plan_days), default=payload.durationDays)
+    plan_text = _build_challenge_plan_text(plan_days) if plan_days else str(payload.planText or "").strip()
     update_doc = {
         "title": payload.title.strip(),
         "description": payload.description.strip(),
-        "plan_text": str(payload.planText or "").strip(),
+        "plan_text": plan_text,
+        "plan_days": plan_days,
         "category": payload.category.strip(),
-        "duration_days": payload.durationDays,
+        "duration_days": derived_duration_days,
         "points": payload.points,
         "difficulty": payload.difficulty,
         "status": payload.status,
@@ -1650,6 +1887,7 @@ async def admin_get_challenge_chat_thread(
         title=str(challenge.get("title") or ""),
         description=str(challenge.get("description") or ""),
         plan_text=str(challenge.get("plan_text") or ""),
+        plan_days=[ChallengePlanDay(**day) for day in _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])],
         category=str(challenge.get("category") or "Challenge"),
         duration_days=max(int(challenge.get("duration_days") or 0), 0),
         points=max(int(challenge.get("points") or 0), 0),
@@ -1659,6 +1897,7 @@ async def admin_get_challenge_chat_thread(
         participant_count=participant_count,
         viewer_membership_status="ADMIN",
         viewer_progress_days_completed=0,
+        viewer_plan_progress=[],
         unread_count=0,
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
     )
@@ -3696,6 +3935,151 @@ def _challenge_color(category: str, difficulty: str) -> str:
     return category_map.get(category_key, _difficulty_color(difficulty))
 
 
+def _slugify_challenge_plan_id(value: str, fallback: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    return slug[:60] or fallback
+
+
+def _normalize_challenge_plan_days(raw_days: list[ChallengePlanDay] | list[dict] | None) -> list[dict]:
+    if not raw_days:
+        return []
+
+    normalized_days: list[dict] = []
+    seen_day_numbers: set[int] = set()
+
+    for index, raw_day in enumerate(raw_days, start=1):
+        if isinstance(raw_day, ChallengePlanDay):
+            day_data = raw_day.model_dump()
+        elif isinstance(raw_day, dict):
+            day_data = dict(raw_day)
+        else:
+            continue
+
+        day_number = max(int(day_data.get("day_number") or index), 1)
+        if day_number in seen_day_numbers:
+            day_number = max(seen_day_numbers) + 1
+        seen_day_numbers.add(day_number)
+
+        sections: list[dict] = []
+        raw_sections = day_data.get("sections") if isinstance(day_data.get("sections"), list) else []
+        for section_index, raw_section in enumerate(raw_sections, start=1):
+            section_data = raw_section.model_dump() if hasattr(raw_section, "model_dump") else dict(raw_section or {})
+            section_title = str(section_data.get("title") or f"Section {section_index}").strip() or f"Section {section_index}"
+            section_id = _slugify_challenge_plan_id(
+                str(section_data.get("id") or section_title),
+                f"day-{day_number}-section-{section_index}",
+            )
+            exercises: list[dict] = []
+            raw_exercises = section_data.get("exercises") if isinstance(section_data.get("exercises"), list) else []
+            for exercise_index, raw_exercise in enumerate(raw_exercises, start=1):
+                exercise_data = raw_exercise.model_dump() if hasattr(raw_exercise, "model_dump") else dict(raw_exercise or {})
+                exercise_name = str(exercise_data.get("name") or f"Exercise {exercise_index}").strip() or f"Exercise {exercise_index}"
+                exercise_id = _slugify_challenge_plan_id(
+                    str(exercise_data.get("id") or exercise_name),
+                    f"{section_id}-exercise-{exercise_index}",
+                )
+                exercises.append(
+                    {
+                        "id": exercise_id,
+                        "name": exercise_name,
+                        "details": str(exercise_data.get("details") or "Complete as assigned.").strip() or "Complete as assigned.",
+                        "notes": str(exercise_data.get("notes") or "").strip(),
+                    }
+                )
+            sections.append(
+                {
+                    "id": section_id,
+                    "title": section_title,
+                    "description": str(section_data.get("description") or "").strip(),
+                    "estimated_minutes": max(int(section_data.get("estimated_minutes") or 0), 0),
+                    "exercises": exercises,
+                }
+            )
+
+        normalized_days.append(
+            {
+                "day_number": day_number,
+                "title": str(day_data.get("title") or f"Day {day_number}").strip() or f"Day {day_number}",
+                "focus": str(day_data.get("focus") or "").strip() or "Challenge work",
+                "notes": str(day_data.get("notes") or "").strip(),
+                "sections": sections,
+            }
+        )
+
+    normalized_days.sort(key=lambda item: int(item.get("day_number") or 0))
+    return normalized_days
+
+
+def _build_challenge_plan_text(plan_days: list[dict]) -> str:
+    if not plan_days:
+        return ""
+
+    lines: list[str] = []
+    for day in plan_days:
+        day_number = max(int(day.get("day_number") or 0), 0)
+        title = str(day.get("title") or f"Day {day_number}").strip()
+        focus = str(day.get("focus") or "").strip()
+        notes = str(day.get("notes") or "").strip()
+        lines.append(f"Day {day_number}: {title}")
+        if focus:
+            lines.append(f"Focus: {focus}")
+        for section in day.get("sections") or []:
+            lines.append(f"- {str(section.get('title') or 'Section').strip()}: {str(section.get('description') or '').strip()}")
+            for exercise in section.get("exercises") or []:
+                lines.append(
+                    f"  - {str(exercise.get('name') or 'Exercise').strip()} - {str(exercise.get('details') or '').strip()}"
+                )
+        if notes:
+            lines.append(f"Notes: {notes}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _extract_plan_day_numbers(plan_days: list[dict]) -> list[int]:
+    return [max(int(day.get("day_number") or 0), 0) for day in plan_days if int(day.get("day_number") or 0) > 0]
+
+
+def _count_completed_plan_days(plan_progress: dict) -> int:
+    total = 0
+    for entry in plan_progress.values():
+        if isinstance(entry, dict) and bool(entry.get("completed")):
+            total += 1
+    return total
+
+
+def _build_viewer_plan_progress(plan_days: list[dict], membership: dict) -> list[ChallengePlanDayProgressResponse]:
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    progress_responses: list[ChallengePlanDayProgressResponse] = []
+
+    for day in plan_days:
+        day_number = max(int(day.get("day_number") or 0), 0)
+        raw_day_progress = raw_progress.get(str(day_number), {}) if isinstance(raw_progress, dict) else {}
+        completed_section_ids = [
+            str(section_id)
+            for section_id in raw_day_progress.get("completed_section_ids", [])
+            if isinstance(section_id, str) and section_id
+        ] if isinstance(raw_day_progress, dict) else []
+        progress_responses.append(
+            ChallengePlanDayProgressResponse(
+                day_number=day_number,
+                completed=bool(isinstance(raw_day_progress, dict) and raw_day_progress.get("completed")),
+                completed_section_ids=completed_section_ids,
+            )
+        )
+
+    return progress_responses
+
+
+def _serialize_challenge_plan_progress_response(challenge_id: str, membership: dict, plan_days: list[dict]) -> ChallengePlanProgressResponse:
+    viewer_plan_progress = _build_viewer_plan_progress(plan_days, membership)
+    return ChallengePlanProgressResponse(
+        challenge_id=challenge_id,
+        viewer_membership_status=str(membership.get("status") or "ACTIVE"),
+        viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
+        viewer_plan_progress=viewer_plan_progress,
+    )
+
+
 def _serialize_admin_challenge_record(
     record: dict,
     stats_map: dict[str, dict[str, int]] | None = None,
@@ -3709,6 +4093,7 @@ def _serialize_admin_challenge_record(
         "title": str(record.get("title") or ""),
         "description": str(record.get("description") or ""),
         "planText": str(record.get("plan_text") or ""),
+        "planDays": _normalize_challenge_plan_days(record.get("plan_days") if isinstance(record.get("plan_days"), list) else []),
         "category": str(record.get("category") or "Challenge"),
         "durationDays": max(int(record.get("duration_days") or 0), 0),
         "points": max(int(record.get("points") or 0), 0),

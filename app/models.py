@@ -192,6 +192,46 @@ class CommunityReactionToggleResponse(BaseModel):
     viewer_has_liked: bool = False
 
 
+class ChallengePlanExercise(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=160)
+    details: str = Field(min_length=1, max_length=240)
+    notes: str = Field(default="", max_length=400)
+
+
+class ChallengePlanSection(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=400)
+    estimated_minutes: int = Field(default=10, ge=0, le=240)
+    exercises: list[ChallengePlanExercise] = Field(default_factory=list)
+
+
+class ChallengePlanDay(BaseModel):
+    day_number: int = Field(ge=1, le=365)
+    title: str = Field(min_length=1, max_length=160)
+    focus: str = Field(min_length=1, max_length=200)
+    notes: str = Field(default="", max_length=1200)
+    sections: list[ChallengePlanSection] = Field(default_factory=list)
+
+
+class ChallengePlanDayProgressResponse(BaseModel):
+    day_number: int
+    completed: bool = False
+    completed_section_ids: list[str] = Field(default_factory=list)
+
+
+class ChallengePlanProgressResponse(BaseModel):
+    challenge_id: str
+    viewer_membership_status: str
+    viewer_progress_days_completed: int = 0
+    viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
+
+
+class ChallengePlanCompletionRequest(BaseModel):
+    completed: bool = True
+
+
 class ChallengeChatSummaryResponse(BaseModel):
     id: str
     challenge_id: str
@@ -278,6 +318,7 @@ class ChallengeChatThreadResponse(BaseModel):
     title: str
     description: str
     plan_text: str = ""
+    plan_days: list[ChallengePlanDay] = Field(default_factory=list)
     category: str
     duration_days: int
     points: int = 0
@@ -287,6 +328,7 @@ class ChallengeChatThreadResponse(BaseModel):
     participant_count: int = 0
     viewer_membership_status: str
     viewer_progress_days_completed: int = 0
+    viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
     unread_count: int = 0
     messages: list[ChallengeChatMessageResponse] = Field(default_factory=list)
 
@@ -327,6 +369,7 @@ class AdminChallengeItem(BaseModel):
     title: str
     description: str
     planText: str = ""
+    planDays: list[ChallengePlanDay] = Field(default_factory=list)
     category: str
     durationDays: int
     points: int = 0
@@ -348,6 +391,7 @@ class AdminChallengeRequest(BaseModel):
     title: str = Field(min_length=2, max_length=160)
     description: str = Field(min_length=1, max_length=4000)
     planText: str | None = Field(default=None, max_length=30000)
+    planDays: list[ChallengePlanDay] = Field(default_factory=list)
     category: str = Field(min_length=1, max_length=80)
     durationDays: int = Field(ge=1, le=365)
     points: int = Field(ge=0, le=100000)
@@ -357,6 +401,22 @@ class AdminChallengeRequest(BaseModel):
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
+
+
+class AdminChallengePlanGenerateRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=160)
+    description: str = Field(min_length=1, max_length=4000)
+    category: str = Field(min_length=1, max_length=80)
+    difficulty: str = Field(pattern=r"^(BEGINNER|INTERMEDIATE|ADVANCED)$")
+    durationDays: int = Field(default=30, ge=1, le=365)
+
+
+class AdminChallengePlanGenerateResponse(BaseModel):
+    title: str
+    description: str
+    planText: str = ""
+    planDays: list[ChallengePlanDay] = Field(default_factory=list)
+    durationDays: int = 0
 
 
 class AdminCommunityPostCreateRequest(BaseModel):
