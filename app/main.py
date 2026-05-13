@@ -3100,6 +3100,11 @@ def _upload_challenge_chat_image_to_s3(
     return _upload_image_to_s3("challenge-chat-images", user_id, image_base64, mime_type, file_name)
 
 
+def _build_inline_image_data_url(image_base64: str, mime_type: str) -> str:
+    normalized_mime = str(mime_type or "image/jpeg").strip().lower() or "image/jpeg"
+    return f"data:{normalized_mime};base64,{image_base64}"
+
+
 def _upload_image_to_s3(
     folder_name: str,
     user_id: str,
@@ -3107,9 +3112,6 @@ def _upload_image_to_s3(
     mime_type: str,
     file_name: str | None,
 ) -> str:
-    if not s3_archive_enabled():
-        raise RuntimeError("AWS S3 is not configured for image uploads")
-
     normalized_mime = str(mime_type or "image/jpeg").strip().lower()
     allowed_types = {
         "image/jpeg": ".jpg",
@@ -3129,6 +3131,9 @@ def _upload_image_to_s3(
     if len(payload) > 10 * 1024 * 1024:
         raise ValueError("Profile image must be 10MB or smaller")
 
+    if not s3_archive_enabled():
+        return _build_inline_image_data_url(image_base64, normalized_mime)
+
     sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
     suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
     if suffix and not extension.endswith(suffix):
@@ -3142,7 +3147,8 @@ def _upload_image_to_s3(
     try:
         import boto3
     except ImportError as exc:
-        raise RuntimeError("boto3 is required for S3 profile image uploads") from exc
+        logger.warning("boto3_missing_for_image_upload folder=%s user_id=%s", folder_name, user_id)
+        return _build_inline_image_data_url(image_base64, normalized_mime)
 
     client = boto3.client(
         "s3",
@@ -3150,13 +3156,22 @@ def _upload_image_to_s3(
         aws_access_key_id=settings.aws_access_key_id,
         aws_secret_access_key=settings.aws_secret_access_key,
     )
-    client.put_object(
-        Bucket=settings.aws_s3_bucket,
-        Key=object_key,
-        Body=payload,
-        ContentType=normalized_mime,
-        CacheControl="public, max-age=31536000",
-    )
+    try:
+        client.put_object(
+            Bucket=settings.aws_s3_bucket,
+            Key=object_key,
+            Body=payload,
+            ContentType=normalized_mime,
+            CacheControl="public, max-age=31536000",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "s3_image_upload_failed folder=%s user_id=%s error=%s",
+            folder_name,
+            user_id,
+            exc,
+        )
+        return _build_inline_image_data_url(image_base64, normalized_mime)
 
     return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
 
