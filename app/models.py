@@ -250,6 +250,75 @@ class StartChallengeResponse(BaseModel):
     membership_id: str
 
 
+class ChallengeChatMessageResponse(BaseModel):
+    id: str
+    challenge_id: str
+    author_id: str = ""
+    author_name: str
+    author_role: str
+    author_profile_image: str = ""
+    message_type: str
+    content: str = ""
+    image_url: str = ""
+    reply_to_message_id: str | None = None
+    progress_payload: dict | None = None
+    created_at: datetime
+    updated_at: datetime
+    can_delete: bool = False
+    can_edit: bool = False
+    is_edited: bool = False
+    is_deleted: bool = False
+    reactions: list[dict] = Field(default_factory=list)
+
+
+class ChallengeChatThreadResponse(BaseModel):
+    challenge_id: str
+    title: str
+    description: str
+    category: str
+    duration_days: int
+    points: int = 0
+    difficulty: str
+    status: str
+    thumbnail: str = ""
+    participant_count: int = 0
+    viewer_membership_status: str
+    viewer_progress_days_completed: int = 0
+    unread_count: int = 0
+    messages: list[ChallengeChatMessageResponse] = Field(default_factory=list)
+
+
+class ChallengeChatMessageCreateRequest(BaseModel):
+    content: str | None = Field(default=None, max_length=4000)
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
+    reply_to_message_id: str | None = Field(default=None, max_length=80)
+
+
+class ChallengeChatMessageUpdateRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class ChallengeProgressUpdateRequest(BaseModel):
+    completed_day: int = Field(ge=1, le=365)
+    note: str | None = Field(default=None, max_length=2000)
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
+
+
+class ChallengeChatReactionToggleRequest(BaseModel):
+    emoji: str = Field(min_length=1, max_length=16)
+
+
+class ChallengeChatEventResponse(BaseModel):
+    event: str
+    challenge_id: str
+    message: ChallengeChatMessageResponse | None = None
+    message_id: str | None = None
+
+
 class AdminChallengeItem(BaseModel):
     id: str
     title: str

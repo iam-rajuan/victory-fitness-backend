@@ -10,7 +10,7 @@ from time import perf_counter
 
 from bson import ObjectId
 from dotenv import dotenv_values
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, status
+from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -38,6 +38,12 @@ from .models import (
     AdminCommunityPostCreateRequest,
     AdminCommunityPostUpdateRequest,
     BodyMetricsResponse,
+    ChallengeChatMessageCreateRequest,
+    ChallengeChatMessageUpdateRequest,
+    ChallengeChatMessageResponse,
+    ChallengeChatEventResponse,
+    ChallengeChatReactionToggleRequest,
+    ChallengeChatThreadResponse,
     CoachVictorChatRequest,
     CoachVictorChatResponse,
     CoachVictorHistoryResponse,
@@ -85,6 +91,7 @@ from .models import (
     NutritionPlanSaveResponse,
     RefreshRequest,
     RegisterRequest,
+    ChallengeProgressUpdateRequest,
     UpdateAboutUsRequest,
     UpdateBodyMetricsRequest,
     UpdateMeRequest,
@@ -105,6 +112,7 @@ from .models import (
 from .database import (
     app_content_collection,
     challenge_chat_messages_collection,
+    challenge_message_reactions_collection,
     challenge_memberships_collection,
     challenges_collection,
     coach_victor_archives_collection,
@@ -187,6 +195,37 @@ DEFAULT_ABOUT_US_HTML = """
 <h2>Our Focus</h2>
 <p>We focus on practical, sustainable progress instead of extreme plans, helping users improve strength, energy, recovery, and confidence.</p>
 """.strip()
+
+
+class ChallengeChatSocketManager:
+    def __init__(self) -> None:
+        self._connections: dict[str, set[WebSocket]] = {}
+
+    async def connect(self, challenge_id: str, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self._connections.setdefault(challenge_id, set()).add(websocket)
+
+    def disconnect(self, challenge_id: str, websocket: WebSocket) -> None:
+        connections = self._connections.get(challenge_id)
+        if not connections:
+            return
+        connections.discard(websocket)
+        if not connections:
+            self._connections.pop(challenge_id, None)
+
+    async def broadcast(self, challenge_id: str, payload: dict) -> None:
+        connections = list(self._connections.get(challenge_id, set()))
+        stale: list[WebSocket] = []
+        for websocket in connections:
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                stale.append(websocket)
+        for websocket in stale:
+            self.disconnect(challenge_id, websocket)
+
+
+challenge_chat_socket_manager = ChallengeChatSocketManager()
 
 app.add_middleware(
     CORSMiddleware,
@@ -1063,6 +1102,309 @@ async def get_challenge_overview(
     return await _build_challenge_overview_response(str(user["_id"]))
 
 
+@app.get("/challenges/{challenge_id}/chat", response_model=ChallengeChatThreadResponse)
+async def get_challenge_chat_thread(
+    challenge_id: str,
+    user: dict = Depends(_require_access_user),
+) -> ChallengeChatThreadResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_read_access(membership)
+
+    messages = await _load_challenge_chat_messages(challenge_id, str(user["_id"]), limit=50)
+    participant_count = await challenge_memberships_collection.count_documents(
+        {"challenge_id": challenge_id, "status": {"$in": ["ACTIVE", "COMPLETED"]}}
+    )
+    unread_count = await _count_unread_challenge_messages(challenge_id, str(user["_id"]), membership)
+    now = datetime.now(timezone.utc)
+    await challenge_memberships_collection.update_one(
+        {"_id": membership["_id"]},
+        {"$set": {"last_read_message_at": now, "updated_at": now}},
+    )
+
+    return ChallengeChatThreadResponse(
+        challenge_id=challenge_id,
+        title=str(challenge.get("title") or ""),
+        description=str(challenge.get("description") or ""),
+        category=str(challenge.get("category") or "Challenge"),
+        duration_days=max(int(challenge.get("duration_days") or 0), 0),
+        points=max(int(challenge.get("points") or 0), 0),
+        difficulty=str(challenge.get("difficulty") or "BEGINNER"),
+        status=str(challenge.get("status") or "ACTIVE"),
+        thumbnail=str(challenge.get("thumbnail") or ""),
+        participant_count=participant_count,
+        viewer_membership_status=str(membership.get("status") or "ACTIVE"),
+        viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
+        unread_count=unread_count,
+        messages=[ChallengeChatMessageResponse(**message) for message in messages],
+    )
+
+
+@app.websocket("/ws/challenges/{challenge_id}/chat")
+async def challenge_chat_socket(
+    websocket: WebSocket,
+    challenge_id: str,
+) -> None:
+    token = websocket.query_params.get("token", "").strip()
+    if not token:
+        await websocket.close(code=4401, reason="Missing access token")
+        return
+
+    try:
+        user = await _get_verified_user_from_access_token(token)
+        membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+        _ensure_challenge_read_access(membership)
+    except HTTPException as exc:
+        await websocket.close(code=4403 if exc.status_code == 403 else 4401, reason=str(exc.detail))
+        return
+
+    await challenge_chat_socket_manager.connect(challenge_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        challenge_chat_socket_manager.disconnect(challenge_id, websocket)
+
+
+@app.post("/challenges/{challenge_id}/chat/messages", response_model=ChallengeChatMessageResponse, status_code=status.HTTP_201_CREATED)
+async def create_challenge_chat_message(
+    challenge_id: str,
+    payload: ChallengeChatMessageCreateRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengeChatMessageResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership)
+
+    content = str(payload.content or "").strip()
+    if not content and not payload.image_base64:
+        raise HTTPException(status_code=400, detail="Message content or image is required")
+
+    image_url = ""
+    if payload.image_base64:
+        try:
+            image_url = _upload_challenge_chat_image_to_s3(
+                str(user["_id"]),
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Challenge chat image upload failed: {exc}") from exc
+
+    reply_to_message_id = str(payload.reply_to_message_id or "").strip() or None
+    if reply_to_message_id and not ObjectId.is_valid(reply_to_message_id):
+        raise HTTPException(status_code=400, detail="Invalid reply_to_message_id")
+    if reply_to_message_id:
+        await _get_challenge_message_or_404(challenge_id, reply_to_message_id)
+
+    now = datetime.now(timezone.utc)
+    document = {
+        "_id": ObjectId(),
+        "challenge_id": challenge_id,
+        "author_id": str(user["_id"]),
+        "message_type": "message",
+        "content": content,
+        "image_url": image_url,
+        "reply_to_message_id": reply_to_message_id,
+        "progress_payload": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await challenge_chat_messages_collection.insert_one(document)
+    await challenge_memberships_collection.update_one(
+        {"_id": membership["_id"]},
+        {"$set": {"updated_at": now}},
+    )
+    await _broadcast_challenge_chat_event("message_created", challenge_id, document)
+    if _challenge_message_mentions_coach(content):
+        await _create_challenge_coach_reply(
+            challenge=challenge,
+            membership=membership,
+            user=user,
+            trigger_message=document,
+        )
+
+    return ChallengeChatMessageResponse(**_serialize_challenge_chat_message(document, user, str(user["_id"])))
+
+
+@app.patch("/challenges/{challenge_id}/chat/messages/{message_id}", response_model=ChallengeChatMessageResponse)
+async def update_challenge_chat_message(
+    challenge_id: str,
+    message_id: str,
+    payload: ChallengeChatMessageUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengeChatMessageResponse:
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership)
+    message_record = await _get_challenge_message_or_404(challenge_id, message_id)
+    if str(message_record.get("author_id") or "") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="You can only edit your own messages")
+    if str(message_record.get("author_id") or "") in {"coach_bot", "system"}:
+        raise HTTPException(status_code=400, detail="This message cannot be edited")
+    if message_record.get("deleted_at"):
+        raise HTTPException(status_code=400, detail="Deleted messages cannot be edited")
+
+    now = datetime.now(timezone.utc)
+    await challenge_chat_messages_collection.update_one(
+        {"_id": message_record["_id"]},
+        {
+            "$set": {
+                "content": payload.content.strip(),
+                "updated_at": now,
+                "edited_at": now,
+            }
+        },
+    )
+    updated = await challenge_chat_messages_collection.find_one({"_id": message_record["_id"]})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Challenge chat message not found")
+    await _broadcast_challenge_chat_event("message_updated", challenge_id, updated)
+    return ChallengeChatMessageResponse(**(await _serialize_single_challenge_chat_message(updated, str(user["_id"]))))
+
+
+@app.delete("/challenges/{challenge_id}/chat/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_challenge_chat_message(
+    challenge_id: str,
+    message_id: str,
+    user: dict = Depends(_require_access_user),
+) -> Response:
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_read_access(membership)
+    message_record = await _get_challenge_message_or_404(challenge_id, message_id)
+    if str(message_record.get("author_id") or "") != str(user["_id"]):
+        raise HTTPException(status_code=403, detail="You can only delete your own messages")
+    if str(message_record.get("author_id") or "") in {"coach_bot", "system"}:
+        raise HTTPException(status_code=400, detail="This message cannot be deleted")
+
+    now = datetime.now(timezone.utc)
+    await challenge_chat_messages_collection.update_one(
+        {"_id": message_record["_id"]},
+        {
+            "$set": {
+                "content": "",
+                "image_url": "",
+                "updated_at": now,
+                "deleted_at": now,
+            }
+        },
+    )
+    updated = await challenge_chat_messages_collection.find_one({"_id": message_record["_id"]})
+    if updated:
+        await _broadcast_challenge_chat_event("message_deleted", challenge_id, updated, message_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.post("/challenges/{challenge_id}/chat/messages/{message_id}/reactions/toggle", response_model=ChallengeChatMessageResponse)
+async def toggle_challenge_chat_reaction(
+    challenge_id: str,
+    message_id: str,
+    payload: ChallengeChatReactionToggleRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengeChatMessageResponse:
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_read_access(membership)
+    message_record = await _get_challenge_message_or_404(challenge_id, message_id)
+    emoji = payload.emoji.strip()
+    reaction_filter = {
+        "message_id": message_id,
+        "challenge_id": challenge_id,
+        "user_id": str(user["_id"]),
+        "emoji": emoji,
+    }
+    existing = await challenge_message_reactions_collection.find_one(reaction_filter)
+    now = datetime.now(timezone.utc)
+    if existing:
+        await challenge_message_reactions_collection.delete_one({"_id": existing["_id"]})
+    else:
+        await challenge_message_reactions_collection.insert_one(
+            {
+                "_id": ObjectId(),
+                "message_id": message_id,
+                "challenge_id": challenge_id,
+                "user_id": str(user["_id"]),
+                "emoji": emoji,
+                "created_at": now,
+            }
+        )
+    updated = await challenge_chat_messages_collection.find_one({"_id": message_record["_id"]})
+    if not updated:
+        raise HTTPException(status_code=404, detail="Challenge chat message not found")
+    await _broadcast_challenge_chat_event("reaction_toggled", challenge_id, updated)
+    return ChallengeChatMessageResponse(**(await _serialize_single_challenge_chat_message(updated, str(user["_id"]))))
+
+
+@app.post("/challenges/{challenge_id}/progress", response_model=ChallengeChatMessageResponse, status_code=status.HTTP_201_CREATED)
+async def post_challenge_progress_update(
+    challenge_id: str,
+    payload: ChallengeProgressUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengeChatMessageResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership)
+
+    total_days = max(int(challenge.get("duration_days") or 0), 1)
+    completed_day = min(payload.completed_day, total_days)
+    current_progress = max(int(membership.get("progress_days_completed") or 0), 0)
+    next_progress = max(current_progress, completed_day)
+    next_status = "COMPLETED" if next_progress >= total_days else "ACTIVE"
+
+    image_url = ""
+    if payload.image_base64:
+        try:
+            image_url = _upload_challenge_chat_image_to_s3(
+                str(user["_id"]),
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Challenge progress image upload failed: {exc}") from exc
+
+    note = str(payload.note or "").strip()
+    content = note or f"Completed day {completed_day}."
+    now = datetime.now(timezone.utc)
+    progress_payload = {
+        "completed_day": completed_day,
+        "total_days": total_days,
+        "membership_status": next_status,
+    }
+    document = {
+        "_id": ObjectId(),
+        "challenge_id": challenge_id,
+        "author_id": str(user["_id"]),
+        "message_type": "progress_update",
+        "content": content,
+        "image_url": image_url,
+        "reply_to_message_id": None,
+        "progress_payload": progress_payload,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await challenge_chat_messages_collection.insert_one(document)
+
+    membership_update = {
+        "progress_days_completed": next_progress,
+        "status": next_status,
+        "updated_at": now,
+    }
+    if next_status == "COMPLETED":
+        membership_update["completed_at"] = now
+
+    await challenge_memberships_collection.update_one(
+        {"_id": membership["_id"]},
+        {"$set": membership_update},
+    )
+    await _broadcast_challenge_chat_event("message_created", challenge_id, document)
+
+    return ChallengeChatMessageResponse(**_serialize_challenge_chat_message(document, user, str(user["_id"])))
+
+
 @app.post("/challenges/{challenge_id}/start", response_model=StartChallengeResponse, status_code=status.HTTP_201_CREATED)
 async def start_challenge(
     challenge_id: str,
@@ -1089,6 +1431,35 @@ async def start_challenge(
             raise HTTPException(status_code=409, detail="You already started this challenge")
         if existing_status == "COMPLETED":
             raise HTTPException(status_code=409, detail="You already completed this challenge")
+        if existing_status == "LEFT":
+            now = datetime.now(timezone.utc)
+            await challenge_memberships_collection.update_one(
+                {"_id": existing_membership["_id"]},
+                {
+                    "$set": {
+                        "status": "ACTIVE",
+                        "updated_at": now,
+                        "started_at": existing_membership.get("started_at") or now,
+                    }
+                },
+            )
+            await challenge_chat_messages_collection.insert_one(
+                {
+                    "_id": ObjectId(),
+                    "challenge_id": challenge_id,
+                    "author_id": "system",
+                    "author_name": "Coach",
+                    "author_role": "system",
+                    "message_type": "system_event",
+                    "content": f"{user.get('name') or 'A member'} joined the challenge.",
+                    "image_url": "",
+                    "reply_to_message_id": None,
+                    "progress_payload": None,
+                    "created_at": now,
+                    "updated_at": now,
+                }
+            )
+            return StartChallengeResponse(membership_id=str(existing_membership["_id"]))
 
     now = datetime.now(timezone.utc)
     document = {
@@ -1102,19 +1473,21 @@ async def start_challenge(
     }
     insert_result = await challenge_memberships_collection.insert_one(document)
 
-    await challenge_chat_messages_collection.update_one(
-        {"challenge_id": challenge_id, "author_id": "system", "message_type": "system_join"},
+    await challenge_chat_messages_collection.insert_one(
         {
-            "$setOnInsert": {
-                "challenge_id": challenge_id,
-                "author_id": "system",
-                "author_name": "Coach",
-                "message": f"{user.get('name') or 'A member'} joined the challenge.",
-                "message_type": "system_join",
-                "created_at": now,
-            }
-        },
-        upsert=True,
+            "_id": ObjectId(),
+            "challenge_id": challenge_id,
+            "author_id": "system",
+            "author_name": "Coach",
+            "author_role": "system",
+            "message_type": "system_event",
+            "content": f"{user.get('name') or 'A member'} joined the challenge.",
+            "image_url": "",
+            "reply_to_message_id": None,
+            "progress_payload": None,
+            "created_at": now,
+            "updated_at": now,
+        }
     )
 
     return StartChallengeResponse(membership_id=str(insert_result.inserted_id))
@@ -1250,6 +1623,60 @@ async def admin_delete_challenge(
     await challenge_memberships_collection.delete_many({"challenge_id": challenge_id})
     await challenge_chat_messages_collection.delete_many({"challenge_id": challenge_id})
     return {"status": "success", "message": "Challenge deleted"}
+
+
+@app.get("/admin/challenges/{challenge_id}/chat", response_model=ChallengeChatThreadResponse)
+async def admin_get_challenge_chat_thread(
+    challenge_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> ChallengeChatThreadResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    messages = await _load_challenge_chat_messages(challenge_id, None, limit=200)
+    participant_count = await challenge_memberships_collection.count_documents(
+        {"challenge_id": challenge_id, "status": {"$in": ["ACTIVE", "COMPLETED"]}}
+    )
+    return ChallengeChatThreadResponse(
+        challenge_id=challenge_id,
+        title=str(challenge.get("title") or ""),
+        description=str(challenge.get("description") or ""),
+        category=str(challenge.get("category") or "Challenge"),
+        duration_days=max(int(challenge.get("duration_days") or 0), 0),
+        points=max(int(challenge.get("points") or 0), 0),
+        difficulty=str(challenge.get("difficulty") or "BEGINNER"),
+        status=str(challenge.get("status") or "ACTIVE"),
+        thumbnail=str(challenge.get("thumbnail") or ""),
+        participant_count=participant_count,
+        viewer_membership_status="ADMIN",
+        viewer_progress_days_completed=0,
+        unread_count=0,
+        messages=[ChallengeChatMessageResponse(**message) for message in messages],
+    )
+
+
+@app.delete("/admin/challenges/{challenge_id}/chat/messages/{message_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def admin_delete_challenge_chat_message(
+    challenge_id: str,
+    message_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> Response:
+    message_record = await _get_challenge_message_or_404(challenge_id, message_id)
+    now = datetime.now(timezone.utc)
+    await challenge_chat_messages_collection.update_one(
+        {"_id": message_record["_id"]},
+        {
+            "$set": {
+                "content": "",
+                "image_url": "",
+                "updated_at": now,
+                "deleted_at": now,
+                "deleted_by_admin": True,
+            }
+        },
+    )
+    updated = await challenge_chat_messages_collection.find_one({"_id": message_record["_id"]})
+    if updated:
+        await _broadcast_challenge_chat_event("message_deleted", challenge_id, updated, message_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/admin/dashboard/overview", response_model=DashboardOverviewResponse)
@@ -2414,6 +2841,15 @@ def _upload_challenge_thumbnail_to_s3(
     return _upload_image_to_s3("challenge-thumbnails", user_id, image_base64, mime_type, file_name)
 
 
+def _upload_challenge_chat_image_to_s3(
+    user_id: str,
+    image_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_image_to_s3("challenge-chat-images", user_id, image_base64, mime_type, file_name)
+
+
 def _upload_image_to_s3(
     folder_name: str,
     user_id: str,
@@ -3274,6 +3710,45 @@ def _serialize_admin_challenge_record(
     }
 
 
+def _serialize_challenge_chat_message(
+    record: dict,
+    author_record: dict | None = None,
+    viewer_user_id: str | None = None,
+    reactions: list[dict] | None = None,
+) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    updated_at = _as_utc(record.get("updated_at") or created_at)
+    author_id = str(record.get("author_id") or "")
+    author_name = str(record.get("author_name") or "Member")
+    author_role = str(record.get("author_role") or "user")
+    author_profile_image = str(record.get("author_profile_image") or "")
+    if author_record:
+        author_name = str(author_record.get("name") or "Member").strip() or "Member"
+        author_role = str(author_record.get("role") or ("admin" if author_record.get("is_admin") else "user")).strip() or "user"
+        author_profile_image = str(author_record.get("profile_image") or "").strip()
+
+    return {
+        "id": str(record.get("_id") or ""),
+        "challenge_id": str(record.get("challenge_id") or ""),
+        "author_id": author_id,
+        "author_name": author_name,
+        "author_role": author_role,
+        "author_profile_image": author_profile_image,
+        "message_type": str(record.get("message_type") or "message"),
+        "content": str(record.get("content") or ""),
+        "image_url": str(record.get("image_url") or ""),
+        "reply_to_message_id": str(record.get("reply_to_message_id")) if record.get("reply_to_message_id") else None,
+        "progress_payload": dict(record.get("progress_payload")) if isinstance(record.get("progress_payload"), dict) else None,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "can_delete": bool(viewer_user_id) and viewer_user_id == author_id,
+        "can_edit": bool(viewer_user_id) and viewer_user_id == author_id and author_id not in {"system", "coach_bot"} and not record.get("deleted_at"),
+        "is_edited": bool(record.get("edited_at")),
+        "is_deleted": bool(record.get("deleted_at")),
+        "reactions": reactions or [],
+    }
+
+
 def _serialize_public_workout_record(record: dict) -> dict:
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
     return {
@@ -3313,6 +3788,257 @@ async def _load_challenge_stats_map(challenge_ids: list[str]) -> dict[str, dict[
         if challenge_id:
             stats_map.setdefault(challenge_id, {"participants": 0, "completions": 0})["completions"] = int(item.get("completions", 0))
     return stats_map
+
+
+async def _get_challenge_or_404(challenge_id: str) -> dict:
+    try:
+        object_id = ObjectId(challenge_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid challenge id") from exc
+
+    challenge = await challenges_collection.find_one({"_id": object_id})
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    return challenge
+
+
+async def _get_challenge_membership_or_403(challenge_id: str, user_id: str) -> dict:
+    membership = await challenge_memberships_collection.find_one(
+        {"challenge_id": challenge_id, "user_id": user_id}
+    )
+    if not membership:
+        raise HTTPException(status_code=403, detail="Start this challenge to access the chat")
+    return membership
+
+
+async def _get_challenge_message_or_404(challenge_id: str, message_id: str) -> dict:
+    try:
+        object_id = ObjectId(message_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid challenge chat message id") from exc
+
+    message_record = await challenge_chat_messages_collection.find_one(
+        {"_id": object_id, "challenge_id": challenge_id}
+    )
+    if not message_record:
+        raise HTTPException(status_code=404, detail="Challenge chat message not found")
+    return message_record
+
+
+def _ensure_challenge_read_access(membership: dict) -> None:
+    membership_status = str(membership.get("status") or "").upper()
+    if membership_status not in {"ACTIVE", "COMPLETED"}:
+        raise HTTPException(status_code=403, detail="You do not have access to this challenge chat")
+
+
+def _ensure_challenge_write_access(membership: dict) -> None:
+    membership_status = str(membership.get("status") or "").upper()
+    if membership_status != "ACTIVE":
+        raise HTTPException(status_code=403, detail="Only active participants can post in this challenge chat")
+
+
+async def _load_challenge_chat_author_records(records: list[dict]) -> dict[str, dict]:
+    author_ids = {
+        str(record.get("author_id") or "").strip()
+        for record in records
+        if str(record.get("author_id") or "").strip() and ObjectId.is_valid(str(record.get("author_id") or "").strip())
+    }
+    if not author_ids:
+        return {}
+
+    object_ids = [ObjectId(author_id) for author_id in author_ids]
+    author_records = await users_collection.find({"_id": {"$in": object_ids}}).to_list(length=len(object_ids))
+    return {str(author_record.get("_id") or ""): author_record for author_record in author_records}
+
+
+async def _load_challenge_chat_messages(
+    challenge_id: str,
+    viewer_user_id: str | None,
+    limit: int = 50,
+) -> list[dict]:
+    records = await challenge_chat_messages_collection.find(
+        {"challenge_id": challenge_id},
+        sort=[("created_at", -1), ("_id", -1)],
+        limit=max(limit, 1),
+    ).to_list(length=max(limit, 1))
+    records.reverse()
+    author_records_by_id = await _load_challenge_chat_author_records(records)
+    reactions_by_message_id = await _load_challenge_message_reactions(records, viewer_user_id)
+    return [
+        _serialize_challenge_chat_message(
+            record,
+            author_records_by_id.get(str(record.get("author_id") or "")),
+            viewer_user_id,
+            reactions_by_message_id.get(str(record.get("_id") or ""), []),
+        )
+        for record in records
+    ]
+
+
+async def _count_unread_challenge_messages(
+    challenge_id: str,
+    viewer_user_id: str,
+    membership: dict,
+) -> int:
+    last_read = membership.get("last_read_message_at")
+    filter_doc: dict = {
+        "challenge_id": challenge_id,
+        "author_id": {"$ne": viewer_user_id},
+    }
+    if isinstance(last_read, datetime):
+        filter_doc["created_at"] = {"$gt": _as_utc(last_read)}
+    return await challenge_chat_messages_collection.count_documents(filter_doc)
+
+
+async def _load_challenge_message_reactions(
+    records: list[dict],
+    viewer_user_id: str | None,
+) -> dict[str, list[dict]]:
+    message_ids = [str(record.get("_id") or "") for record in records if record.get("_id")]
+    if not message_ids:
+        return {}
+
+    reactions = await challenge_message_reactions_collection.find(
+        {"message_id": {"$in": message_ids}},
+        sort=[("created_at", 1), ("_id", 1)],
+    ).to_list(length=5000)
+    grouped: dict[str, dict[str, dict]] = {}
+    for reaction in reactions:
+        message_id = str(reaction.get("message_id") or "")
+        emoji = str(reaction.get("emoji") or "")
+        if not message_id or not emoji:
+            continue
+        grouped.setdefault(message_id, {})
+        bucket = grouped[message_id].setdefault(
+            emoji,
+            {"emoji": emoji, "count": 0, "viewer_reacted": False},
+        )
+        bucket["count"] = int(bucket.get("count", 0)) + 1
+        if viewer_user_id and str(reaction.get("user_id") or "") == viewer_user_id:
+            bucket["viewer_reacted"] = True
+
+    return {
+        message_id: list(emoji_map.values())
+        for message_id, emoji_map in grouped.items()
+    }
+
+
+def _challenge_message_mentions_coach(content: str) -> bool:
+    return bool(re.search(r"(?i)(?:^|\s)@coach\b", content or ""))
+
+
+def _strip_challenge_coach_mentions(content: str) -> str:
+    return re.sub(r"(?i)(?:^|\s)@coach\b", " ", content or "").strip()
+
+
+async def _create_challenge_coach_reply(
+    challenge: dict,
+    membership: dict,
+    user: dict,
+    trigger_message: dict,
+) -> dict | None:
+    coach_prompt = _strip_challenge_coach_mentions(str(trigger_message.get("content") or ""))
+    if not coach_prompt:
+        return None
+
+    recent_records = await challenge_chat_messages_collection.find(
+        {"challenge_id": str(challenge.get("_id") or "")},
+        sort=[("created_at", -1), ("_id", -1)],
+        limit=12,
+    ).to_list(length=12)
+    recent_records.reverse()
+
+    chat_history: list[dict[str, str]] = [
+        {
+            "role": "user",
+            "content": (
+                "Challenge context:\n"
+                f"- Title: {str(challenge.get('title') or '')}\n"
+                f"- Category: {str(challenge.get('category') or 'Challenge')}\n"
+                f"- Duration days: {max(int(challenge.get('duration_days') or 0), 0)}\n"
+                f"- Difficulty: {str(challenge.get('difficulty') or 'BEGINNER')}\n"
+                f"- User progress days completed: {max(int(membership.get('progress_days_completed') or 0), 0)}\n"
+                f"- User question: {coach_prompt}\n"
+                "Respond as Coach Victor inside a group challenge chat. Keep it concise, practical, and supportive."
+            ),
+        }
+    ]
+
+    author_records_by_id = await _load_challenge_chat_author_records(recent_records)
+    for record in recent_records:
+        message_type = str(record.get("message_type") or "message")
+        if message_type not in {"message", "progress_update", "ai_reply"}:
+            continue
+
+        author_id = str(record.get("author_id") or "")
+        content = str(record.get("content") or "").strip()
+        if not content:
+            continue
+
+        if author_id == "coach_bot":
+            chat_history.append({"role": "assistant", "content": content})
+            continue
+
+        author_name = str(author_records_by_id.get(author_id, {}).get("name") or record.get("author_name") or "Member").strip() or "Member"
+        chat_history.append({"role": "user", "content": f"{author_name}: {content}"})
+
+    result = generate_coach_victor_reply(chat_history)
+    reply = result.reply.strip()
+    if not reply:
+        return None
+
+    now = datetime.now(timezone.utc)
+    reply_document = {
+        "_id": ObjectId(),
+        "challenge_id": str(challenge.get("_id") or ""),
+        "author_id": "coach_bot",
+        "author_name": "Coach Victor",
+        "author_role": "coach",
+        "author_profile_image": "",
+        "message_type": "ai_reply",
+        "content": reply,
+        "image_url": "",
+        "reply_to_message_id": str(trigger_message.get("_id") or ""),
+        "progress_payload": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await challenge_chat_messages_collection.insert_one(reply_document)
+    await _broadcast_challenge_chat_event(
+        "message_created",
+        str(challenge.get("_id") or ""),
+        reply_document,
+    )
+    return reply_document
+
+
+async def _serialize_single_challenge_chat_message(
+    record: dict,
+    viewer_user_id: str | None = None,
+) -> dict:
+    author_records_by_id = await _load_challenge_chat_author_records([record])
+    reactions_by_message_id = await _load_challenge_message_reactions([record], viewer_user_id)
+    return _serialize_challenge_chat_message(
+        record,
+        author_records_by_id.get(str(record.get("author_id") or "")),
+        viewer_user_id,
+        reactions_by_message_id.get(str(record.get("_id") or ""), []),
+    )
+
+
+async def _broadcast_challenge_chat_event(
+    event: str,
+    challenge_id: str,
+    message_record: dict | None = None,
+    message_id: str | None = None,
+) -> None:
+    payload = ChallengeChatEventResponse(
+        event=event,
+        challenge_id=challenge_id,
+        message=ChallengeChatMessageResponse(**(await _serialize_single_challenge_chat_message(message_record, None))) if message_record else None,
+        message_id=message_id,
+    ).model_dump(mode="json")
+    await challenge_chat_socket_manager.broadcast(challenge_id, payload)
 
 
 async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewResponse:
@@ -3382,24 +4108,28 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
         [
             {"$match": {"challenge_id": {"$in": active_challenge_ids}}},
             {"$sort": {"created_at": -1}},
-            {"$group": {"_id": "$challenge_id", "message": {"$first": "$message"}, "created_at": {"$first": "$created_at"}}},
+            {"$group": {"_id": "$challenge_id", "content": {"$first": "$content"}, "created_at": {"$first": "$created_at"}}},
         ]
     ).to_list(length=len(active_challenge_ids)) if active_challenge_ids else []
     chat_by_challenge = {str(item.get("_id") or ""): item for item in active_chat_messages}
 
-    active_chats = [
-        ChallengeChatSummaryResponse(
-            id=f"chat-{challenge_id}",
-            challenge_id=challenge_id,
-            name=str(challenges_by_id[challenge_id].get("title") or ""),
-            last_message=str(chat_by_challenge.get(challenge_id, {}).get("message") or "Coach: Stay consistent today."),
-            last_message_at=_as_utc(chat_by_challenge[challenge_id]["created_at"]) if challenge_id in chat_by_challenge and isinstance(chat_by_challenge[challenge_id].get("created_at"), datetime) else None,
-            unread_count=0,
-            avatar=str(challenges_by_id[challenge_id].get("thumbnail") or ""),
+    active_chats: list[ChallengeChatSummaryResponse] = []
+    for membership in active_memberships:
+        challenge_id = str(membership.get("challenge_id") or "")
+        if challenge_id not in challenges_by_id:
+            continue
+        unread_count = await _count_unread_challenge_messages(challenge_id, user_id, membership)
+        active_chats.append(
+            ChallengeChatSummaryResponse(
+                id=f"chat-{challenge_id}",
+                challenge_id=challenge_id,
+                name=str(challenges_by_id[challenge_id].get("title") or ""),
+                last_message=str(chat_by_challenge.get(challenge_id, {}).get("content") or "Coach: Stay consistent today."),
+                last_message_at=_as_utc(chat_by_challenge[challenge_id]["created_at"]) if challenge_id in chat_by_challenge and isinstance(chat_by_challenge[challenge_id].get("created_at"), datetime) else None,
+                unread_count=unread_count,
+                avatar=str(challenges_by_id[challenge_id].get("thumbnail") or ""),
+            )
         )
-        for challenge_id in active_challenge_ids
-        if challenge_id in challenges_by_id
-    ]
 
     excluded_challenge_ids = {str(membership.get("challenge_id") or "") for membership in memberships}
     ready_records = await challenges_collection.find(
@@ -3542,6 +4272,13 @@ async def _get_verified_user(authorization: str | None) -> dict:
         raise HTTPException(status_code=401, detail="Missing access token")
 
     token = authorization.split(" ", 1)[1].strip()
+    return await _get_verified_user_from_access_token(token)
+
+
+async def _get_verified_user_from_access_token(token: str) -> dict:
+    token = str(token or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing access token")
 
     try:
         data = decode_token(token, "access")
