@@ -4636,6 +4636,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
             difficulty=str(record.get("difficulty") or "BEGINNER"),
             difficulty_color=_difficulty_color(str(record.get("difficulty") or "")),
             status=str(record.get("status") or "ACTIVE"),
+            can_start=str(record.get("status") or "").upper() == "ACTIVE",
             thumbnail=_normalize_challenge_thumbnail(record.get("thumbnail")),
         )
         for record in ready_records

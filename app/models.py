@@ -281,6 +281,7 @@ class UserReadyChallengeResponse(BaseModel):
     difficulty: str
     difficulty_color: str = "#22C55E"
     status: str
+    can_start: bool = False
     thumbnail: str = ""
 
 
