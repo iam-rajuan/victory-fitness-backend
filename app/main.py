@@ -7,6 +7,7 @@ from calendar import month_abbr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
+from urllib.parse import unquote, urlparse
 
 from bson import ObjectId
 from dotenv import dotenv_values
@@ -1814,6 +1815,7 @@ async def admin_update_challenge(
     if not existing:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
+    previous_thumbnail = _normalize_challenge_thumbnail(existing.get("thumbnail"))
     thumbnail = _normalize_challenge_thumbnail(payload.thumbnail)
     if payload.image_base64:
         try:
@@ -1827,6 +1829,8 @@ async def admin_update_challenge(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Challenge thumbnail upload failed: {exc}") from exc
+    if previous_thumbnail and previous_thumbnail != thumbnail:
+        _delete_image_from_s3(previous_thumbnail)
 
     plan_days = _normalize_challenge_plan_days(payload.planDays)
     derived_duration_days = max(_extract_plan_day_numbers(plan_days), default=payload.durationDays)
@@ -1863,6 +1867,11 @@ async def admin_delete_challenge(
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Invalid challenge id") from exc
 
+    existing = await challenges_collection.find_one({"_id": object_id})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+
+    _delete_image_from_s3(_normalize_challenge_thumbnail(existing.get("thumbnail")))
     delete_result = await challenges_collection.delete_one({"_id": object_id})
     if delete_result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Challenge not found")
@@ -3174,6 +3183,38 @@ def _upload_image_to_s3(
         return _build_inline_image_data_url(image_base64, normalized_mime)
 
     return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
+
+
+def _delete_image_from_s3(image_url: str | None) -> None:
+    normalized_url = str(image_url or "").strip()
+    if not normalized_url or normalized_url.startswith("data:") or not s3_archive_enabled():
+        return
+
+    parsed = urlparse(normalized_url)
+    expected_host = f"{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com".lower().strip()
+    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower().strip() != expected_host:
+        return
+
+    object_key = unquote(parsed.path.lstrip("/")).strip()
+    if not object_key:
+        return
+
+    try:
+        import boto3
+    except ImportError:
+        logger.warning("boto3_missing_for_image_delete image_url=%s", normalized_url)
+        return
+
+    client = boto3.client(
+        "s3",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
+    try:
+        client.delete_object(Bucket=settings.aws_s3_bucket, Key=object_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("s3_image_delete_failed image_url=%s error=%s", normalized_url, exc)
 
 
 def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[dict], payload_data: dict) -> dict:
