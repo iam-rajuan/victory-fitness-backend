@@ -4009,6 +4009,10 @@ def _normalize_challenge_plan_days(raw_days: list[ChallengePlanDay] | list[dict]
                         "name": exercise_name,
                         "details": str(exercise_data.get("details") or "Complete as assigned.").strip() or "Complete as assigned.",
                         "notes": str(exercise_data.get("notes") or "").strip(),
+                        "workout_id": str(exercise_data.get("workout_id") or "").strip(),
+                        "workout_title": str(exercise_data.get("workout_title") or "").strip(),
+                        "workout_vimeo_id": str(exercise_data.get("workout_vimeo_id") or "").strip(),
+                        "workout_thumbnail": _normalize_challenge_thumbnail(exercise_data.get("workout_thumbnail")),
                     }
                 )
             sections.append(

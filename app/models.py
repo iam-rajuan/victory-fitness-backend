@@ -197,6 +197,10 @@ class ChallengePlanExercise(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     details: str = Field(min_length=1, max_length=240)
     notes: str = Field(default="", max_length=400)
+    workout_id: str = Field(default="", max_length=80)
+    workout_title: str = Field(default="", max_length=160)
+    workout_vimeo_id: str = Field(default="", max_length=80)
+    workout_thumbnail: str = Field(default="", max_length=20000000)
 
 
 class ChallengePlanSection(BaseModel):
