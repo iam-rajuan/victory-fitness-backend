@@ -1151,9 +1151,22 @@ async def admin_list_challenges(
 @app.post("/admin/challenges", response_model=AdminChallengeItem, status_code=status.HTTP_201_CREATED)
 async def admin_create_challenge(
     payload: AdminChallengeRequest,
-    _: dict = Depends(_require_admin_user),
+    admin_user: dict = Depends(_require_admin_user),
 ) -> AdminChallengeItem:
     now = datetime.now(timezone.utc)
+    thumbnail = (payload.thumbnail or "").strip()
+    if payload.image_base64:
+        try:
+            thumbnail = _upload_challenge_thumbnail_to_s3(
+                str(admin_user["_id"]),
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Challenge thumbnail upload failed: {exc}") from exc
     document = {
         "title": payload.title.strip(),
         "description": payload.description.strip(),
@@ -1162,7 +1175,7 @@ async def admin_create_challenge(
         "points": payload.points,
         "difficulty": payload.difficulty,
         "status": payload.status,
-        "thumbnail": (payload.thumbnail or "").strip(),
+        "thumbnail": thumbnail,
         "created_at": now,
         "updated_at": now,
     }
@@ -1175,7 +1188,7 @@ async def admin_create_challenge(
 async def admin_update_challenge(
     challenge_id: str,
     payload: AdminChallengeRequest,
-    _: dict = Depends(_require_admin_user),
+    admin_user: dict = Depends(_require_admin_user),
 ) -> AdminChallengeItem:
     try:
         object_id = ObjectId(challenge_id)
@@ -1186,6 +1199,20 @@ async def admin_update_challenge(
     if not existing:
         raise HTTPException(status_code=404, detail="Challenge not found")
 
+    thumbnail = (payload.thumbnail or "").strip()
+    if payload.image_base64:
+        try:
+            thumbnail = _upload_challenge_thumbnail_to_s3(
+                str(admin_user["_id"]),
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Challenge thumbnail upload failed: {exc}") from exc
+
     update_doc = {
         "title": payload.title.strip(),
         "description": payload.description.strip(),
@@ -1194,7 +1221,7 @@ async def admin_update_challenge(
         "points": payload.points,
         "difficulty": payload.difficulty,
         "status": payload.status,
-        "thumbnail": (payload.thumbnail or "").strip(),
+        "thumbnail": thumbnail,
         "updated_at": datetime.now(timezone.utc),
     }
     await challenges_collection.update_one({"_id": object_id}, {"$set": update_doc})
@@ -2376,6 +2403,15 @@ def _upload_community_image_to_s3(
     file_name: str | None,
 ) -> str:
     return _upload_image_to_s3("community-images", user_id, image_base64, mime_type, file_name)
+
+
+def _upload_challenge_thumbnail_to_s3(
+    user_id: str,
+    image_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_image_to_s3("challenge-thumbnails", user_id, image_base64, mime_type, file_name)
 
 
 def _upload_image_to_s3(

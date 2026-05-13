@@ -280,6 +280,9 @@ class AdminChallengeRequest(BaseModel):
     difficulty: str = Field(pattern=r"^(BEGINNER|INTERMEDIATE|ADVANCED)$")
     status: str = Field(pattern=r"^(ACTIVE|UPCOMING|DRAFT|ARCHIVED)$")
     thumbnail: str | None = Field(default=None, max_length=500)
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
 
 
 class AdminCommunityPostCreateRequest(BaseModel):
