@@ -207,6 +207,7 @@ class UserActiveChallengeResponse(BaseModel):
     challenge_id: str
     title: str
     type: str
+    plan_text: str = ""
     days_left: int = 0
     total_days: int = 0
     progress: float = 0
@@ -228,6 +229,7 @@ class UserReadyChallengeResponse(BaseModel):
     id: str
     title: str
     description: str
+    plan_text: str = ""
     duration_days: int = 0
     type: str
     points: int = 0
@@ -275,6 +277,7 @@ class ChallengeChatThreadResponse(BaseModel):
     challenge_id: str
     title: str
     description: str
+    plan_text: str = ""
     category: str
     duration_days: int
     points: int = 0
@@ -323,6 +326,7 @@ class AdminChallengeItem(BaseModel):
     id: str
     title: str
     description: str
+    planText: str = ""
     category: str
     durationDays: int
     points: int = 0
@@ -343,6 +347,7 @@ class AdminChallengeListResponse(BaseModel):
 class AdminChallengeRequest(BaseModel):
     title: str = Field(min_length=2, max_length=160)
     description: str = Field(min_length=1, max_length=4000)
+    planText: str | None = Field(default=None, max_length=30000)
     category: str = Field(min_length=1, max_length=80)
     durationDays: int = Field(ge=1, le=365)
     points: int = Field(ge=0, le=100000)

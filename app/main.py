@@ -1109,7 +1109,7 @@ async def get_challenge_chat_thread(
 ) -> ChallengeChatThreadResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_read_access(membership)
+    _ensure_challenge_read_access(membership, challenge)
 
     messages = await _load_challenge_chat_messages(challenge_id, str(user["_id"]), limit=50)
     participant_count = await challenge_memberships_collection.count_documents(
@@ -1126,6 +1126,7 @@ async def get_challenge_chat_thread(
         challenge_id=challenge_id,
         title=str(challenge.get("title") or ""),
         description=str(challenge.get("description") or ""),
+        plan_text=str(challenge.get("plan_text") or ""),
         category=str(challenge.get("category") or "Challenge"),
         duration_days=max(int(challenge.get("duration_days") or 0), 0),
         points=max(int(challenge.get("points") or 0), 0),
@@ -1153,7 +1154,8 @@ async def challenge_chat_socket(
     try:
         user = await _get_verified_user_from_access_token(token)
         membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-        _ensure_challenge_read_access(membership)
+        challenge = await _get_challenge_or_404(challenge_id)
+        _ensure_challenge_read_access(membership, challenge)
     except HTTPException as exc:
         await websocket.close(code=4403 if exc.status_code == 403 else 4401, reason=str(exc.detail))
         return
@@ -1174,7 +1176,7 @@ async def create_challenge_chat_message(
 ) -> ChallengeChatMessageResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_write_access(membership)
+    _ensure_challenge_write_access(membership, challenge)
 
     content = str(payload.content or "").strip()
     if not content and not payload.image_base64:
@@ -1238,7 +1240,8 @@ async def update_challenge_chat_message(
     user: dict = Depends(_require_access_user),
 ) -> ChallengeChatMessageResponse:
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_write_access(membership)
+    challenge = await _get_challenge_or_404(challenge_id)
+    _ensure_challenge_write_access(membership, challenge)
     message_record = await _get_challenge_message_or_404(challenge_id, message_id)
     if str(message_record.get("author_id") or "") != str(user["_id"]):
         raise HTTPException(status_code=403, detail="You can only edit your own messages")
@@ -1272,7 +1275,8 @@ async def delete_challenge_chat_message(
     user: dict = Depends(_require_access_user),
 ) -> Response:
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_read_access(membership)
+    challenge = await _get_challenge_or_404(challenge_id)
+    _ensure_challenge_read_access(membership, challenge)
     message_record = await _get_challenge_message_or_404(challenge_id, message_id)
     if str(message_record.get("author_id") or "") != str(user["_id"]):
         raise HTTPException(status_code=403, detail="You can only delete your own messages")
@@ -1305,7 +1309,8 @@ async def toggle_challenge_chat_reaction(
     user: dict = Depends(_require_access_user),
 ) -> ChallengeChatMessageResponse:
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_read_access(membership)
+    challenge = await _get_challenge_or_404(challenge_id)
+    _ensure_challenge_read_access(membership, challenge)
     message_record = await _get_challenge_message_or_404(challenge_id, message_id)
     emoji = payload.emoji.strip()
     reaction_filter = {
@@ -1344,7 +1349,7 @@ async def post_challenge_progress_update(
 ) -> ChallengeChatMessageResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_write_access(membership)
+    _ensure_challenge_write_access(membership, challenge)
 
     total_days = max(int(challenge.get("duration_days") or 0), 1)
     completed_day = min(payload.completed_day, total_days)
@@ -1418,7 +1423,10 @@ async def start_challenge(
     challenge = await challenges_collection.find_one({"_id": object_id})
     if not challenge:
         raise HTTPException(status_code=404, detail="Challenge not found")
-    if str(challenge.get("status") or "").upper() not in {"ACTIVE", "UPCOMING"}:
+    challenge_status = str(challenge.get("status") or "").upper()
+    if challenge_status == "UPCOMING":
+        raise HTTPException(status_code=400, detail="This challenge is coming soon and cannot be started yet")
+    if challenge_status != "ACTIVE":
         raise HTTPException(status_code=400, detail="This challenge cannot be started")
 
     user_id = str(user["_id"])
@@ -1543,6 +1551,7 @@ async def admin_create_challenge(
     document = {
         "title": payload.title.strip(),
         "description": payload.description.strip(),
+        "plan_text": str(payload.planText or "").strip(),
         "category": payload.category.strip(),
         "duration_days": payload.durationDays,
         "points": payload.points,
@@ -1589,6 +1598,7 @@ async def admin_update_challenge(
     update_doc = {
         "title": payload.title.strip(),
         "description": payload.description.strip(),
+        "plan_text": str(payload.planText or "").strip(),
         "category": payload.category.strip(),
         "duration_days": payload.durationDays,
         "points": payload.points,
@@ -1639,6 +1649,7 @@ async def admin_get_challenge_chat_thread(
         challenge_id=challenge_id,
         title=str(challenge.get("title") or ""),
         description=str(challenge.get("description") or ""),
+        plan_text=str(challenge.get("plan_text") or ""),
         category=str(challenge.get("category") or "Challenge"),
         duration_days=max(int(challenge.get("duration_days") or 0), 0),
         points=max(int(challenge.get("points") or 0), 0),
@@ -3697,6 +3708,7 @@ def _serialize_admin_challenge_record(
         "id": challenge_id,
         "title": str(record.get("title") or ""),
         "description": str(record.get("description") or ""),
+        "planText": str(record.get("plan_text") or ""),
         "category": str(record.get("category") or "Challenge"),
         "durationDays": max(int(record.get("duration_days") or 0), 0),
         "points": max(int(record.get("points") or 0), 0),
@@ -3825,16 +3837,26 @@ async def _get_challenge_message_or_404(challenge_id: str, message_id: str) -> d
     return message_record
 
 
-def _ensure_challenge_read_access(membership: dict) -> None:
+def _ensure_challenge_read_access(membership: dict, challenge: dict) -> None:
     membership_status = str(membership.get("status") or "").upper()
+    challenge_status = str(challenge.get("status") or "").upper()
     if membership_status not in {"ACTIVE", "COMPLETED"}:
         raise HTTPException(status_code=403, detail="You do not have access to this challenge chat")
+    if challenge_status == "DRAFT":
+        raise HTTPException(status_code=403, detail="This challenge is not available")
 
 
-def _ensure_challenge_write_access(membership: dict) -> None:
+def _ensure_challenge_write_access(membership: dict, challenge: dict) -> None:
     membership_status = str(membership.get("status") or "").upper()
     if membership_status != "ACTIVE":
         raise HTTPException(status_code=403, detail="Only active participants can post in this challenge chat")
+    challenge_status = str(challenge.get("status") or "").upper()
+    if challenge_status != "ACTIVE":
+        if challenge_status == "UPCOMING":
+            raise HTTPException(status_code=403, detail="This challenge has not started yet")
+        if challenge_status == "ARCHIVED":
+            raise HTTPException(status_code=403, detail="This challenge has been archived")
+        raise HTTPException(status_code=403, detail="This challenge is not available")
 
 
 async def _load_challenge_chat_author_records(records: list[dict]) -> dict[str, dict]:
@@ -4057,7 +4079,12 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
     challenge_records = await challenges_collection.find({"_id": {"$in": challenge_object_ids}}).to_list(length=len(challenge_object_ids)) if challenge_object_ids else []
     challenges_by_id = {str(record["_id"]): record for record in challenge_records}
 
-    active_memberships = [membership for membership in memberships if str(membership.get("status") or "").upper() == "ACTIVE"]
+    active_memberships = [
+        membership
+        for membership in memberships
+        if str(membership.get("status") or "").upper() == "ACTIVE"
+        and str((challenges_by_id.get(str(membership.get("challenge_id") or "")) or {}).get("status") or "").upper() == "ACTIVE"
+    ]
     completed_memberships = [membership for membership in memberships if str(membership.get("status") or "").upper() == "COMPLETED"]
 
     active_challenges: list[UserActiveChallengeResponse] = []
@@ -4077,6 +4104,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
                 challenge_id=challenge_id,
                 title=str(challenge.get("title") or ""),
                 type=str(challenge.get("category") or "Challenge"),
+                plan_text=str(challenge.get("plan_text") or ""),
                 days_left=days_left,
                 total_days=total_days,
                 progress=progress_days / total_days if total_days else 0,
@@ -4145,6 +4173,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
             id=str(record["_id"]),
             title=str(record.get("title") or ""),
             description=str(record.get("description") or ""),
+            plan_text=str(record.get("plan_text") or ""),
             duration_days=max(int(record.get("duration_days") or 0), 0),
             type=str(record.get("category") or "Challenge"),
             points=max(int(record.get("points") or 0), 0),
