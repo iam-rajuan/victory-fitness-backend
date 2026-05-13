@@ -397,7 +397,7 @@ class AdminChallengeRequest(BaseModel):
     points: int = Field(ge=0, le=100000)
     difficulty: str = Field(pattern=r"^(BEGINNER|INTERMEDIATE|ADVANCED)$")
     status: str = Field(pattern=r"^(ACTIVE|UPCOMING|DRAFT|ARCHIVED)$")
-    thumbnail: str | None = Field(default=None, max_length=500)
+    thumbnail: str | None = Field(default=None, max_length=20000000)
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
