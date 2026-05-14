@@ -2044,6 +2044,7 @@ async def admin_create_challenge(
     }
     insert_result = await challenges_collection.insert_one(document)
     document["_id"] = insert_result.inserted_id
+    await _sync_workout_library_from_challenge_plan(plan_days, payload.category)
     return AdminChallengeItem(**_serialize_admin_challenge_record(document))
 
 
@@ -2096,6 +2097,7 @@ async def admin_update_challenge(
         "updated_at": datetime.now(timezone.utc),
     }
     await challenges_collection.update_one({"_id": object_id}, {"$set": update_doc})
+    await _sync_workout_library_from_challenge_plan(plan_days, payload.category)
 
     updated = await challenges_collection.find_one({"_id": object_id})
     if not updated:
@@ -4362,6 +4364,44 @@ def _serialize_admin_workout_record(record: dict) -> dict:
         "dateAdded": created_at,
         "updatedAt": updated_at,
     }
+
+
+async def _sync_workout_library_from_challenge_plan(plan_days: list[dict], challenge_category: str) -> int:
+    synced_count = 0
+    now = datetime.now(timezone.utc)
+    category_tag = str(challenge_category or "Challenge").strip() or "Challenge"
+
+    for day in plan_days:
+        for section in day.get("sections") or []:
+            for exercise in section.get("exercises") or []:
+                vimeo_id = str(exercise.get("workout_vimeo_id") or "").strip()
+                if not vimeo_id:
+                    continue
+
+                title = str(exercise.get("workout_title") or exercise.get("name") or "").strip()
+                if not title:
+                    title = f"{category_tag} Exercise"
+
+                thumbnail = _normalize_challenge_thumbnail(exercise.get("workout_thumbnail"))
+                existing = await workouts_collection.find_one({"vimeo_id": vimeo_id})
+                document = {
+                    "title": title,
+                    "vimeo_id": vimeo_id,
+                    "tag": category_tag,
+                    "visibility": "Published",
+                    "thumbnail": thumbnail,
+                    "updated_at": now,
+                }
+
+                if existing:
+                    await workouts_collection.update_one({"_id": existing["_id"]}, {"$set": document})
+                else:
+                    document["created_at"] = now
+                    await workouts_collection.insert_one(document)
+
+                synced_count += 1
+
+    return synced_count
 
 
 def _difficulty_color(difficulty: str) -> str:
