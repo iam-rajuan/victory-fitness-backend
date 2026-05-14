@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import os
 import re
 from uuid import uuid4
 from calendar import month_abbr
@@ -195,7 +196,7 @@ from .security import (
 app = FastAPI(title=settings.app_name)
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger("victory_fitness.api")
-MEDIA_ROOT = Path(__file__).resolve().parents[1] / "media"
+MEDIA_ROOT = Path("/tmp/victory-fitness-media") if os.getenv("VERCEL") else Path(__file__).resolve().parents[1] / "media"
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
