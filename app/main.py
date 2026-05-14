@@ -626,7 +626,7 @@ async def validate_authorization(user: dict = Depends(_require_access_user)) -> 
 
 @app.get("/me", response_model=MeResponse)
 async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
-    return MeResponse(**_serialize_me_record(user))
+    return MeResponse(**(await _serialize_me_record(user)))
 
 
 @app.patch("/me", response_model=MeResponse)
@@ -654,7 +654,7 @@ async def update_me(
         update_doc["profile_image"] = payload.profileImage.strip()
 
     if not update_doc:
-        return MeResponse(**_serialize_me_record(user))
+        return MeResponse(**(await _serialize_me_record(user)))
 
     update_doc["updated_at"] = datetime.now(timezone.utc)
     await users_collection.update_one({"_id": user_id}, {"$set": update_doc})
@@ -664,7 +664,7 @@ async def update_me(
         raise HTTPException(status_code=404, detail="User not found")
 
     await _sync_community_author_profile(updated_user)
-    return MeResponse(**_serialize_me_record(updated_user))
+    return MeResponse(**(await _serialize_me_record(updated_user)))
 
 
 @app.post("/me/profile-image", response_model=ProfileImageUploadResponse)
@@ -4184,6 +4184,7 @@ async def _archive_thread_messages_if_needed(
 
 async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
     user_id = str(user["_id"])
+    profile_summary = await _serialize_me_record(user)
     access_token = create_token(
         user_id,
         "access",
@@ -4224,6 +4225,11 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
             "is_verified": bool(user.get("is_verified")),
             "role": str(user.get("role") or ("admin" if user.get("is_admin") else "user")),
             "is_admin": bool(user.get("is_admin")),
+            "points": profile_summary.get("points", 0),
+            "workouts_completed": profile_summary.get("workouts_completed", 0),
+            "workouts_total": profile_summary.get("workouts_total", 0),
+            "streak_days": profile_summary.get("streak_days", 0),
+            "rank": profile_summary.get("rank", "Recruit"),
         },
     )
 
@@ -4288,7 +4294,8 @@ def _normalize_admin_user_status(record: dict) -> str:
     return "ACTIVE" if record.get("is_verified") else "PENDING"
 
 
-def _serialize_me_record(record: dict) -> dict:
+async def _serialize_me_record(record: dict) -> dict:
+    stats = await _calculate_user_fitness_stats(str(record["_id"]))
     return {
         "id": str(record["_id"]),
         "name": str(record.get("name") or ""),
@@ -4298,6 +4305,125 @@ def _serialize_me_record(record: dict) -> dict:
         "is_admin": bool(record.get("is_admin")),
         "country": str(record.get("country") or ""),
         "profileImage": str(record.get("profile_image") or ""),
+        "points": stats["points"],
+        "workouts_completed": stats["workouts_completed"],
+        "workouts_total": stats["workouts_total"],
+        "streak_days": stats["streak_days"],
+        "rank": stats["rank"],
+    }
+
+def _resolve_rank(points: int) -> str:
+    if points >= 3000:
+        return "Legend"
+    if points >= 1500:
+        return "Elite"
+    if points >= 500:
+        return "Warrior"
+    return "Recruit"
+
+
+def _parse_completed_activity_date(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if isinstance(value, str):
+        try:
+            return _as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _calculate_current_streak(completed_dates: set) -> int:
+    if not completed_dates:
+        return 0
+
+    current_day = max(completed_dates)
+    streak = 0
+    while current_day in completed_dates:
+        streak += 1
+        current_day = current_day - timedelta(days=1)
+    return streak
+
+
+async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
+    memberships = await challenge_memberships_collection.find(
+        {"user_id": user_id},
+    ).to_list(length=None)
+    if not memberships:
+        return {
+            "points": 0,
+            "workouts_completed": 0,
+            "workouts_total": 0,
+            "streak_days": 0,
+            "rank": "Recruit",
+        }
+
+    points = 0
+    workouts_completed = 0
+    workouts_total = 0
+    completed_dates: set = set()
+
+    challenge_ids: list[ObjectId] = []
+    completed_memberships: list[dict] = []
+    for membership in memberships:
+        if str(membership.get("status") or "").upper() == "COMPLETED":
+            completed_memberships.append(membership)
+            try:
+                challenge_ids.append(ObjectId(str(membership.get("challenge_id") or "")))
+            except Exception:
+                continue
+
+    if challenge_ids:
+        challenge_records = await challenges_collection.find(
+            {"_id": {"$in": challenge_ids}},
+        ).to_list(length=len(challenge_ids))
+        challenges_by_id = {str(record["_id"]): record for record in challenge_records}
+        for membership in memberships:
+            challenge = challenges_by_id.get(str(membership.get("challenge_id") or ""))
+            if not challenge:
+                continue
+
+            plan_days = _normalize_challenge_plan_days(
+                challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []
+            )
+            plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+
+            for day in plan_days:
+                day_number = str(day.get("day_number") or "")
+                day_progress = plan_progress.get(day_number, {}) if isinstance(plan_progress, dict) else {}
+
+                sections = day.get("sections") if isinstance(day.get("sections"), list) else []
+                if not sections:
+                    continue
+
+                completed_section_ids = {
+                    str(section_id)
+                    for section_id in day_progress.get("completed_section_ids", [])
+                    if isinstance(section_id, str) and section_id
+                } if isinstance(day_progress, dict) else set()
+                for section in sections:
+                    exercises = section.get("exercises") if isinstance(section.get("exercises"), list) else []
+                    linked_exercises = [exercise for exercise in exercises if str(exercise.get("workout_vimeo_id") or "").strip()]
+                    workout_count = len(linked_exercises)
+                    if workout_count == 0:
+                        continue
+                    workouts_total += workout_count
+                    if str(section.get("id") or "") in completed_section_ids:
+                        workouts_completed += workout_count
+                if isinstance(day_progress, dict) and bool(day_progress.get("completed")):
+                    completed_at = _parse_completed_activity_date(day_progress.get("updated_at"))
+                    if completed_at:
+                        completed_dates.add(completed_at.date())
+
+            if str(membership.get("status") or "").upper() == "COMPLETED":
+                points += max(int(challenge.get("points") or 0), 0)
+
+    return {
+        "points": points,
+        "workouts_completed": workouts_completed,
+        "workouts_total": workouts_total,
+        "streak_days": _calculate_current_streak(completed_dates),
+        "rank": _resolve_rank(points),
     }
 
 

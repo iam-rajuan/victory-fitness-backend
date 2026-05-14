@@ -40,6 +40,11 @@ class MeResponse(BaseModel):
     is_admin: bool = False
     country: str = ""
     profileImage: str = ""
+    points: int = 0
+    workouts_completed: int = 0
+    workouts_total: int = 0
+    streak_days: int = 0
+    rank: str = "Recruit"
 
 
 class UpdateMeRequest(BaseModel):
