@@ -4310,16 +4310,53 @@ async def _serialize_me_record(record: dict) -> dict:
         "workouts_total": stats["workouts_total"],
         "streak_days": stats["streak_days"],
         "rank": stats["rank"],
+        "next_rank": stats["next_rank"],
+        "points_to_next_rank": stats["points_to_next_rank"],
+        "rank_progress_fraction": stats["rank_progress_fraction"],
     }
 
+RANK_TIERS = [
+    ("Recruit", 0),
+    ("Warrior", 500),
+    ("Elite", 1500),
+    ("Legend", 3000),
+]
+
+
 def _resolve_rank(points: int) -> str:
-    if points >= 3000:
-        return "Legend"
-    if points >= 1500:
-        return "Elite"
-    if points >= 500:
-        return "Warrior"
-    return "Recruit"
+    current_rank = "Recruit"
+    for label, minimum_points in RANK_TIERS:
+        if points >= minimum_points:
+            current_rank = label
+    return current_rank
+
+
+def _resolve_rank_progress(points: int) -> dict[str, int | float | str]:
+    current_index = 0
+    for index, (_, minimum_points) in enumerate(RANK_TIERS):
+        if points >= minimum_points:
+            current_index = index
+
+    current_rank, current_floor = RANK_TIERS[current_index]
+    next_tier = RANK_TIERS[current_index + 1] if current_index + 1 < len(RANK_TIERS) else None
+
+    if not next_tier:
+        return {
+            "rank": current_rank,
+            "next_rank": current_rank,
+            "points_to_next_rank": 0,
+            "rank_progress_fraction": 1.0,
+        }
+
+    next_rank, next_threshold = next_tier
+    span = max(next_threshold - current_floor, 1)
+    points_in_tier = max(points - current_floor, 0)
+    return {
+        "rank": current_rank,
+        "next_rank": next_rank,
+        "points_to_next_rank": max(next_threshold - points, 0),
+        "rank_progress_fraction": min(points_in_tier / span, 1.0),
+    }
 
 
 def _parse_completed_activity_date(value: object) -> datetime | None:
@@ -4356,6 +4393,9 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
             "workouts_total": 0,
             "streak_days": 0,
             "rank": "Recruit",
+            "next_rank": "Warrior",
+            "points_to_next_rank": 500,
+            "rank_progress_fraction": 0.0,
         }
 
     points = 0
@@ -4418,12 +4458,16 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
             if str(membership.get("status") or "").upper() == "COMPLETED":
                 points += max(int(challenge.get("points") or 0), 0)
 
+    rank_progress = _resolve_rank_progress(points)
     return {
         "points": points,
         "workouts_completed": workouts_completed,
         "workouts_total": workouts_total,
         "streak_days": _calculate_current_streak(completed_dates),
-        "rank": _resolve_rank(points),
+        "rank": str(rank_progress["rank"]),
+        "next_rank": str(rank_progress["next_rank"]),
+        "points_to_next_rank": int(rank_progress["points_to_next_rank"]),
+        "rank_progress_fraction": float(rank_progress["rank_progress_fraction"]),
     }
 
 

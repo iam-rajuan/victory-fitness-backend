@@ -45,6 +45,9 @@ class MeResponse(BaseModel):
     workouts_total: int = 0
     streak_days: int = 0
     rank: str = "Recruit"
+    next_rank: str = "Warrior"
+    points_to_next_rank: int = 0
+    rank_progress_fraction: float = 0
 
 
 class UpdateMeRequest(BaseModel):
