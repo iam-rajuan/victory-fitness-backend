@@ -743,3 +743,77 @@ class WorkoutLibraryResponse(BaseModel):
     featuredWorkout: WorkoutLibraryItem | None = None
     workouts: list[WorkoutLibraryItem] = Field(default_factory=list)
     categories: list[WorkoutLibraryCategory] = Field(default_factory=list)
+
+
+class StrengthWorkoutExercise(BaseModel):
+    id: str
+    name: str
+    sets: int = Field(ge=1, le=10)
+    reps: str
+    rest: str
+    weight: str = ""
+    type: str
+
+
+class StrengthWorkoutDay(BaseModel):
+    day: str
+    title: str
+    est_time: str
+    volume: str
+    intensity: str
+    exercises: list[StrengthWorkoutExercise] = Field(default_factory=list)
+
+
+class StrengthWorkoutPlanRequest(BaseModel):
+    goal: str | None = None
+    level: str | None = None
+    split: str | None = None
+    height: str | None = None
+    gender: str | None = None
+    bench: str | None = None
+    squat: str | None = None
+    deadlift: str | None = None
+    equipment: list[str] = Field(default_factory=list)
+    frequency: str | None = None
+    days: list[str] = Field(default_factory=list)
+    age: str | None = None
+    weight: str | None = None
+
+
+class StrengthWorkoutPlanResponse(BaseModel):
+    summary: str
+    days: list[StrengthWorkoutDay] = Field(default_factory=list)
+
+
+class VideoWorkoutPlanItem(BaseModel):
+    id: str
+    title: str
+    duration: str
+    category: str
+    image: str = ""
+    tag: str = ""
+    vimeo_id: str = ""
+
+
+class VideoWorkoutPlanDay(BaseModel):
+    day: str
+    duration_label: str
+    workouts_count: int = 0
+    workouts: list[VideoWorkoutPlanItem] = Field(default_factory=list)
+
+
+class VideoWorkoutPlanRequest(BaseModel):
+    goal: str | None = None
+    level: str | None = None
+    days: str | None = None
+    duration: str | None = None
+    time: str | None = None
+    notes: str | None = None
+    countryCode: str | None = None
+    phone: str | None = None
+    equipment: str | None = None
+
+
+class VideoWorkoutPlanResponse(BaseModel):
+    summary: str
+    days: list[VideoWorkoutPlanDay] = Field(default_factory=list)

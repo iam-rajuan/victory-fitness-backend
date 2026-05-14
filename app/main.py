@@ -109,11 +109,15 @@ from .models import (
     TermsConditionResponse,
     TokenResponse,
     StartChallengeResponse,
+    StrengthWorkoutPlanRequest,
+    StrengthWorkoutPlanResponse,
     UpdateAdminProfileRequest,
     VerifyEmailRequest,
     UserActiveChallengeResponse,
     UserCompletedChallengeResponse,
     UserReadyChallengeResponse,
+    VideoWorkoutPlanRequest,
+    VideoWorkoutPlanResponse,
     WorkoutLibraryCategory,
     WorkoutLibraryItem,
     WorkoutLibraryResponse,
@@ -144,6 +148,12 @@ from .nutrition_ai import (
     generate_nutrition_advice,
     generate_nutrition_plan,
     generate_progressive_nutrition_plan_day,
+)
+from .workout_plan_ai import (
+    StrengthWorkoutPlanInput,
+    VideoWorkoutPlanInput,
+    generate_strength_workout_plan,
+    generate_video_workout_plan,
 )
 from .security import (
     create_token,
@@ -395,6 +405,56 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
         workouts=workouts,
         categories=categories,
     )
+
+
+@app.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
+async def workout_strength_plan(
+    payload: StrengthWorkoutPlanRequest,
+    _: dict = Depends(_require_access_user),
+) -> StrengthWorkoutPlanResponse:
+    plan = generate_strength_workout_plan(
+        StrengthWorkoutPlanInput(
+            goal=str(payload.goal or ""),
+            level=str(payload.level or ""),
+            split=str(payload.split or ""),
+            height=str(payload.height or ""),
+            gender=str(payload.gender or ""),
+            bench=str(payload.bench or ""),
+            squat=str(payload.squat or ""),
+            deadlift=str(payload.deadlift or ""),
+            equipment=[str(item) for item in payload.equipment],
+            frequency=str(payload.frequency or ""),
+            days=[str(item) for item in payload.days],
+            age=str(payload.age or ""),
+            weight=str(payload.weight or ""),
+        )
+    )
+    return StrengthWorkoutPlanResponse(**plan)
+
+
+@app.post("/ai/workout-plan/video", response_model=VideoWorkoutPlanResponse)
+async def workout_video_plan(
+    payload: VideoWorkoutPlanRequest,
+    _: dict = Depends(_require_access_user),
+) -> VideoWorkoutPlanResponse:
+    records = await workouts_collection.find(
+        {"visibility": "Published"},
+        sort=[("created_at", -1), ("_id", -1)],
+    ).to_list(length=50)
+    workouts = [_serialize_public_workout_record(record) for record in records]
+    plan = generate_video_workout_plan(
+        VideoWorkoutPlanInput(
+            goal=str(payload.goal or ""),
+            level=str(payload.level or ""),
+            days=str(payload.days or ""),
+            duration=str(payload.duration or ""),
+            time=str(payload.time or ""),
+            notes=str(payload.notes or ""),
+            equipment=str(payload.equipment or ""),
+        ),
+        workouts,
+    )
+    return VideoWorkoutPlanResponse(**plan)
 
 
 @app.post("/auth/register", status_code=status.HTTP_202_ACCEPTED)
