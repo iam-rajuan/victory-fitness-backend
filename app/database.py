@@ -29,6 +29,7 @@ strength_workout_plans_collection = db["strength_workout_plans"]
 app_content_collection = db["app_content"]
 coaching_applications_collection = db["coaching_applications"]
 support_messages_collection = db["support_messages"]
+longevity_os_profiles_collection = db["longevity_os_profiles"]
 coach_victor_threads_collection = db["coach_victor_threads"]
 coach_victor_archives_collection = db["coach_victor_archives"]
 journal_entries_collection = db["journal_entries"]
@@ -63,6 +64,7 @@ async def ensure_indexes() -> None:
     await coaching_applications_collection.create_index([("status", 1), ("created_at", -1)])
     await support_messages_collection.create_index([("user_id", 1), ("created_at", -1)])
     await support_messages_collection.create_index([("status", 1), ("created_at", -1)])
+    await longevity_os_profiles_collection.create_index("user_id", unique=True)
     await coach_victor_threads_collection.create_index([("user_id", 1), ("updated_at", -1)])
     await coach_victor_archives_collection.create_index([("thread_id", 1), ("created_at", 1)])
     await coach_victor_archives_collection.create_index([("user_id", 1), ("created_at", -1)])

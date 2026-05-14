@@ -44,8 +44,8 @@ class MeResponse(BaseModel):
     workouts_completed: int = 0
     workouts_total: int = 0
     streak_days: int = 0
-    rank: str = "Recruit"
-    next_rank: str = "Warrior"
+    rank: str = "Noob"
+    next_rank: str = "Bronze"
     points_to_next_rank: int = 0
     rank_progress_fraction: float = 0
 
@@ -101,6 +101,103 @@ class UpdateBodyMetricsRequest(BaseModel):
     height: str | None = Field(default=None, max_length=20)
     weight: str | None = Field(default=None, max_length=20)
     gender: str | None = Field(default=None, max_length=40)
+
+
+class LongevityOverviewResponse(BaseModel):
+    biological_age: str = "N/A"
+    chronological_age: str = "N/A"
+    trending_years_younger: float = 0
+    recovery_score: int = 0
+    hrv_ms: int = 0
+    sleep_score: int = 0
+
+
+class LongevityQuickActionResponse(BaseModel):
+    id: str
+    label: str
+    image: str = ""
+    color: str = ""
+
+
+class LongevityWearableDeviceResponse(BaseModel):
+    id: str
+    name: str
+    status: str = "CONNECT"
+    active: bool = False
+    image: str = ""
+
+
+class LongevityWearablesResponse(BaseModel):
+    devices: list[LongevityWearableDeviceResponse] = Field(default_factory=list)
+    last_synced_at: datetime | None = None
+    has_data: bool = False
+    sync_message: str = ""
+
+
+class LongevityHabitResponse(BaseModel):
+    id: str
+    title: str
+    subtitle: str = ""
+    icon: str = ""
+    done: bool = False
+
+
+class LongevityHabitsResponse(BaseModel):
+    streak_days: int = 0
+    habits: list[LongevityHabitResponse] = Field(default_factory=list)
+
+
+class LongevityHabitUpdateRequest(BaseModel):
+    done: bool
+
+
+class LongevityHealCategoryResponse(BaseModel):
+    id: str
+    label: str
+    image: str = ""
+    color: str = ""
+
+
+class LongevityHealCategoriesResponse(BaseModel):
+    categories: list[LongevityHealCategoryResponse] = Field(default_factory=list)
+
+
+class LongevityWeeklyPlanResponse(BaseModel):
+    status: str = "success"
+    message: str
+    generated_at: datetime
+
+
+class LongevityMasterclassResponse(BaseModel):
+    id: str
+    title: str
+    description: str = ""
+    thumbnail: str = ""
+
+
+class LongevityMasterclassListResponse(BaseModel):
+    items: list[LongevityMasterclassResponse] = Field(default_factory=list)
+
+
+class LongevityCircleResponse(BaseModel):
+    id: str
+    name: str
+    member_count: int = 0
+    description: str = ""
+
+
+class LongevityCircleListResponse(BaseModel):
+    items: list[LongevityCircleResponse] = Field(default_factory=list)
+
+
+class LongevityDashboardResponse(BaseModel):
+    overview: LongevityOverviewResponse
+    quick_actions: list[LongevityQuickActionResponse] = Field(default_factory=list)
+    wearables: LongevityWearablesResponse
+    habits: LongevityHabitsResponse
+    heal_categories: list[LongevityHealCategoryResponse] = Field(default_factory=list)
+    masterclasses: list[LongevityMasterclassResponse] = Field(default_factory=list)
+    circles: list[LongevityCircleResponse] = Field(default_factory=list)
 
 
 class PrivacyPolicyResponse(BaseModel):

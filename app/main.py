@@ -89,6 +89,21 @@ from .models import (
     JournalEntryCreateRequest,
     JournalEntryListResponse,
     JournalEntryResponse,
+    LongevityCircleListResponse,
+    LongevityCircleResponse,
+    LongevityDashboardResponse,
+    LongevityHabitResponse,
+    LongevityHabitUpdateRequest,
+    LongevityHabitsResponse,
+    LongevityHealCategoriesResponse,
+    LongevityHealCategoryResponse,
+    LongevityMasterclassListResponse,
+    LongevityMasterclassResponse,
+    LongevityOverviewResponse,
+    LongevityQuickActionResponse,
+    LongevityWearableDeviceResponse,
+    LongevityWearablesResponse,
+    LongevityWeeklyPlanResponse,
     MealImageAnalysisListResponse,
     MealImageAnalysisRequest,
     MealImageAnalysisResponse,
@@ -143,6 +158,7 @@ from .database import (
     community_comments_collection,
     community_posts_collection,
     community_reactions_collection,
+    longevity_os_profiles_collection,
     nutrition_progressive_plan_jobs_collection,
     nutrition_progressive_plans_collection,
     journal_entries_collection,
@@ -230,6 +246,37 @@ DEFAULT_ABOUT_US_HTML = """
 <h2>Our Focus</h2>
 <p>We focus on practical, sustainable progress instead of extreme plans, helping users improve strength, energy, recovery, and confidence.</p>
 """.strip()
+DEFAULT_LONGEVITY_QUICK_ACTIONS = [
+    {"id": "log-bio", "label": "Log Bio", "image": "https://images.unsplash.com/photo-1576091160550-2173dba999ef?w=600&q=80", "color": "#4F8EF7"},
+    {"id": "fasting", "label": "Fasting", "image": "https://images.unsplash.com/photo-1495555961410-b96095ce83be?w=600&q=80", "color": "#F59E0B"},
+    {"id": "heal-food", "label": "Heal with Food", "image": "https://images.unsplash.com/photo-1490645935967-10de6ba17061?w=600&q=80", "color": "#10B981"},
+    {"id": "masterclass", "label": "Masterclass", "image": "https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=600&q=80", "color": "#4F8EF7"},
+    {"id": "circles", "label": "Circles", "image": "https://images.unsplash.com/photo-1526506118085-60ce8714f8c5?w=600&q=80", "color": "#F472B6"},
+]
+DEFAULT_LONGEVITY_HEAL_CATEGORIES = [
+    {"id": "hbp", "label": "HIGH BLOOD PRESSURE", "image": "https://images.unsplash.com/photo-1505576399279-565b52d4ac71?w=600&q=80", "color": "#F59E0B"},
+    {"id": "diabetes", "label": "DIABETES", "image": "https://images.unsplash.com/photo-1505253758473-96b7015fcd40?w=600&q=80", "color": "#4F8EF7"},
+    {"id": "bodyfat", "label": "BODY FAT", "image": "https://images.unsplash.com/photo-1605296867304-46d5465a13f1?w=600&q=80", "color": "#6366F1"},
+    {"id": "liver", "label": "HEALTHY LIVER", "image": "https://images.unsplash.com/photo-1490645935967-10de6ba17061?w=600&q=80", "color": "#EF4444"},
+    {"id": "immunity", "label": "IMMUNITY AND INFECTION", "image": "https://images.unsplash.com/photo-1584362917165-526a968579e8?w=600&q=80", "color": "#FF6B6B"},
+    {"id": "mental", "label": "MENTAL HEALTH AND ANXIETY", "image": "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&q=80", "color": "#F97316"},
+    {"id": "heart", "label": "HEART HEALTH", "image": "https://images.unsplash.com/photo-1530026405186-ed1f139313f8?w=600&q=80", "color": "#00C9A7"},
+    {"id": "respiratory", "label": "RESPIRATORY HEALTH", "image": "https://images.unsplash.com/photo-1517963879433-6ad2b056d712?w=600&q=80", "color": "#10B981"},
+    {"id": "skin", "label": "SKIN CONDITIONS", "image": "https://images.unsplash.com/photo-1556228578-0d85b1a4d571?w=600&q=80", "color": "#A855F7"},
+    {"id": "recovery", "label": "POST WORKOUT RECOVERY", "image": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80", "color": "#EC4899"},
+]
+DEFAULT_LONGEVITY_WEARABLES = [
+    {"id": "fitbit", "name": "Fitbit", "status": "CONNECT", "active": False, "image": "https://images.unsplash.com/photo-1575311373937-040b8e1fd5b2?w=600&q=80"},
+    {"id": "apple-health", "name": "Apple Health", "status": "CONNECTED", "active": True, "image": "https://images.unsplash.com/photo-1434493789847-2f02dc6ca35d?w=600&q=80"},
+    {"id": "google-fit", "name": "Google Fit", "status": "CONNECT", "active": False, "image": "https://images.unsplash.com/photo-1510017803434-a899398421b3?w=600&q=80"},
+    {"id": "garmin", "name": "Garmin", "status": "CONNECT", "active": False, "image": "https://images.unsplash.com/photo-1557438159-8664b4c7301c?w=600&q=80"},
+]
+DEFAULT_LONGEVITY_HABITS = [
+    {"id": "hydration", "title": "Hydration", "subtitle": "Daily protocol for longevity", "icon": "water-outline", "done": True},
+    {"id": "sleep-7h", "title": "7h+ Sleep", "subtitle": "Daily protocol for longevity", "icon": "moon-outline", "done": True},
+    {"id": "cold-plunge", "title": "Cold Plunge", "subtitle": "Daily protocol for longevity", "icon": "flash-outline", "done": True},
+    {"id": "breathwork", "title": "Breathwork", "subtitle": "Daily protocol for longevity", "icon": "reorder-two-outline", "done": False},
+]
 
 
 class ChallengeChatSocketManager:
@@ -845,6 +892,206 @@ async def update_body_metrics(
         height=str(next_metrics.get("height") or ""),
         weight=str(next_metrics.get("weight") or ""),
         gender=str(next_metrics.get("gender") or ""),
+    )
+
+
+def _calculate_habit_streak(habits: list[dict]) -> int:
+    return sum(1 for habit in habits if bool(habit.get("done")))
+
+
+def _build_default_longevity_profile(user: dict) -> dict:
+    age = str((user.get("body_metrics") or {}).get("age") or "").strip()
+    chronological_age = age if age else "N/A"
+    biological_age = chronological_age if age else "N/A"
+    now = datetime.now(timezone.utc)
+    return {
+        "user_id": str(user["_id"]),
+        "overview": {
+            "biological_age": biological_age,
+            "chronological_age": chronological_age,
+            "trending_years_younger": 2.4 if age else 0,
+            "recovery_score": 82 if age else 0,
+            "hrv_ms": 41 if age else 0,
+            "sleep_score": 76 if age else 0,
+        },
+        "quick_actions": [dict(item) for item in DEFAULT_LONGEVITY_QUICK_ACTIONS],
+        "wearables": {
+            "devices": [dict(item) for item in DEFAULT_LONGEVITY_WEARABLES],
+            "last_synced_at": None,
+            "has_data": False,
+            "sync_message": "No data synced yet. Connect a device and press sync to begin your longevity analysis.",
+        },
+        "habits": [dict(item) for item in DEFAULT_LONGEVITY_HABITS],
+        "heal_categories": [dict(item) for item in DEFAULT_LONGEVITY_HEAL_CATEGORIES],
+        "masterclasses": [],
+        "circles": [],
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+async def _get_or_create_longevity_profile(user: dict) -> dict:
+    user_id = str(user["_id"])
+    profile = await longevity_os_profiles_collection.find_one({"user_id": user_id})
+    if profile:
+        return profile
+
+    document = _build_default_longevity_profile(user)
+    await longevity_os_profiles_collection.insert_one(document)
+    return document
+
+
+def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardResponse:
+    habits_raw = [dict(item) for item in profile.get("habits") or []]
+    wearables = profile.get("wearables") or {}
+    return LongevityDashboardResponse(
+        overview=LongevityOverviewResponse(**(profile.get("overview") or {})),
+        quick_actions=[LongevityQuickActionResponse(**item) for item in profile.get("quick_actions") or []],
+        wearables=LongevityWearablesResponse(
+            devices=[LongevityWearableDeviceResponse(**item) for item in wearables.get("devices") or []],
+            last_synced_at=wearables.get("last_synced_at"),
+            has_data=bool(wearables.get("has_data")),
+            sync_message=str(wearables.get("sync_message") or ""),
+        ),
+        habits=LongevityHabitsResponse(
+            streak_days=_calculate_habit_streak(habits_raw),
+            habits=[LongevityHabitResponse(**item) for item in habits_raw],
+        ),
+        heal_categories=[LongevityHealCategoryResponse(**item) for item in profile.get("heal_categories") or []],
+        masterclasses=[LongevityMasterclassResponse(**item) for item in profile.get("masterclasses") or []],
+        circles=[LongevityCircleResponse(**item) for item in profile.get("circles") or []],
+    )
+
+
+@app.get("/longevity-os/dashboard", response_model=LongevityDashboardResponse)
+async def longevity_dashboard(
+    user: dict = Depends(_require_access_user),
+) -> LongevityDashboardResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    return _serialize_longevity_dashboard(profile)
+
+
+@app.get("/longevity-os/heal/categories", response_model=LongevityHealCategoriesResponse)
+async def longevity_heal_categories(
+    user: dict = Depends(_require_access_user),
+) -> LongevityHealCategoriesResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    return LongevityHealCategoriesResponse(
+        categories=[LongevityHealCategoryResponse(**item) for item in profile.get("heal_categories") or []]
+    )
+
+
+@app.post("/longevity-os/heal/weekly-plan", response_model=LongevityWeeklyPlanResponse)
+async def longevity_generate_weekly_plan(
+    user: dict = Depends(_require_access_user),
+) -> LongevityWeeklyPlanResponse:
+    await _get_or_create_longevity_profile(user)
+    return LongevityWeeklyPlanResponse(
+        message="Your longevity weekly plan has been prepared. AI meal strategy can be expanded from here.",
+        generated_at=datetime.now(timezone.utc),
+    )
+
+
+@app.get("/longevity-os/wearables", response_model=LongevityWearablesResponse)
+async def longevity_wearables(
+    user: dict = Depends(_require_access_user),
+) -> LongevityWearablesResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    wearables = profile.get("wearables") or {}
+    return LongevityWearablesResponse(
+        devices=[LongevityWearableDeviceResponse(**item) for item in wearables.get("devices") or []],
+        last_synced_at=wearables.get("last_synced_at"),
+        has_data=bool(wearables.get("has_data")),
+        sync_message=str(wearables.get("sync_message") or ""),
+    )
+
+
+@app.post("/longevity-os/wearables/sync", response_model=LongevityWearablesResponse)
+async def longevity_sync_wearables(
+    user: dict = Depends(_require_access_user),
+) -> LongevityWearablesResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    now = datetime.now(timezone.utc)
+    devices = [dict(item) for item in (profile.get("wearables") or {}).get("devices") or DEFAULT_LONGEVITY_WEARABLES]
+    for device in devices:
+        if device.get("id") == "apple-health":
+            device["active"] = True
+            device["status"] = "CONNECTED"
+
+    wearables = {
+        "devices": devices,
+        "last_synced_at": now,
+        "has_data": True,
+        "sync_message": "Wearable data synced successfully.",
+    }
+    await longevity_os_profiles_collection.update_one(
+        {"_id": profile["_id"]},
+        {"$set": {"wearables": wearables, "updated_at": now}},
+    )
+    return LongevityWearablesResponse(
+        devices=[LongevityWearableDeviceResponse(**item) for item in wearables.get("devices") or []],
+        last_synced_at=wearables.get("last_synced_at"),
+        has_data=bool(wearables.get("has_data")),
+        sync_message=str(wearables.get("sync_message") or ""),
+    )
+
+
+@app.get("/longevity-os/habits", response_model=LongevityHabitsResponse)
+async def longevity_habits(
+    user: dict = Depends(_require_access_user),
+) -> LongevityHabitsResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    habits = [dict(item) for item in profile.get("habits") or []]
+    return LongevityHabitsResponse(
+        streak_days=_calculate_habit_streak(habits),
+        habits=[LongevityHabitResponse(**item) for item in habits],
+    )
+
+
+@app.patch("/longevity-os/habits/{habit_id}", response_model=LongevityHabitsResponse)
+async def longevity_update_habit(
+    habit_id: str,
+    payload: LongevityHabitUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> LongevityHabitsResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    habits = [dict(item) for item in profile.get("habits") or []]
+    updated = False
+    for habit in habits:
+        if str(habit.get("id") or "") == habit_id:
+            habit["done"] = payload.done
+            updated = True
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="Habit not found")
+
+    await longevity_os_profiles_collection.update_one(
+        {"_id": profile["_id"]},
+        {"$set": {"habits": habits, "updated_at": datetime.now(timezone.utc)}},
+    )
+    return LongevityHabitsResponse(
+        streak_days=_calculate_habit_streak(habits),
+        habits=[LongevityHabitResponse(**item) for item in habits],
+    )
+
+
+@app.get("/longevity-os/masterclasses", response_model=LongevityMasterclassListResponse)
+async def longevity_masterclasses(
+    user: dict = Depends(_require_access_user),
+) -> LongevityMasterclassListResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    return LongevityMasterclassListResponse(
+        items=[LongevityMasterclassResponse(**item) for item in profile.get("masterclasses") or []]
+    )
+
+
+@app.get("/longevity-os/circles", response_model=LongevityCircleListResponse)
+async def longevity_circles(
+    user: dict = Depends(_require_access_user),
+) -> LongevityCircleListResponse:
+    profile = await _get_or_create_longevity_profile(user)
+    return LongevityCircleListResponse(
+        items=[LongevityCircleResponse(**item) for item in profile.get("circles") or []]
     )
 
 
@@ -4229,7 +4476,7 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
             "workouts_completed": profile_summary.get("workouts_completed", 0),
             "workouts_total": profile_summary.get("workouts_total", 0),
             "streak_days": profile_summary.get("streak_days", 0),
-            "rank": profile_summary.get("rank", "Recruit"),
+            "rank": profile_summary.get("rank", "Noob"),
         },
     )
 
@@ -4316,15 +4563,22 @@ async def _serialize_me_record(record: dict) -> dict:
     }
 
 RANK_TIERS = [
-    ("Recruit", 0),
-    ("Warrior", 500),
-    ("Elite", 1500),
-    ("Legend", 3000),
+    ("Noob", 0),
+    ("Bronze", 500),
+    ("Silver", 1600),
+    ("Gold", 3500),
+    ("Platinum", 5000),
+    ("Diamond", 10000),
+    ("Master", 20000),
+    ("Champion", 35000),
+    ("Titan", 50000),
+    ("Legend", 75000),
+    ("Immortal", 100000),
 ]
 
 
 def _resolve_rank(points: int) -> str:
-    current_rank = "Recruit"
+    current_rank = "Noob"
     for label, minimum_points in RANK_TIERS:
         if points >= minimum_points:
             current_rank = label
@@ -4392,8 +4646,8 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
             "workouts_completed": 0,
             "workouts_total": 0,
             "streak_days": 0,
-            "rank": "Recruit",
-            "next_rank": "Warrior",
+            "rank": "Noob",
+            "next_rank": "Bronze",
             "points_to_next_rank": 500,
             "rank_progress_fraction": 0.0,
         }
