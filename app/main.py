@@ -15,6 +15,7 @@ from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .coach_archive import (
@@ -31,11 +32,13 @@ from .database import DatabaseNotConfiguredError, ensure_indexes, users_collecti
 from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
 from .models import (
+    AdminCoachingApplicationUpdateRequest,
     AdminChangePasswordRequest,
     AdminChallengeItem,
     AdminChallengeListResponse,
     AdminChallengePlanGenerateRequest,
     AdminChallengePlanGenerateResponse,
+    AdminSupportMessageUpdateRequest,
     AdminChallengeRequest,
     AdminProfileResponse,
     AboutUsResponse,
@@ -55,6 +58,9 @@ from .models import (
     CoachVictorChatRequest,
     CoachVictorChatResponse,
     CoachVictorHistoryResponse,
+    CoachingApplicationCreateRequest,
+    CoachingApplicationListResponse,
+    CoachingApplicationResponse,
     CommunityCommentCreateRequest,
     CommunityCommentResponse,
     CommunityPostCreateRequest,
@@ -111,6 +117,9 @@ from .models import (
     StartChallengeResponse,
     StrengthWorkoutPlanRequest,
     StrengthWorkoutPlanResponse,
+    SupportMessageCreateRequest,
+    SupportMessageListResponse,
+    SupportMessageResponse,
     UpdateAdminProfileRequest,
     VerifyEmailRequest,
     UserActiveChallengeResponse,
@@ -128,6 +137,7 @@ from .database import (
     challenge_message_reactions_collection,
     challenge_memberships_collection,
     challenges_collection,
+    coaching_applications_collection,
     coach_victor_archives_collection,
     coach_victor_threads_collection,
     community_comments_collection,
@@ -140,6 +150,7 @@ from .database import (
     nutrition_plans_collection,
     nutrition_plan_jobs_collection,
     strength_workout_plans_collection,
+    support_messages_collection,
     workouts_collection,
 )
 from .nutrition_ai import (
@@ -168,6 +179,9 @@ from .security import (
 app = FastAPI(title=settings.app_name)
 bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger("victory_fitness.api")
+MEDIA_ROOT = Path(__file__).resolve().parents[1] / "media"
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
 PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 PRIVACY_POLICY_KEY = "privacy_policy"
@@ -460,6 +474,21 @@ async def workout_strength_plan_latest(
     plan_data["plan_id"] = str(record["_id"])
     plan_data["created_at"] = record.get("created_at")
     return StrengthWorkoutPlanResponse(**plan_data)
+
+
+@app.delete("/ai/workout-plan/strength/latest")
+async def workout_strength_plan_delete_latest(
+    user: dict = Depends(_require_access_user),
+) -> dict[str, str]:
+    record = await strength_workout_plans_collection.find_one(
+        {"user_id": str(user["_id"])},
+        sort=[("created_at", -1)],
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    await strength_workout_plans_collection.delete_one({"_id": record["_id"]})
+    return {"status": "success", "message": "Strength workout plan deleted"}
 
 
 @app.post("/ai/workout-plan/video", response_model=VideoWorkoutPlanResponse)
@@ -928,6 +957,132 @@ async def admin_update_about_us(
     if not record:
         raise HTTPException(status_code=500, detail="About Us could not be saved")
     return _serialize_about_us_record(record)
+
+
+@app.post("/applications", response_model=CoachingApplicationResponse, status_code=status.HTTP_201_CREATED)
+async def create_coaching_application(
+    payload: CoachingApplicationCreateRequest,
+    user: dict = Depends(_require_access_user),
+) -> CoachingApplicationResponse:
+    if not payload.agreement_accepted:
+        raise HTTPException(status_code=400, detail="You must accept the agreement before submitting")
+
+    now = datetime.now(timezone.utc)
+    document = {
+        "_id": ObjectId(),
+        "user_id": str(user["_id"]),
+        "first_name": payload.first_name.strip(),
+        "last_name": payload.last_name.strip(),
+        "email": payload.email.lower().strip(),
+        "phone_number": str(payload.phone_number or "").strip(),
+        "goal": payload.goal.strip(),
+        "obstacle": payload.obstacle.strip(),
+        "investment": payload.investment.strip(),
+        "commitment": payload.commitment.strip(),
+        "injury": payload.injury.strip(),
+        "additional_notes": str(payload.additional_notes or "").strip(),
+        "agreement_accepted": True,
+        "status": "NEW",
+        "admin_notes": "",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await coaching_applications_collection.insert_one(document)
+    return _serialize_coaching_application_record(document)
+
+
+@app.post("/support/messages", response_model=SupportMessageResponse, status_code=status.HTTP_201_CREATED)
+async def create_support_message(
+    payload: SupportMessageCreateRequest,
+    user: dict = Depends(_require_access_user),
+) -> SupportMessageResponse:
+    now = datetime.now(timezone.utc)
+    document = {
+        "_id": ObjectId(),
+        "user_id": str(user["_id"]),
+        "user_name": str(user.get("name") or "Member").strip() or "Member",
+        "user_email": str(user.get("email") or "").strip().lower(),
+        "subject": payload.subject.strip(),
+        "message": payload.message.strip(),
+        "status": "OPEN",
+        "admin_notes": "",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await support_messages_collection.insert_one(document)
+    return _serialize_support_message_record(document)
+
+
+@app.get("/admin/applications", response_model=CoachingApplicationListResponse)
+async def admin_get_coaching_applications(_: dict = Depends(_require_admin_user)) -> CoachingApplicationListResponse:
+    records = await coaching_applications_collection.find(
+        {},
+        sort=[("created_at", -1), ("_id", -1)],
+        limit=300,
+    ).to_list(length=300)
+    return CoachingApplicationListResponse(
+        applications=[_serialize_coaching_application_record(record) for record in records]
+    )
+
+
+@app.patch("/admin/applications/{application_id}", response_model=CoachingApplicationResponse)
+async def admin_update_coaching_application(
+    application_id: str,
+    payload: AdminCoachingApplicationUpdateRequest,
+    _: dict = Depends(_require_admin_user),
+) -> CoachingApplicationResponse:
+    try:
+        object_id = ObjectId(application_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid application id") from exc
+
+    update_doc: dict = {"updated_at": datetime.now(timezone.utc)}
+    if payload.status is not None:
+        update_doc["status"] = payload.status.strip().upper()
+    if payload.admin_notes is not None:
+        update_doc["admin_notes"] = payload.admin_notes.strip()
+
+    await coaching_applications_collection.update_one({"_id": object_id}, {"$set": update_doc})
+    record = await coaching_applications_collection.find_one({"_id": object_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Application not found")
+    return _serialize_coaching_application_record(record)
+
+
+@app.get("/admin/support/messages", response_model=SupportMessageListResponse)
+async def admin_get_support_messages(_: dict = Depends(_require_admin_user)) -> SupportMessageListResponse:
+    records = await support_messages_collection.find(
+        {},
+        sort=[("created_at", -1), ("_id", -1)],
+        limit=300,
+    ).to_list(length=300)
+    return SupportMessageListResponse(
+        messages=[_serialize_support_message_record(record) for record in records]
+    )
+
+
+@app.patch("/admin/support/messages/{message_id}", response_model=SupportMessageResponse)
+async def admin_update_support_message(
+    message_id: str,
+    payload: AdminSupportMessageUpdateRequest,
+    _: dict = Depends(_require_admin_user),
+) -> SupportMessageResponse:
+    try:
+        object_id = ObjectId(message_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid support message id") from exc
+
+    update_doc: dict = {"updated_at": datetime.now(timezone.utc)}
+    if payload.status is not None:
+        update_doc["status"] = payload.status.strip().upper()
+    if payload.admin_notes is not None:
+        update_doc["admin_notes"] = payload.admin_notes.strip()
+
+    await support_messages_collection.update_one({"_id": object_id}, {"$set": update_doc})
+    record = await support_messages_collection.find_one({"_id": object_id})
+    if not record:
+        raise HTTPException(status_code=404, detail="Support message not found")
+    return _serialize_support_message_record(record)
 
 
 @app.get("/community/posts", response_model=CommunityPostListResponse)
@@ -3271,6 +3426,34 @@ def _build_inline_image_data_url(image_base64: str, mime_type: str) -> str:
     return f"data:{normalized_mime};base64,{image_base64}"
 
 
+def _build_local_media_url(relative_path: str) -> str:
+    normalized_base = settings.api_public_base_url.rstrip("/")
+    normalized_path = "/" + str(relative_path or "").lstrip("/")
+    return f"{normalized_base}{normalized_path}"
+
+
+def _store_image_locally(
+    folder_name: str,
+    user_id: str,
+    payload: bytes,
+    extension: str,
+    file_name: str | None,
+) -> str:
+    sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
+    suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
+    if suffix and not extension.endswith(suffix):
+        sanitized_file_name = ""
+
+    object_name = sanitized_file_name or f"{uuid4().hex}{extension}"
+    normalized_owner = re.sub(r"[^a-zA-Z0-9_-]", "-", str(user_id or "anonymous")).strip("-") or "anonymous"
+    relative_dir = Path(folder_name) / normalized_owner
+    absolute_dir = MEDIA_ROOT / relative_dir
+    absolute_dir.mkdir(parents=True, exist_ok=True)
+    absolute_path = absolute_dir / object_name
+    absolute_path.write_bytes(payload)
+    return _build_local_media_url((Path("media") / relative_dir / object_name).as_posix())
+
+
 def _upload_image_to_s3(
     folder_name: str,
     user_id: str,
@@ -3298,7 +3481,7 @@ def _upload_image_to_s3(
         raise ValueError("Profile image must be 10MB or smaller")
 
     if not s3_archive_enabled():
-        return _build_inline_image_data_url(image_base64, normalized_mime)
+        return _store_image_locally(folder_name, user_id, payload, extension, file_name)
 
     sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
     suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
@@ -3314,7 +3497,7 @@ def _upload_image_to_s3(
         import boto3
     except ImportError as exc:
         logger.warning("boto3_missing_for_image_upload folder=%s user_id=%s", folder_name, user_id)
-        return _build_inline_image_data_url(image_base64, normalized_mime)
+        return _store_image_locally(folder_name, user_id, payload, extension, file_name)
 
     client = boto3.client(
         "s3",
@@ -3337,14 +3520,28 @@ def _upload_image_to_s3(
             user_id,
             exc,
         )
-        return _build_inline_image_data_url(image_base64, normalized_mime)
+        return _store_image_locally(folder_name, user_id, payload, extension, file_name)
 
     return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
 
 
 def _delete_image_from_s3(image_url: str | None) -> None:
     normalized_url = str(image_url or "").strip()
-    if not normalized_url or normalized_url.startswith("data:") or not s3_archive_enabled():
+    if not normalized_url or normalized_url.startswith("data:"):
+        return
+
+    local_media_base = _build_local_media_url("/media/")
+    if normalized_url.startswith(local_media_base):
+        relative_path = normalized_url.removeprefix(local_media_base).lstrip("/")
+        local_path = MEDIA_ROOT / Path(relative_path)
+        try:
+            if local_path.exists():
+                local_path.unlink()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("local_image_delete_failed image_url=%s error=%s", normalized_url, exc)
+        return
+
+    if not s3_archive_enabled():
         return
 
     parsed = urlparse(normalized_url)
@@ -3490,6 +3687,46 @@ def _serialize_about_us_record(record: dict) -> AboutUsResponse:
         html_content=html_content,
         plain_text=plain_text,
         updated_at=updated_at,
+    )
+
+
+def _serialize_coaching_application_record(record: dict) -> CoachingApplicationResponse:
+    first_name = str(record.get("first_name") or "").strip()
+    last_name = str(record.get("last_name") or "").strip()
+    return CoachingApplicationResponse(
+        id=str(record.get("_id")),
+        user_id=str(record.get("user_id") or ""),
+        first_name=first_name,
+        last_name=last_name,
+        full_name=f"{first_name} {last_name}".strip(),
+        email=str(record.get("email") or ""),
+        phone_number=str(record.get("phone_number") or ""),
+        goal=str(record.get("goal") or ""),
+        obstacle=str(record.get("obstacle") or ""),
+        investment=str(record.get("investment") or ""),
+        commitment=str(record.get("commitment") or ""),
+        injury=str(record.get("injury") or ""),
+        additional_notes=str(record.get("additional_notes") or ""),
+        agreement_accepted=bool(record.get("agreement_accepted", True)),
+        status=str(record.get("status") or "NEW"),
+        admin_notes=str(record.get("admin_notes") or ""),
+        created_at=_as_utc(record.get("created_at") or datetime.now(timezone.utc)),
+        updated_at=_as_utc(record.get("updated_at") or record.get("created_at") or datetime.now(timezone.utc)),
+    )
+
+
+def _serialize_support_message_record(record: dict) -> SupportMessageResponse:
+    return SupportMessageResponse(
+        id=str(record.get("_id")),
+        user_id=str(record.get("user_id") or ""),
+        user_name=str(record.get("user_name") or "Member"),
+        user_email=str(record.get("user_email") or ""),
+        subject=str(record.get("subject") or ""),
+        message=str(record.get("message") or ""),
+        status=str(record.get("status") or "OPEN"),
+        admin_notes=str(record.get("admin_notes") or ""),
+        created_at=_as_utc(record.get("created_at") or datetime.now(timezone.utc)),
+        updated_at=_as_utc(record.get("updated_at") or record.get("created_at") or datetime.now(timezone.utc)),
     )
 
 

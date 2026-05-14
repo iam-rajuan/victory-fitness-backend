@@ -134,6 +134,77 @@ class UpdateAboutUsRequest(BaseModel):
     html_content: str = Field(min_length=1, max_length=200000)
 
 
+class CoachingApplicationCreateRequest(BaseModel):
+    first_name: str = Field(min_length=1, max_length=80)
+    last_name: str = Field(min_length=1, max_length=80)
+    email: EmailStr
+    phone_number: str | None = Field(default=None, max_length=40)
+    goal: str = Field(min_length=1, max_length=200)
+    obstacle: str = Field(min_length=1, max_length=200)
+    investment: str = Field(min_length=1, max_length=200)
+    commitment: str = Field(min_length=1, max_length=200)
+    injury: str = Field(min_length=1, max_length=80)
+    additional_notes: str | None = Field(default=None, max_length=4000)
+    agreement_accepted: bool = True
+
+
+class CoachingApplicationResponse(BaseModel):
+    id: str
+    user_id: str = ""
+    first_name: str
+    last_name: str
+    full_name: str
+    email: EmailStr
+    phone_number: str = ""
+    goal: str
+    obstacle: str
+    investment: str
+    commitment: str
+    injury: str
+    additional_notes: str = ""
+    agreement_accepted: bool = True
+    status: str = "NEW"
+    admin_notes: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+class CoachingApplicationListResponse(BaseModel):
+    applications: list[CoachingApplicationResponse] = Field(default_factory=list)
+
+
+class AdminCoachingApplicationUpdateRequest(BaseModel):
+    status: str | None = Field(default=None, max_length=40)
+    admin_notes: str | None = Field(default=None, max_length=2000)
+
+
+class SupportMessageCreateRequest(BaseModel):
+    subject: str = Field(min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=4000)
+
+
+class SupportMessageResponse(BaseModel):
+    id: str
+    user_id: str = ""
+    user_name: str
+    user_email: EmailStr
+    subject: str
+    message: str
+    status: str = "OPEN"
+    admin_notes: str = ""
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupportMessageListResponse(BaseModel):
+    messages: list[SupportMessageResponse] = Field(default_factory=list)
+
+
+class AdminSupportMessageUpdateRequest(BaseModel):
+    status: str | None = Field(default=None, max_length=40)
+    admin_notes: str | None = Field(default=None, max_length=2000)
+
+
 class CommunityCommentResponse(BaseModel):
     id: str
     post_id: str

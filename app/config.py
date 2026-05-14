@@ -31,6 +31,7 @@ class Settings:
     environment = os.getenv("ENVIRONMENT", "development")
     api_host = os.getenv("API_HOST", "0.0.0.0")
     api_port = int(os.getenv("API_PORT", "8000"))
+    api_public_base_url = os.getenv("API_PUBLIC_BASE_URL", f"http://localhost:{api_port}").strip().rstrip("/")
 
     mongodb_uri = _get_mongodb_uri()
     mongodb_configured = bool(mongodb_uri)
