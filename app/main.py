@@ -15,7 +15,7 @@ from dotenv import dotenv_values
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -30,6 +30,13 @@ from .challenge_plan_ai import ChallengePlanGenerationInput, generate_challenge_
 from .coach_victor import generate_coach_victor_reply
 from .config import settings
 from .database import DatabaseNotConfiguredError, close_database_connection, ensure_indexes, users_collection
+from .dependencies import (
+    bearer_scheme,
+    get_verified_user as dependency_get_verified_user,
+    get_verified_user_from_access_token as dependency_get_verified_user_from_access_token,
+    require_access_user as dependency_require_access_user,
+    require_admin_user as dependency_require_admin_user,
+)
 from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
 from .models import (
@@ -179,6 +186,14 @@ from .nutrition_ai import (
 )
 from .repositories.content import ensure_content_record, upsert_content_record
 from .repositories.workouts import list_public_workout_records
+from .serializers.content import (
+    serialize_about_us_record as shared_serialize_about_us_record,
+    serialize_privacy_policy_record as shared_serialize_privacy_policy_record,
+    serialize_terms_condition_record as shared_serialize_terms_condition_record,
+)
+from .serializers.workouts import serialize_public_workout_record as shared_serialize_public_workout_record
+from .utils.datetime import as_utc as shared_as_utc
+from .utils.html import html_to_plain_text as shared_html_to_plain_text
 from .workout_plan_ai import (
     StrengthWorkoutPlanInput,
     VideoWorkoutPlanInput,
@@ -195,7 +210,6 @@ from .security import (
 
 
 app = FastAPI(title=settings.app_name)
-bearer_scheme = HTTPBearer(auto_error=False)
 logger = logging.getLogger("victory_fitness.api")
 MEDIA_ROOT = Path("/tmp/victory-fitness-media") if os.getenv("VERCEL") else Path(__file__).resolve().parents[1] / "media"
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -426,17 +440,11 @@ async def unhandled_exception_handler(
 async def _require_access_user(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
 ) -> dict:
-    token = credentials.credentials if credentials else None
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing access token")
-
-    return await _get_verified_user(f"Bearer {token}")
+    return await dependency_require_access_user(credentials)
 
 
 async def _require_admin_user(user: dict = Depends(_require_access_user)) -> dict:
-    if not user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return user
+    return await dependency_require_admin_user(user)
 
 
 @app.on_event("startup")
@@ -3867,41 +3875,26 @@ async def _ensure_about_us_record() -> dict:
 
 
 def _serialize_privacy_policy_record(record: dict) -> PrivacyPolicyResponse:
-    html_content = str(record.get("html_content") or "")
-    plain_text = _html_to_plain_text(html_content)
-    updated_at = _as_utc(record.get("updated_at") or datetime.now(timezone.utc))
-    return PrivacyPolicyResponse(
+    return shared_serialize_privacy_policy_record(
+        record,
         key=PRIVACY_POLICY_KEY,
-        title=str(record.get("title") or DEFAULT_PRIVACY_POLICY_TITLE),
-        html_content=html_content,
-        plain_text=plain_text,
-        updated_at=updated_at,
+        default_title=DEFAULT_PRIVACY_POLICY_TITLE,
     )
 
 
 def _serialize_terms_condition_record(record: dict) -> TermsConditionResponse:
-    html_content = str(record.get("html_content") or "")
-    plain_text = _html_to_plain_text(html_content)
-    updated_at = _as_utc(record.get("updated_at") or datetime.now(timezone.utc))
-    return TermsConditionResponse(
+    return shared_serialize_terms_condition_record(
+        record,
         key=TERMS_CONDITION_KEY,
-        title=str(record.get("title") or DEFAULT_TERMS_CONDITION_TITLE),
-        html_content=html_content,
-        plain_text=plain_text,
-        updated_at=updated_at,
+        default_title=DEFAULT_TERMS_CONDITION_TITLE,
     )
 
 
 def _serialize_about_us_record(record: dict) -> AboutUsResponse:
-    html_content = str(record.get("html_content") or "")
-    plain_text = _html_to_plain_text(html_content)
-    updated_at = _as_utc(record.get("updated_at") or datetime.now(timezone.utc))
-    return AboutUsResponse(
+    return shared_serialize_about_us_record(
+        record,
         key=ABOUT_US_KEY,
-        title=str(record.get("title") or DEFAULT_ABOUT_US_TITLE),
-        html_content=html_content,
-        plain_text=plain_text,
-        updated_at=updated_at,
+        default_title=DEFAULT_ABOUT_US_TITLE,
     )
 
 
@@ -4190,15 +4183,7 @@ def _ensure_community_post_access(record: dict, user: dict) -> None:
 
 
 def _html_to_plain_text(html_content: str) -> str:
-    text = re.sub(r"(?i)<br\s*/?>", "\n", html_content)
-    text = re.sub(r"(?i)</p\s*>", "\n\n", text)
-    text = re.sub(r"(?i)</h[1-6]\s*>", "\n\n", text)
-    text = re.sub(r"(?i)<li\s*>", "- ", text)
-    text = re.sub(r"(?i)</li\s*>", "\n", text)
-    text = re.sub(r"<[^>]+>", "", text)
-    text = text.replace("&nbsp;", " ").replace("&amp;", "&")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+    return shared_html_to_plain_text(html_content)
 
 
 def _build_progressive_shopping_list(days: list[dict]) -> list[dict]:
@@ -5043,15 +5028,7 @@ def _serialize_challenge_chat_message(
 
 
 def _serialize_public_workout_record(record: dict) -> dict:
-    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
-    return {
-        "id": str(record["_id"]),
-        "title": str(record.get("title") or ""),
-        "vimeoId": str(record.get("vimeo_id") or ""),
-        "tag": str(record.get("tag") or "Workout"),
-        "thumbnail": str(record.get("thumbnail") or ""),
-        "dateAdded": created_at,
-    }
+    return shared_serialize_public_workout_record(record)
 
 
 async def _load_challenge_stats_map(challenge_ids: list[str]) -> dict[str, dict[str, int]]:
@@ -5578,36 +5555,12 @@ async def _build_admin_user_list_response(
 
 
 def _as_utc(value: datetime) -> datetime:
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+    return shared_as_utc(value)
 
 
 async def _get_verified_user(authorization: str | None) -> dict:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Missing access token")
-
-    token = authorization.split(" ", 1)[1].strip()
-    return await _get_verified_user_from_access_token(token)
+    return await dependency_get_verified_user(authorization)
 
 
 async def _get_verified_user_from_access_token(token: str) -> dict:
-    token = str(token or "").strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing access token")
-
-    try:
-        data = decode_token(token, "access")
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail="Invalid access token") from exc
-
-    try:
-        user_id = ObjectId(data["sub"])
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail="Invalid access token") from exc
-
-    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid access token")
-
-    return user
+    return await dependency_get_verified_user_from_access_token(token)
