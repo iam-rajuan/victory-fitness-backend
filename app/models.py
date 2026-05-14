@@ -507,6 +507,7 @@ class MealImageAnalysisRequest(BaseModel):
 
 
 class MealImageAnalysisResponse(BaseModel):
+    analysis_id: str | None = None
     meal_name_guess: str
     summary: str
     estimated_calories: int = Field(ge=0, le=3000)
@@ -515,6 +516,12 @@ class MealImageAnalysisResponse(BaseModel):
     estimated_fat: int = Field(ge=0, le=200)
     confidence: str
     notes: list[str] = Field(default_factory=list)
+    file_name: str | None = None
+    created_at: datetime | None = None
+
+
+class MealImageAnalysisListResponse(BaseModel):
+    analyses: list[MealImageAnalysisResponse] = Field(default_factory=list)
 
 
 class NutritionMealItem(BaseModel):

@@ -18,8 +18,9 @@ Update `.env` before running:
 - `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`: your SMTP account details.
 - `OPENAI_API_KEY`: your OpenAI API key for Coach Victor and nutrition generation.
 - `OPENAI_MODEL`: OpenAI model for Coach Victor and nutrition generation, defaults to `gpt-4o-mini`.
+- `OPENAI_MEAL_ANALYSIS_MODEL`: OpenAI vision model for meal photo analysis, defaults to `gpt-4o-mini`.
 - `ANTHROPIC_API_KEY`: optional Claude API key for Coach Victor.
-- `ANTHROPIC_MODEL`: Claude model for Coach Victor, defaults to `claude-haiku-4-5-20251001`.
+- `ANTHROPIC_MODEL`: Claude model for Coach Victor and nutrition generation, defaults to `claude-haiku-4-5-20251001`.
 - `VIMEO_ACCESS_TOKEN`: optional Vimeo token used to report dashboard overview integration status.
 - `COACH_RECENT_MESSAGE_LIMIT`: how many recent Coach Victor messages stay in the live thread document.
 - `COACH_ARCHIVE_BATCH_SIZE`: how many old messages are moved out of the live thread when retention is exceeded.

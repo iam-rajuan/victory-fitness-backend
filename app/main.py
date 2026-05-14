@@ -11,7 +11,7 @@ from urllib.parse import unquote, urlparse
 
 from bson import ObjectId
 from dotenv import dotenv_values
-from fastapi import Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, WebSocket, WebSocketDisconnect, status
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -83,6 +83,7 @@ from .models import (
     JournalEntryCreateRequest,
     JournalEntryListResponse,
     JournalEntryResponse,
+    MealImageAnalysisListResponse,
     MealImageAnalysisRequest,
     MealImageAnalysisResponse,
     LoginRequest,
@@ -131,6 +132,7 @@ from .database import (
     nutrition_progressive_plan_jobs_collection,
     nutrition_progressive_plans_collection,
     journal_entries_collection,
+    meal_analysis_entries_collection,
     nutrition_plans_collection,
     nutrition_plan_jobs_collection,
     workouts_collection,
@@ -2375,8 +2377,44 @@ async def analyze_meal_image(
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=f"Meal image analysis unavailable: {exc}") from exc
 
+    created_at = datetime.now(timezone.utc)
+    saved_result = {
+        **result.data,
+        "file_name": payload.file_name,
+        "created_at": created_at,
+    }
+    insert_result = await meal_analysis_entries_collection.insert_one(
+        {
+            "user_id": user_id,
+            "analysis": saved_result,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+    saved_result["analysis_id"] = str(insert_result.inserted_id)
     logger.info("meal_image_analyze_success user_id=%s", user_id)
-    return MealImageAnalysisResponse(**result.data)
+    return MealImageAnalysisResponse(**saved_result)
+
+
+@app.get("/ai/meal-analysis", response_model=MealImageAnalysisListResponse)
+async def list_meal_analyses(
+    user: dict = Depends(_require_access_user),
+) -> MealImageAnalysisListResponse:
+    user_id = str(user["_id"])
+    records = await meal_analysis_entries_collection.find(
+        {"user_id": user_id},
+        sort=[("created_at", -1)],
+    ).to_list(length=100)
+
+    analyses: list[MealImageAnalysisResponse] = []
+    for record in records:
+        analysis_data = dict(record.get("analysis") or {})
+        analysis_data["analysis_id"] = str(record["_id"])
+        if not analysis_data.get("created_at"):
+            analysis_data["created_at"] = record.get("created_at")
+        analyses.append(MealImageAnalysisResponse(**analysis_data))
+
+    return MealImageAnalysisListResponse(analyses=analyses)
 
 
 @app.post("/ai/coach-victor/chat", response_model=CoachVictorChatResponse)
@@ -2484,6 +2522,7 @@ async def coach_victor_history(
 @app.post("/ai/nutrition/plan", response_model=NutritionPlanSaveResponse)
 async def nutrition_plan(
     payload: NutritionPlanRequest,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(_require_access_user),
 ) -> NutritionPlanSaveResponse:
     logger.info("nutrition_plan_attempt user_id=%s", str(user["_id"]))
@@ -2505,29 +2544,22 @@ async def nutrition_plan(
         return NutritionPlanSaveResponse(plan=NutritionPlanResponse(**plan_data))
 
     try:
-        result = generate_nutrition_plan(payload_data)
+        result = await asyncio.to_thread(generate_nutrition_plan, payload_data)
     except NutritionPlanRefusalError as exc:
         raise HTTPException(status_code=422, detail=f"Nutrition plan refused: {exc}") from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=f"Nutrition plan unavailable: {exc}") from exc
 
     plan = NutritionPlanResponse(**result.data, profile=payload.model_dump())
-    created_at = datetime.now(timezone.utc)
-    insert_result = await nutrition_plans_collection.insert_one(
-        {
-            "user_id": str(user["_id"]),
-            "profile_hash": profile_hash,
-            "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
-            "plan": plan.model_dump(),
-            "created_at": created_at,
-            "updated_at": created_at,
-        }
-    )
-    plan.plan_id = str(insert_result.inserted_id)
-    logger.info(
-        "nutrition_plan_saved user_id=%s plan_id=%s days=%s",
+    background_tasks.add_task(
+        _persist_nutrition_plan_record,
         str(user["_id"]),
-        plan.plan_id,
+        profile_hash,
+        plan.model_dump(),
+    )
+    logger.info(
+        "nutrition_plan_generated user_id=%s days=%s",
+        str(user["_id"]),
         len(plan.days),
     )
 
@@ -2769,6 +2801,41 @@ async def _process_nutrition_plan_job(job_id: str, user_id: str, payload_data: d
                 }
             },
         )
+
+
+async def _persist_nutrition_plan_record(user_id: str, profile_hash: str, plan_data: dict) -> None:
+    try:
+        existing_record = await nutrition_plans_collection.find_one(
+            _standard_nutrition_filter(user_id, profile_hash),
+            sort=[("created_at", -1)],
+        )
+        if existing_record and existing_record.get("plan"):
+            logger.info(
+                "nutrition_plan_background_save_skipped user_id=%s plan_id=%s",
+                user_id,
+                str(existing_record["_id"]),
+            )
+            return
+
+        created_at = datetime.now(timezone.utc)
+        insert_result = await nutrition_plans_collection.insert_one(
+            {
+                "user_id": user_id,
+                "profile_hash": profile_hash,
+                "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
+                "plan": plan_data,
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        )
+        logger.info(
+            "nutrition_plan_background_saved user_id=%s plan_id=%s days=%s",
+            user_id,
+            str(insert_result.inserted_id),
+            len(plan_data.get("days") or []),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("nutrition_plan_background_save_failed user_id=%s error=%s", user_id, exc)
 
 
 @app.post("/ai/nutrition/plan/progressive/jobs", response_model=NutritionPlanJobResponse, status_code=status.HTTP_202_ACCEPTED)

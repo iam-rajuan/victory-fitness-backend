@@ -45,7 +45,7 @@ MEAL_IMAGE_ANALYSIS_SYSTEM_PROMPT = (
     "Return only valid JSON that matches the required schema exactly, with no markdown, no commentary, and no extra keys."
 )
 
-OPENAI_REQUEST_TIMEOUT_SECONDS = 120
+OPENAI_REQUEST_TIMEOUT_SECONDS = 300
 OPENAI_REQUEST_RETRIES = 2
 PLAN_DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -396,7 +396,7 @@ def generate_meal_image_analysis(payload: dict) -> MealImageAnalysisResult:
     image_data_url = f"data:{mime_type};base64,{image_base64}"
 
     request_payload = {
-        "model": settings.openai_model,
+        "model": settings.openai_meal_analysis_model,
         "input": [
             {
                 "role": "system",
@@ -446,30 +446,21 @@ def generate_meal_image_analysis(payload: dict) -> MealImageAnalysisResult:
 
 
 def _generate_nutrition_plan_json(prompt: str) -> str:
-    candidates, provider_errors = _collect_nutrition_plan_candidates(prompt)
-    for candidate in candidates:
+    if settings.anthropic_api_key:
+        try:
+            candidate = _langchain_anthropic_nutrition_plan_json(prompt)
+        except RuntimeError:
+            candidate = _anthropic_nutrition_plan_json(prompt)
+
         normalized = _parse_or_repair_nutrition_plan(candidate)
         if normalized is not None:
             return json.dumps(normalized, ensure_ascii=False)
+        raise RuntimeError("Anthropic nutrition response could not be normalized into a valid plan")
 
-    if provider_errors:
-        raise RuntimeError("; ".join(provider_errors))
-
-    raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
+    raise RuntimeError("ANTHROPIC_API_KEY is not configured for nutrition plan generation")
 
 
 def _generate_nutrition_plan_monday_json(prompt: str) -> str:
-    if settings.openai_api_key:
-        try:
-            return _openai_structured_json(
-                prompt,
-                NUTRITION_PLAN_MONDAY_JSON_SCHEMA,
-                system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
-                max_output_tokens=1200,
-            )
-        except RuntimeError:
-            pass
-
     if settings.anthropic_api_key:
         return _anthropic_json_with_schema(
             prompt,
@@ -478,21 +469,10 @@ def _generate_nutrition_plan_monday_json(prompt: str) -> str:
             max_tokens=1600,
         )
 
-    raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
+    raise RuntimeError("ANTHROPIC_API_KEY is not configured for nutrition plan generation")
 
 
 def _generate_nutrition_plan_day_json(prompt: str) -> str:
-    if settings.openai_api_key:
-        try:
-            return _openai_structured_json(
-                prompt,
-                NUTRITION_PLAN_DAY_JSON_SCHEMA,
-                system_prompt=NUTRITION_PLAN_SYSTEM_PROMPT,
-                max_output_tokens=1200,
-            )
-        except RuntimeError:
-            pass
-
     if settings.anthropic_api_key:
         return _anthropic_json_with_schema(
             prompt,
@@ -501,7 +481,7 @@ def _generate_nutrition_plan_day_json(prompt: str) -> str:
             max_tokens=1600,
         )
 
-    raise RuntimeError("OPENAI_API_KEY or ANTHROPIC_API_KEY is not configured")
+    raise RuntimeError("ANTHROPIC_API_KEY is not configured for nutrition plan generation")
 
 
 def _generate_nutrition_plan_completion_json(prompt: str) -> str:
@@ -725,15 +705,15 @@ def _collect_nutrition_plan_candidates(prompt: str) -> tuple[list[str], list[str
     candidates: list[str] = []
     provider_errors: list[str] = []
 
-    if settings.openai_api_key:
-        try:
-            _append_candidate(candidates, _langchain_openai_nutrition_plan_json(prompt))
-        except RuntimeError as exc:
-            provider_errors.append(str(exc))
-
     if settings.anthropic_api_key:
         try:
             _append_candidate(candidates, _langchain_anthropic_nutrition_plan_json(prompt))
+        except RuntimeError as exc:
+            provider_errors.append(str(exc))
+
+    if settings.openai_api_key:
+        try:
+            _append_candidate(candidates, _langchain_openai_nutrition_plan_json(prompt))
         except RuntimeError as exc:
             provider_errors.append(str(exc))
 
