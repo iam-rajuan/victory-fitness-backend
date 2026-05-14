@@ -14,6 +14,16 @@ def _get_bool(name: str, default: bool) -> bool:
     return value.lower() in {"1", "true", "yes", "on"}
 
 
+def _get_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 def _get_mongodb_uri() -> str:
     value = (os.getenv("MONGODB_URI") or "").strip()
     if "<" in value or ">" in value:
@@ -30,20 +40,24 @@ class Settings:
     app_name = os.getenv("APP_NAME", "Victory Fitness API")
     environment = os.getenv("ENVIRONMENT", "development")
     api_host = os.getenv("API_HOST", "0.0.0.0")
-    api_port = int(os.getenv("API_PORT", "8000"))
+    api_port = _get_int("API_PORT", 8000)
     api_public_base_url = os.getenv("API_PUBLIC_BASE_URL", f"http://localhost:{api_port}").strip().rstrip("/")
+    slow_request_threshold_ms = _get_int("SLOW_REQUEST_THRESHOLD_MS", 800)
 
     mongodb_uri = _get_mongodb_uri()
     mongodb_configured = bool(mongodb_uri)
     mongodb_db = os.getenv("MONGODB_DB", "victory_fitness")
+    mongodb_max_pool_size = _get_int("MONGODB_MAX_POOL_SIZE", 50)
+    mongodb_min_pool_size = _get_int("MONGODB_MIN_POOL_SIZE", 1)
 
     jwt_secret_key = os.getenv("JWT_SECRET_KEY", "change-this-to-a-long-random-secret")
+    using_default_jwt_secret = jwt_secret_key == "change-this-to-a-long-random-secret"
     jwt_algorithm = os.getenv("JWT_ALGORITHM", "HS256")
-    access_token_expire_minutes = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "10"))
-    session_token_expire_days = int(os.getenv("SESSION_TOKEN_EXPIRE_DAYS", "30"))
+    access_token_expire_minutes = _get_int("ACCESS_TOKEN_EXPIRE_MINUTES", 10)
+    session_token_expire_days = _get_int("SESSION_TOKEN_EXPIRE_DAYS", 30)
 
     smtp_host = os.getenv("SMTP_HOST", "")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_port = _get_int("SMTP_PORT", 587)
     smtp_username = os.getenv("SMTP_USERNAME", "")
     smtp_password = os.getenv("SMTP_PASSWORD", "")
     smtp_from_email = os.getenv("SMTP_FROM_EMAIL", smtp_username)
@@ -57,8 +71,8 @@ class Settings:
     anthropic_model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
     vimeo_access_token = os.getenv("VIMEO_ACCESS_TOKEN", "").strip()
 
-    coach_recent_message_limit = int(os.getenv("COACH_RECENT_MESSAGE_LIMIT", "40"))
-    coach_archive_batch_size = int(os.getenv("COACH_ARCHIVE_BATCH_SIZE", "20"))
+    coach_recent_message_limit = _get_int("COACH_RECENT_MESSAGE_LIMIT", 40)
+    coach_archive_batch_size = _get_int("COACH_ARCHIVE_BATCH_SIZE", 20)
     aws_region = os.getenv("AWS_REGION", "").strip()
     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID", "").strip()
     aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()

@@ -17,7 +17,12 @@ if not settings.mongodb_configured:
     raise DatabaseNotConfiguredError(MONGODB_NOT_CONFIGURED_MESSAGE)
 
 
-client = AsyncIOMotorClient(settings.mongodb_uri, serverSelectionTimeoutMS=10000)
+client = AsyncIOMotorClient(
+    settings.mongodb_uri,
+    serverSelectionTimeoutMS=10000,
+    maxPoolSize=settings.mongodb_max_pool_size,
+    minPoolSize=settings.mongodb_min_pool_size,
+)
 db = client[settings.mongodb_db]
 users_collection = db["users"]
 nutrition_plans_collection = db["nutrition_plans"]
@@ -70,9 +75,12 @@ async def ensure_indexes() -> None:
     await coach_victor_archives_collection.create_index([("user_id", 1), ("created_at", -1)])
     await journal_entries_collection.create_index([("user_id", 1), ("created_at", -1)])
     await workouts_collection.create_index([("created_at", -1)])
+    await workouts_collection.create_index([("visibility", 1), ("created_at", -1)])
+    await workouts_collection.create_index([("visibility", 1), ("tag", 1), ("created_at", -1)])
     await workouts_collection.create_index("vimeo_id", unique=True)
     await challenges_collection.create_index([("status", 1), ("created_at", -1)])
     await challenges_collection.create_index([("category", 1), ("created_at", -1)])
+    await challenge_memberships_collection.create_index([("user_id", 1), ("joined_at", -1)])
     await challenge_memberships_collection.create_index([("user_id", 1), ("status", 1), ("joined_at", -1)])
     await challenge_memberships_collection.create_index([("challenge_id", 1), ("status", 1)])
     await challenge_memberships_collection.create_index([("user_id", 1), ("challenge_id", 1)], unique=True)
@@ -81,8 +89,13 @@ async def ensure_indexes() -> None:
     await challenge_message_reactions_collection.create_index([("message_id", 1), ("emoji", 1)])
     await challenge_message_reactions_collection.create_index([("message_id", 1), ("user_id", 1), ("emoji", 1)], unique=True)
     await community_posts_collection.create_index([("created_at", -1)])
+    await community_posts_collection.create_index([("author_id", 1), ("created_at", -1)])
     await community_posts_collection.create_index([("audience", 1), ("created_at", -1)])
     await community_comments_collection.create_index([("post_id", 1), ("created_at", 1)])
     await community_comments_collection.create_index([("author_id", 1), ("created_at", -1)])
     await community_reactions_collection.create_index([("post_id", 1), ("created_at", -1)])
     await community_reactions_collection.create_index([("post_id", 1), ("user_id", 1)], unique=True)
+
+
+async def close_database_connection() -> None:
+    client.close()

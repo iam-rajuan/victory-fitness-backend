@@ -29,7 +29,7 @@ from .coach_archive import (
 from .challenge_plan_ai import ChallengePlanGenerationInput, generate_challenge_plan
 from .coach_victor import generate_coach_victor_reply
 from .config import settings
-from .database import DatabaseNotConfiguredError, ensure_indexes, users_collection
+from .database import DatabaseNotConfiguredError, close_database_connection, ensure_indexes, users_collection
 from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
 from .models import (
@@ -148,7 +148,6 @@ from .models import (
     WorkoutLibraryResponse,
 )
 from .database import (
-    app_content_collection,
     challenge_chat_messages_collection,
     challenge_message_reactions_collection,
     challenge_memberships_collection,
@@ -178,6 +177,8 @@ from .nutrition_ai import (
     generate_nutrition_plan,
     generate_progressive_nutrition_plan_day,
 )
+from .repositories.content import ensure_content_record, upsert_content_record
+from .repositories.workouts import list_public_workout_records
 from .workout_plan_ai import (
     StrengthWorkoutPlanInput,
     VideoWorkoutPlanInput,
@@ -266,6 +267,39 @@ DEFAULT_LONGEVITY_HEAL_CATEGORIES = [
     {"id": "skin", "label": "SKIN CONDITIONS", "image": "https://images.unsplash.com/photo-1556228578-0d85b1a4d571?w=600&q=80", "color": "#A855F7"},
     {"id": "recovery", "label": "POST WORKOUT RECOVERY", "image": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80", "color": "#EC4899"},
 ]
+FITNESS_STATS_MEMBERSHIP_PROJECTION = {
+    "_id": 0,
+    "status": 1,
+    "challenge_id": 1,
+    "plan_progress": 1,
+}
+FITNESS_STATS_CHALLENGE_PROJECTION = {
+    "_id": 1,
+    "points": 1,
+    "plan_days": 1,
+}
+CHALLENGE_OVERVIEW_MEMBERSHIP_PROJECTION = {
+    "_id": 1,
+    "challenge_id": 1,
+    "status": 1,
+    "progress_days_completed": 1,
+    "completed_at": 1,
+    "last_read_message_at": 1,
+    "joined_at": 1,
+}
+CHALLENGE_OVERVIEW_CHALLENGE_PROJECTION = {
+    "_id": 1,
+    "title": 1,
+    "description": 1,
+    "plan_text": 1,
+    "category": 1,
+    "duration_days": 1,
+    "points": 1,
+    "difficulty": 1,
+    "status": 1,
+    "thumbnail": 1,
+    "created_at": 1,
+}
 DEFAULT_LONGEVITY_WEARABLES = [
     {"id": "fitbit", "name": "Fitbit", "status": "CONNECT", "active": False, "image": "https://images.unsplash.com/photo-1575311373937-040b8e1fd5b2?w=600&q=80"},
     {"id": "apple-health", "name": "Apple Health", "status": "CONNECTED", "active": True, "image": "https://images.unsplash.com/photo-1434493789847-2f02dc6ca35d?w=600&q=80"},
@@ -337,8 +371,11 @@ async def log_requests(request: Request, call_next):
         raise
 
     duration_ms = round((perf_counter() - started_at) * 1000, 2)
-    logger.info(
-        "request_completed method=%s path=%s status_code=%s duration_ms=%s",
+    log_method = logger.warning if duration_ms >= settings.slow_request_threshold_ms else logger.info
+    log_event = "request_slow" if duration_ms >= settings.slow_request_threshold_ms else "request_completed"
+    log_method(
+        "%s method=%s path=%s status_code=%s duration_ms=%s",
+        log_event,
         request.method,
         request.url.path,
         response.status_code,
@@ -405,9 +442,18 @@ async def _require_admin_user(user: dict = Depends(_require_access_user)) -> dic
 @app.on_event("startup")
 async def startup() -> None:
     logger.info("startup_begin")
+    if settings.using_default_jwt_secret:
+        logger.warning("security_warning using default JWT secret; set JWT_SECRET_KEY before production deployment")
     await ensure_indexes()
     await _seed_admin_user()
     logger.info("startup_complete")
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    logger.info("shutdown_begin")
+    await close_database_connection()
+    logger.info("shutdown_complete")
 
 
 @app.get("/")
@@ -434,10 +480,7 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
             {"tag": {"$regex": escaped, "$options": "i"}},
         ]
 
-    records = await workouts_collection.find(
-        filter_doc,
-        sort=[("created_at", -1), ("_id", -1)],
-    ).to_list(length=None)
+    records = await list_public_workout_records(filter_doc)
 
     workouts = [WorkoutLibraryItem(**_serialize_public_workout_record(record)) for record in records]
 
@@ -1113,23 +1156,11 @@ async def admin_update_privacy_policy(
     payload: UpdatePrivacyPolicyRequest,
     _: dict = Depends(_require_admin_user),
 ) -> PrivacyPolicyResponse:
-    now = datetime.now(timezone.utc)
-    await app_content_collection.update_one(
-        {"key": PRIVACY_POLICY_KEY},
-        {
-            "$set": {
-                "key": PRIVACY_POLICY_KEY,
-                "title": payload.title.strip(),
-                "html_content": payload.html_content.strip(),
-                "updated_at": now,
-            },
-            "$setOnInsert": {
-                "created_at": now,
-            },
-        },
-        upsert=True,
+    record = await upsert_content_record(
+        key=PRIVACY_POLICY_KEY,
+        title=payload.title,
+        html_content=payload.html_content,
     )
-    record = await app_content_collection.find_one({"key": PRIVACY_POLICY_KEY})
     if not record:
         raise HTTPException(status_code=500, detail="Privacy policy could not be saved")
     return _serialize_privacy_policy_record(record)
@@ -1146,23 +1177,11 @@ async def admin_update_terms_condition(
     payload: UpdateTermsConditionRequest,
     _: dict = Depends(_require_admin_user),
 ) -> TermsConditionResponse:
-    now = datetime.now(timezone.utc)
-    await app_content_collection.update_one(
-        {"key": TERMS_CONDITION_KEY},
-        {
-            "$set": {
-                "key": TERMS_CONDITION_KEY,
-                "title": payload.title.strip(),
-                "html_content": payload.html_content.strip(),
-                "updated_at": now,
-            },
-            "$setOnInsert": {
-                "created_at": now,
-            },
-        },
-        upsert=True,
+    record = await upsert_content_record(
+        key=TERMS_CONDITION_KEY,
+        title=payload.title,
+        html_content=payload.html_content,
     )
-    record = await app_content_collection.find_one({"key": TERMS_CONDITION_KEY})
     if not record:
         raise HTTPException(status_code=500, detail="Terms & Conditions could not be saved")
     return _serialize_terms_condition_record(record)
@@ -1185,23 +1204,11 @@ async def admin_update_about_us(
     payload: UpdateAboutUsRequest,
     _: dict = Depends(_require_admin_user),
 ) -> AboutUsResponse:
-    now = datetime.now(timezone.utc)
-    await app_content_collection.update_one(
-        {"key": ABOUT_US_KEY},
-        {
-            "$set": {
-                "key": ABOUT_US_KEY,
-                "title": payload.title.strip(),
-                "html_content": payload.html_content.strip(),
-                "updated_at": now,
-            },
-            "$setOnInsert": {
-                "created_at": now,
-            },
-        },
-        upsert=True,
+    record = await upsert_content_record(
+        key=ABOUT_US_KEY,
+        title=payload.title,
+        html_content=payload.html_content,
     )
-    record = await app_content_collection.find_one({"key": ABOUT_US_KEY})
     if not record:
         raise HTTPException(status_code=500, detail="About Us could not be saved")
     return _serialize_about_us_record(record)
@@ -3836,69 +3843,27 @@ def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[d
 
 
 async def _ensure_privacy_policy_record() -> dict:
-    record = await app_content_collection.find_one({"key": PRIVACY_POLICY_KEY})
-    if record:
-        return record
-
-    now = datetime.now(timezone.utc)
-    record = {
-        "key": PRIVACY_POLICY_KEY,
-        "title": DEFAULT_PRIVACY_POLICY_TITLE,
-        "html_content": DEFAULT_PRIVACY_POLICY_HTML,
-        "created_at": now,
-        "updated_at": now,
-    }
-    await app_content_collection.update_one(
-        {"key": PRIVACY_POLICY_KEY},
-        {"$setOnInsert": record},
-        upsert=True,
+    return await ensure_content_record(
+        key=PRIVACY_POLICY_KEY,
+        default_title=DEFAULT_PRIVACY_POLICY_TITLE,
+        default_html_content=DEFAULT_PRIVACY_POLICY_HTML,
     )
-    saved = await app_content_collection.find_one({"key": PRIVACY_POLICY_KEY})
-    return saved or record
 
 
 async def _ensure_terms_condition_record() -> dict:
-    record = await app_content_collection.find_one({"key": TERMS_CONDITION_KEY})
-    if record:
-        return record
-
-    now = datetime.now(timezone.utc)
-    record = {
-        "key": TERMS_CONDITION_KEY,
-        "title": DEFAULT_TERMS_CONDITION_TITLE,
-        "html_content": DEFAULT_TERMS_CONDITION_HTML,
-        "created_at": now,
-        "updated_at": now,
-    }
-    await app_content_collection.update_one(
-        {"key": TERMS_CONDITION_KEY},
-        {"$setOnInsert": record},
-        upsert=True,
+    return await ensure_content_record(
+        key=TERMS_CONDITION_KEY,
+        default_title=DEFAULT_TERMS_CONDITION_TITLE,
+        default_html_content=DEFAULT_TERMS_CONDITION_HTML,
     )
-    saved = await app_content_collection.find_one({"key": TERMS_CONDITION_KEY})
-    return saved or record
 
 
 async def _ensure_about_us_record() -> dict:
-    record = await app_content_collection.find_one({"key": ABOUT_US_KEY})
-    if record:
-        return record
-
-    now = datetime.now(timezone.utc)
-    record = {
-        "key": ABOUT_US_KEY,
-        "title": DEFAULT_ABOUT_US_TITLE,
-        "html_content": DEFAULT_ABOUT_US_HTML,
-        "created_at": now,
-        "updated_at": now,
-    }
-    await app_content_collection.update_one(
-        {"key": ABOUT_US_KEY},
-        {"$setOnInsert": record},
-        upsert=True,
+    return await ensure_content_record(
+        key=ABOUT_US_KEY,
+        default_title=DEFAULT_ABOUT_US_TITLE,
+        default_html_content=DEFAULT_ABOUT_US_HTML,
     )
-    saved = await app_content_collection.find_one({"key": ABOUT_US_KEY})
-    return saved or record
 
 
 def _serialize_privacy_policy_record(record: dict) -> PrivacyPolicyResponse:
@@ -4640,6 +4605,7 @@ def _calculate_current_streak(completed_dates: set) -> int:
 async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
     memberships = await challenge_memberships_collection.find(
         {"user_id": user_id},
+        projection=FITNESS_STATS_MEMBERSHIP_PROJECTION,
     ).to_list(length=None)
     if not memberships:
         return {
@@ -4671,6 +4637,7 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
     if challenge_ids:
         challenge_records = await challenges_collection.find(
             {"_id": {"$in": challenge_ids}},
+            projection=FITNESS_STATS_CHALLENGE_PROJECTION,
         ).to_list(length=len(challenge_ids))
         challenges_by_id = {str(record["_id"]): record for record in challenge_records}
         for membership in memberships:
@@ -5380,6 +5347,7 @@ async def _broadcast_challenge_chat_event(
 async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewResponse:
     memberships = await challenge_memberships_collection.find(
         {"user_id": user_id},
+        projection=CHALLENGE_OVERVIEW_MEMBERSHIP_PROJECTION,
         sort=[("joined_at", -1), ("_id", -1)],
     ).to_list(length=None)
     challenge_ids = [membership.get("challenge_id") for membership in memberships if membership.get("challenge_id")]
@@ -5390,7 +5358,10 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
         except Exception:
             continue
 
-    challenge_records = await challenges_collection.find({"_id": {"$in": challenge_object_ids}}).to_list(length=len(challenge_object_ids)) if challenge_object_ids else []
+    challenge_records = await challenges_collection.find(
+        {"_id": {"$in": challenge_object_ids}},
+        projection=CHALLENGE_OVERVIEW_CHALLENGE_PROJECTION,
+    ).to_list(length=len(challenge_object_ids)) if challenge_object_ids else []
     challenges_by_id = {str(record["_id"]): record for record in challenge_records}
 
     active_memberships = [
@@ -5479,6 +5450,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
             "status": {"$in": ["ACTIVE", "UPCOMING"]},
             "_id": {"$nin": [ObjectId(challenge_id) for challenge_id in excluded_challenge_ids if ObjectId.is_valid(challenge_id)]},
         },
+        projection=CHALLENGE_OVERVIEW_CHALLENGE_PROJECTION,
         sort=[("created_at", -1), ("_id", -1)],
     ).limit(8).to_list(length=8)
     ready_stats = await _load_challenge_stats_map([str(record["_id"]) for record in ready_records])
