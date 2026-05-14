@@ -781,8 +781,10 @@ class StrengthWorkoutPlanRequest(BaseModel):
 
 
 class StrengthWorkoutPlanResponse(BaseModel):
+    plan_id: str | None = None
     summary: str
     days: list[StrengthWorkoutDay] = Field(default_factory=list)
+    created_at: datetime | None = None
 
 
 class VideoWorkoutPlanItem(BaseModel):

@@ -139,6 +139,7 @@ from .database import (
     meal_analysis_entries_collection,
     nutrition_plans_collection,
     nutrition_plan_jobs_collection,
+    strength_workout_plans_collection,
     workouts_collection,
 )
 from .nutrition_ai import (
@@ -410,9 +411,9 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
 @app.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
 async def workout_strength_plan(
     payload: StrengthWorkoutPlanRequest,
-    _: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_access_user),
 ) -> StrengthWorkoutPlanResponse:
-    plan = generate_strength_workout_plan(
+    plan_data = generate_strength_workout_plan(
         StrengthWorkoutPlanInput(
             goal=str(payload.goal or ""),
             level=str(payload.level or ""),
@@ -429,7 +430,36 @@ async def workout_strength_plan(
             weight=str(payload.weight or ""),
         )
     )
-    return StrengthWorkoutPlanResponse(**plan)
+    created_at = datetime.now(timezone.utc)
+    insert_result = await strength_workout_plans_collection.insert_one(
+        {
+            "user_id": str(user["_id"]),
+            "input": payload.model_dump(),
+            "plan": plan_data,
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+    plan_data["plan_id"] = str(insert_result.inserted_id)
+    plan_data["created_at"] = created_at
+    return StrengthWorkoutPlanResponse(**plan_data)
+
+
+@app.get("/ai/workout-plan/strength/latest", response_model=StrengthWorkoutPlanResponse)
+async def workout_strength_plan_latest(
+    user: dict = Depends(_require_access_user),
+) -> StrengthWorkoutPlanResponse:
+    record = await strength_workout_plans_collection.find_one(
+        {"user_id": str(user["_id"])},
+        sort=[("created_at", -1)],
+    )
+    if not record or not isinstance(record.get("plan"), dict):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    plan_data = dict(record["plan"])
+    plan_data["plan_id"] = str(record["_id"])
+    plan_data["created_at"] = record.get("created_at")
+    return StrengthWorkoutPlanResponse(**plan_data)
 
 
 @app.post("/ai/workout-plan/video", response_model=VideoWorkoutPlanResponse)

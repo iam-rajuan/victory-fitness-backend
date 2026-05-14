@@ -25,6 +25,7 @@ nutrition_plan_jobs_collection = db["nutrition_plan_jobs"]
 nutrition_progressive_plans_collection = db["nutrition_progressive_plans"]
 nutrition_progressive_plan_jobs_collection = db["nutrition_progressive_plan_jobs"]
 meal_analysis_entries_collection = db["meal_analysis_entries"]
+strength_workout_plans_collection = db["strength_workout_plans"]
 app_content_collection = db["app_content"]
 coach_victor_threads_collection = db["coach_victor_threads"]
 coach_victor_archives_collection = db["coach_victor_archives"]
@@ -54,6 +55,7 @@ async def ensure_indexes() -> None:
     await nutrition_progressive_plan_jobs_collection.create_index([("user_id", 1), ("profile_hash", 1), ("created_at", -1)])
     await nutrition_progressive_plan_jobs_collection.create_index([("status", 1), ("updated_at", -1)])
     await meal_analysis_entries_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await strength_workout_plans_collection.create_index([("user_id", 1), ("created_at", -1)])
     await app_content_collection.create_index("key", unique=True)
     await coach_victor_threads_collection.create_index([("user_id", 1), ("updated_at", -1)])
     await coach_victor_archives_collection.create_index([("thread_id", 1), ("created_at", 1)])

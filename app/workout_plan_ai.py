@@ -1,8 +1,12 @@
-import math
+import json
 from dataclasses import dataclass
+from urllib import error, request
+
+from .config import settings
 
 
 DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+WORKOUT_PLAN_TIMEOUT_SECONDS = 60
 
 
 @dataclass
@@ -34,48 +38,20 @@ class VideoWorkoutPlanInput:
 
 
 def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
+    ai_plan = _generate_strength_workout_plan_with_ai(input_data)
+    if _looks_like_strength_plan(ai_plan):
+        return ai_plan
+
     frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
     preferred_days = _normalize_preferred_days(input_data.days)
-    active_days = preferred_days[:frequency] if len(preferred_days) >= frequency else DAY_ORDER[:frequency]
+    active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
     title_cycle = _strength_title_cycle(input_data.split, input_data.goal)
     exercise_pool = _strength_exercise_pool(input_data.goal, input_data.equipment)
     est_time = _strength_time_label(frequency, input_data.level)
     intensity = _strength_intensity_label(input_data.goal, input_data.level)
 
     days: list[dict] = []
-    for index, day_name in enumerate(DAY_ORDER):
-        if day_name not in active_days:
-            days.append(
-                {
-                    "day": day_name,
-                    "title": "Recovery / Mobility",
-                    "est_time": "20 min",
-                    "volume": "Light",
-                    "intensity": "Recovery",
-                    "exercises": [
-                        {
-                            "id": f"{day_name.lower()}-mobility-1",
-                            "name": "Mobility Flow",
-                            "sets": 2,
-                            "reps": "5-8 min",
-                            "rest": "30s",
-                            "weight": "Bodyweight",
-                            "type": "Recovery",
-                        },
-                        {
-                            "id": f"{day_name.lower()}-mobility-2",
-                            "name": "Brisk Walk",
-                            "sets": 1,
-                            "reps": "15-20 min",
-                            "rest": "-",
-                            "weight": "-",
-                            "type": "Recovery",
-                        },
-                    ],
-                }
-            )
-            continue
-
+    for index, day_name in enumerate(active_days):
         session_title = title_cycle[index % len(title_cycle)]
         exercises = []
         for exercise_index, exercise in enumerate(exercise_pool[index % len(exercise_pool)]):
@@ -110,6 +86,26 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
         f"{input_data.split or 'balanced'} split with {frequency} main training days."
     )
     return {"summary": summary, "days": days}
+
+
+def _generate_strength_workout_plan_with_ai(input_data: StrengthWorkoutPlanInput) -> dict | None:
+    if settings.anthropic_api_key:
+        try:
+            plan = _anthropic_strength_plan_json(input_data)
+            if _looks_like_strength_plan(plan):
+                return plan
+        except RuntimeError:
+            pass
+
+    if settings.openai_api_key:
+        try:
+            plan = _openai_strength_plan_json(input_data)
+            if _looks_like_strength_plan(plan):
+                return plan
+        except RuntimeError:
+            pass
+
+    return None
 
 
 def generate_video_workout_plan(input_data: VideoWorkoutPlanInput, workouts: list[dict]) -> dict:
@@ -169,6 +165,178 @@ def generate_video_workout_plan(input_data: VideoWorkoutPlanInput, workouts: lis
         f"built for {input_data.level or 'your current level'} and {input_data.equipment or 'available equipment'}."
     )
     return {"summary": summary, "days": days}
+
+
+def _looks_like_strength_plan(plan: dict | None) -> bool:
+    if not isinstance(plan, dict):
+        return False
+    days = plan.get("days")
+    return isinstance(days, list) and len(days) > 0
+
+
+def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
+    return (
+        "Create a custom strength plan as one JSON object only.\n"
+        "The plan must match the user's actual inputs and feel like a real coach wrote it.\n"
+        "Requirements:\n"
+        "- Return only the actual training days the user selected. Do not include recovery days unless they were selected.\n"
+        "- Day values must use Mon Tue Wed Thu Fri Sat Sun.\n"
+        "- Training days must align with preferred training days and frequency when possible.\n"
+        "- Each day needs: day, title, est_time, volume, intensity, exercises.\n"
+        "- Each exercise needs: id, name, sets, reps, rest, weight, type.\n"
+        "- Weight should be realistic based on the user's lifts when provided, otherwise estimate conservatively.\n"
+        "- Split, goal, experience level, equipment, and frequency must visibly affect the plan.\n"
+        "- Keep exercise ids stable and machine-friendly.\n"
+        f"User inputs: {json.dumps(input_data.__dict__, ensure_ascii=False)}"
+    )
+
+
+def _strength_plan_schema() -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["summary", "days"],
+        "properties": {
+            "summary": {"type": "string"},
+            "days": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 7,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["day", "title", "est_time", "volume", "intensity", "exercises"],
+                    "properties": {
+                        "day": {"type": "string", "enum": DAY_ORDER},
+                        "title": {"type": "string"},
+                        "est_time": {"type": "string"},
+                        "volume": {"type": "string"},
+                        "intensity": {"type": "string"},
+                        "exercises": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": False,
+                                "required": ["id", "name", "sets", "reps", "rest", "weight", "type"],
+                                "properties": {
+                                    "id": {"type": "string"},
+                                    "name": {"type": "string"},
+                                    "sets": {"type": "integer"},
+                                    "reps": {"type": "string"},
+                                    "rest": {"type": "string"},
+                                    "weight": {"type": "string"},
+                                    "type": {"type": "string"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+
+def _openai_strength_plan_json(input_data: StrengthWorkoutPlanInput) -> dict:
+    payload = {
+        "model": settings.openai_model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You generate personalized strength plans. "
+                    "Return exactly one valid JSON object matching the required schema. "
+                    "No markdown, no explanations."
+                ),
+            },
+            {
+                "role": "user",
+                "content": _strength_plan_prompt(input_data),
+            },
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.4,
+        "max_tokens": 4000,
+    }
+
+    req = request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with request.urlopen(req, timeout=WORKOUT_PLAN_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError("OpenAI strength plan request timed out") from exc
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"OpenAI strength plan request failed: {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"OpenAI strength plan request failed: {exc.reason}") from exc
+
+    try:
+        content = data["choices"][0]["message"]["content"].strip()
+        return json.loads(content)
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
+        raise RuntimeError("OpenAI strength plan response was missing valid JSON") from exc
+
+
+def _anthropic_strength_plan_json(input_data: StrengthWorkoutPlanInput) -> dict:
+    payload = {
+        "model": settings.anthropic_model,
+        "max_tokens": 4000,
+        "system": (
+            "You generate personalized strength plans. "
+            "Return exactly one valid JSON object matching the provided schema. "
+            "No markdown, no explanations.\n"
+            f"Schema: {json.dumps(_strength_plan_schema(), ensure_ascii=False)}"
+        ),
+        "messages": [
+            {
+                "role": "user",
+                "content": _strength_plan_prompt(input_data),
+            }
+        ],
+    }
+
+    req = request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "x-api-key": settings.anthropic_api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with request.urlopen(req, timeout=WORKOUT_PLAN_TIMEOUT_SECONDS) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except TimeoutError as exc:
+        raise RuntimeError("Anthropic strength plan request timed out") from exc
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Anthropic strength plan request failed: {detail}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"Anthropic strength plan request failed: {exc.reason}") from exc
+
+    try:
+        content = "".join(
+            part["text"]
+            for part in data["content"]
+            if isinstance(part, dict) and part.get("type") == "text" and part.get("text")
+        ).strip()
+        return json.loads(content)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("Anthropic strength plan response was missing valid JSON") from exc
 
 
 def _normalize_preferred_days(days: list[str]) -> list[str]:
