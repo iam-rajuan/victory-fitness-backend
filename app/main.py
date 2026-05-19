@@ -1405,7 +1405,7 @@ async def create_community_post(
     document = {
         "_id": ObjectId(),
         "author_id": str(user["_id"]),
-        "audience": "ALL",
+        "audience": _get_community_post_audience_for_user(user),
         "content": content,
         "image_url": image_url,
         "like_count": 0,
@@ -4230,13 +4230,27 @@ def _serialize_support_message_record(record: dict) -> SupportMessageResponse:
 
 
 def _get_allowed_community_audiences(user: dict) -> list[str]:
-    role = str(user.get("role") or "").strip().upper()
-    membership = str(user.get("subscription_tier") or user.get("tier") or "").strip().upper().replace(" ", "_")
-    allowed = ["ALL"]
-    for candidate in (role, membership):
-        if candidate in {"SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"} and candidate not in allowed:
-            allowed.append(candidate)
-    return allowed
+    if bool(user.get("is_admin")):
+        return ["ALL", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"]
+
+    membership = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
+    hierarchy = {
+        "SILVER": ["SILVER"],
+        "GOLD": ["SILVER", "GOLD"],
+        "PLATINUM": ["SILVER", "GOLD", "PLATINUM"],
+        "INNER_CIRCLE": ["SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
+    }
+    return hierarchy.get(membership, [])
+
+
+def _get_community_post_audience_for_user(user: dict) -> str:
+    if bool(user.get("is_admin")):
+        return "ALL"
+
+    tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
+    if tier in {"SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"}:
+        return tier
+    return "SILVER"
 
 
 def _serialize_community_post_record(record: dict, author_record: dict | None = None) -> dict:
