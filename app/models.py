@@ -52,6 +52,8 @@ class MeResponse(BaseModel):
     subscription_status: str = "NONE"
     subscription_started_at: datetime | None = None
     subscription_confirmed_at: datetime | None = None
+    subscription_billing_cycle: str = "yearly"
+    subscription_is_purchased: bool = False
     subscription_access: list[str] = Field(default_factory=list)
 
 
@@ -64,6 +66,7 @@ class UpdateMeRequest(BaseModel):
 
 class UpdateSubscriptionRequest(BaseModel):
     subscription_tier: str = Field(pattern=r"^(NONE|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+    billing_cycle: str = Field(default="yearly", pattern=r"^(monthly|yearly)$")
     confirm_payment: bool = True
 
 

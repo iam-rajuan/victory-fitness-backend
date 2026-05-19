@@ -669,6 +669,8 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "is_admin": False,
             "subscription_tier": "NONE",
             "subscription_status": "NONE",
+            "subscription_billing_cycle": "yearly",
+            "subscription_is_purchased": False,
             "verification_code_hash": hash_password(code),
             "verification_code_expires_at": now + timedelta(minutes=10),
             "updated_at": now,
@@ -847,17 +849,23 @@ async def update_subscription(
     user: dict = Depends(_require_access_user),
 ) -> MeResponse:
     tier = _normalize_subscription_tier(payload.subscription_tier)
+    billing_cycle = _normalize_billing_cycle(payload.billing_cycle)
     now = datetime.now(timezone.utc)
     subscription_status = "ACTIVE" if payload.confirm_payment and tier != "NONE" else "NONE"
+    is_purchased = bool(payload.confirm_payment and tier != "NONE")
     update_doc: dict = {
         "subscription_tier": tier,
         "subscription_status": subscription_status,
+        "subscription_billing_cycle": billing_cycle,
+        "subscription_is_purchased": is_purchased,
         "updated_at": now,
     }
 
     if tier == "NONE":
         update_doc["subscription_started_at"] = None
         update_doc["subscription_confirmed_at"] = None
+        update_doc["subscription_billing_cycle"] = "yearly"
+        update_doc["subscription_is_purchased"] = False
     else:
         update_doc["subscription_started_at"] = user.get("subscription_started_at") or now
         update_doc["subscription_confirmed_at"] = now if subscription_status == "ACTIVE" else user.get("subscription_confirmed_at")
@@ -4706,6 +4714,13 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
             "workouts_total": profile_summary.get("workouts_total", 0),
             "streak_days": profile_summary.get("streak_days", 0),
             "rank": profile_summary.get("rank", "Noob"),
+            "subscription_tier": profile_summary.get("subscription_tier", "NONE"),
+            "subscription_status": profile_summary.get("subscription_status", "NONE"),
+            "subscription_started_at": profile_summary.get("subscription_started_at"),
+            "subscription_confirmed_at": profile_summary.get("subscription_confirmed_at"),
+            "subscription_billing_cycle": profile_summary.get("subscription_billing_cycle", "yearly"),
+            "subscription_is_purchased": profile_summary.get("subscription_is_purchased", False),
+            "subscription_access": profile_summary.get("subscription_access", []),
         },
     )
 
@@ -4732,6 +4747,8 @@ async def _seed_admin_user() -> None:
                     "is_verified": True,
                     "subscription_tier": "INNER_CIRCLE",
                     "subscription_status": "ACTIVE",
+                    "subscription_billing_cycle": "yearly",
+                    "subscription_is_purchased": True,
                     "updated_at": now,
                 },
                 "$unset": {
@@ -4753,6 +4770,8 @@ async def _seed_admin_user() -> None:
             "is_admin": True,
             "subscription_tier": "INNER_CIRCLE",
             "subscription_status": "ACTIVE",
+            "subscription_billing_cycle": "yearly",
+            "subscription_is_purchased": True,
             "created_at": now,
             "updated_at": now,
         }
@@ -4786,6 +4805,11 @@ def _normalize_subscription_status(value: object, tier: str) -> str:
     return "ACTIVE" if tier != "NONE" else "NONE"
 
 
+def _normalize_billing_cycle(value: object) -> str:
+    cycle = str(value or "").strip().lower()
+    return cycle if cycle in {"monthly", "yearly"} else "yearly"
+
+
 def _resolve_subscription_access(tier: str) -> list[str]:
     normalized_tier = _normalize_subscription_tier(tier)
     return list(SUBSCRIPTION_ACCESS.get(normalized_tier, []))
@@ -4795,6 +4819,7 @@ async def _serialize_me_record(record: dict) -> dict:
     stats = await _calculate_user_fitness_stats(str(record["_id"]))
     tier = _normalize_subscription_tier(record.get("subscription_tier") or record.get("tier"))
     status = _normalize_subscription_status(record.get("subscription_status") or record.get("subscription_state"), tier)
+    is_purchased = bool(record.get("subscription_is_purchased")) and tier != "NONE" and status == "ACTIVE"
     return {
         "id": str(record["_id"]),
         "name": str(record.get("name") or ""),
@@ -4816,6 +4841,8 @@ async def _serialize_me_record(record: dict) -> dict:
         "subscription_status": status,
         "subscription_started_at": record.get("subscription_started_at"),
         "subscription_confirmed_at": record.get("subscription_confirmed_at"),
+        "subscription_billing_cycle": _normalize_billing_cycle(record.get("subscription_billing_cycle")),
+        "subscription_is_purchased": is_purchased,
         "subscription_access": _resolve_subscription_access(tier),
     }
 
