@@ -56,6 +56,7 @@ from .models import (
     ChallengeChatMessageCreateRequest,
     ChallengeChatMessageUpdateRequest,
     ChallengeChatMessageResponse,
+    ChallengeParticipantResponse,
     ChallengeChatEventResponse,
     ChallengePlanCompletionRequest,
     ChallengePlanDay,
@@ -1590,6 +1591,7 @@ async def get_challenge_chat_thread(
     _ensure_challenge_read_access(membership, challenge)
 
     messages = await _load_challenge_chat_messages(challenge_id, str(user["_id"]), limit=50)
+    participants = await _load_challenge_participants(challenge_id)
     participant_count = await challenge_memberships_collection.count_documents(
         {"challenge_id": challenge_id, "status": {"$in": ["ACTIVE", "COMPLETED"]}}
     )
@@ -1616,6 +1618,7 @@ async def get_challenge_chat_thread(
         status=str(challenge.get("status") or "ACTIVE"),
         thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
         participant_count=participant_count,
+        participants=participants,
         viewer_membership_status=str(membership.get("status") or "ACTIVE"),
         viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
         viewer_points_earned=_calculate_challenge_points_earned(
@@ -2555,6 +2558,7 @@ async def admin_get_challenge_chat_thread(
 ) -> ChallengeChatThreadResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     messages = await _load_challenge_chat_messages(challenge_id, None, limit=200)
+    participants = await _load_challenge_participants(challenge_id)
     participant_count = await challenge_memberships_collection.count_documents(
         {"challenge_id": challenge_id, "status": {"$in": ["ACTIVE", "COMPLETED"]}}
     )
@@ -2571,6 +2575,7 @@ async def admin_get_challenge_chat_thread(
         status=str(challenge.get("status") or "ACTIVE"),
         thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
         participant_count=participant_count,
+        participants=participants,
         viewer_membership_status="ADMIN",
         viewer_progress_days_completed=0,
         viewer_plan_progress=[],
@@ -5373,6 +5378,39 @@ async def _load_challenge_chat_author_records(records: list[dict]) -> dict[str, 
     object_ids = [ObjectId(author_id) for author_id in author_ids]
     author_records = await users_collection.find({"_id": {"$in": object_ids}}).to_list(length=len(object_ids))
     return {str(author_record.get("_id") or ""): author_record for author_record in author_records}
+
+
+async def _load_challenge_participants(challenge_id: str) -> list[ChallengeParticipantResponse]:
+    memberships = await challenge_memberships_collection.find(
+        {"challenge_id": challenge_id, "status": {"$in": ["ACTIVE", "COMPLETED"]}},
+        sort=[("started_at", 1), ("joined_at", 1), ("_id", 1)],
+    ).to_list(length=None)
+    user_ids = [
+        str(membership.get("user_id") or "").strip()
+        for membership in memberships
+        if str(membership.get("user_id") or "").strip() and ObjectId.is_valid(str(membership.get("user_id") or "").strip())
+    ]
+    user_records = await users_collection.find(
+        {"_id": {"$in": [ObjectId(user_id) for user_id in user_ids]}}
+    ).to_list(length=len(user_ids)) if user_ids else []
+    users_by_id = {str(record.get("_id") or ""): record for record in user_records}
+
+    participants: list[ChallengeParticipantResponse] = []
+    seen_user_ids: set[str] = set()
+    for membership in memberships:
+        user_id = str(membership.get("user_id") or "").strip()
+        if not user_id or user_id in seen_user_ids:
+            continue
+        seen_user_ids.add(user_id)
+        user_record = users_by_id.get(user_id, {})
+        participants.append(
+            ChallengeParticipantResponse(
+                user_id=user_id,
+                name=str(user_record.get("name") or "Member").strip() or "Member",
+                profile_image=str(user_record.get("profile_image") or "").strip(),
+            )
+        )
+    return participants
 
 
 async def _load_challenge_chat_messages(

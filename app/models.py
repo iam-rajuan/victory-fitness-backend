@@ -424,6 +424,12 @@ class ChallengeChatSummaryResponse(BaseModel):
     avatar: str = ""
 
 
+class ChallengeParticipantResponse(BaseModel):
+    user_id: str
+    name: str
+    profile_image: str = ""
+
+
 class UserActiveChallengeResponse(BaseModel):
     id: str
     challenge_id: str
@@ -509,6 +515,7 @@ class ChallengeChatThreadResponse(BaseModel):
     status: str
     thumbnail: str = ""
     participant_count: int = 0
+    participants: list[ChallengeParticipantResponse] = Field(default_factory=list)
     viewer_membership_status: str
     viewer_progress_days_completed: int = 0
     viewer_points_earned: int = 0
