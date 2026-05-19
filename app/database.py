@@ -46,6 +46,8 @@ challenge_message_reactions_collection = db["challenge_message_reactions"]
 community_posts_collection = db["community_posts"]
 community_comments_collection = db["community_comments"]
 community_reactions_collection = db["community_reactions"]
+wearable_connections_collection = db["wearable_connections"]
+health_metrics_collection = db["health_metrics"]
 
 
 async def ensure_indexes() -> None:
@@ -95,6 +97,13 @@ async def ensure_indexes() -> None:
     await community_comments_collection.create_index([("author_id", 1), ("created_at", -1)])
     await community_reactions_collection.create_index([("post_id", 1), ("created_at", -1)])
     await community_reactions_collection.create_index([("post_id", 1), ("user_id", 1)], unique=True)
+    await wearable_connections_collection.create_index([("user_id", 1), ("provider", 1)], unique=True)
+    await wearable_connections_collection.create_index([("provider", 1), ("status", 1), ("updated_at", -1)])
+    await wearable_connections_collection.create_index([("provider", 1), ("provider_user_id", 1)])
+    await wearable_connections_collection.create_index([("provider", 1), ("oauth_state", 1)])
+    await health_metrics_collection.create_index([("user_id", 1), ("start_time", -1)])
+    await health_metrics_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("start_time", -1)])
+    await health_metrics_collection.create_index("dedupe_key", unique=True)
 
 
 async def close_database_connection() -> None:

@@ -207,9 +207,16 @@ from .security import (
     hash_password,
     verify_password,
 )
+from .wearables import (
+    build_longevity_wearables_response,
+    router as wearables_router,
+    start_wearables_scheduler,
+    stop_wearables_scheduler,
+)
 
 
 app = FastAPI(title=settings.app_name)
+app.include_router(wearables_router)
 logger = logging.getLogger("victory_fitness.api")
 MEDIA_ROOT = Path("/tmp/victory-fitness-media") if os.getenv("VERCEL") else Path(__file__).resolve().parents[1] / "media"
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -454,12 +461,14 @@ async def startup() -> None:
         logger.warning("security_warning using default JWT secret; set JWT_SECRET_KEY before production deployment")
     await ensure_indexes()
     await _seed_admin_user()
+    await start_wearables_scheduler()
     logger.info("startup_complete")
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
     logger.info("shutdown_begin")
+    await stop_wearables_scheduler()
     await close_database_connection()
     logger.info("shutdown_complete")
 
@@ -993,18 +1002,13 @@ async def _get_or_create_longevity_profile(user: dict) -> dict:
     return document
 
 
-def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardResponse:
+async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardResponse:
     habits_raw = [dict(item) for item in profile.get("habits") or []]
-    wearables = profile.get("wearables") or {}
+    wearables = await build_longevity_wearables_response(str(profile.get("user_id") or ""))
     return LongevityDashboardResponse(
         overview=LongevityOverviewResponse(**(profile.get("overview") or {})),
         quick_actions=[LongevityQuickActionResponse(**item) for item in profile.get("quick_actions") or []],
-        wearables=LongevityWearablesResponse(
-            devices=[LongevityWearableDeviceResponse(**item) for item in wearables.get("devices") or []],
-            last_synced_at=wearables.get("last_synced_at"),
-            has_data=bool(wearables.get("has_data")),
-            sync_message=str(wearables.get("sync_message") or ""),
-        ),
+        wearables=wearables,
         habits=LongevityHabitsResponse(
             streak_days=_calculate_habit_streak(habits_raw),
             habits=[LongevityHabitResponse(**item) for item in habits_raw],
@@ -1020,7 +1024,7 @@ async def longevity_dashboard(
     user: dict = Depends(_require_access_user),
 ) -> LongevityDashboardResponse:
     profile = await _get_or_create_longevity_profile(user)
-    return _serialize_longevity_dashboard(profile)
+    return await _serialize_longevity_dashboard(profile)
 
 
 @app.get("/longevity-os/heal/categories", response_model=LongevityHealCategoriesResponse)
@@ -1041,50 +1045,6 @@ async def longevity_generate_weekly_plan(
     return LongevityWeeklyPlanResponse(
         message="Your longevity weekly plan has been prepared. AI meal strategy can be expanded from here.",
         generated_at=datetime.now(timezone.utc),
-    )
-
-
-@app.get("/longevity-os/wearables", response_model=LongevityWearablesResponse)
-async def longevity_wearables(
-    user: dict = Depends(_require_access_user),
-) -> LongevityWearablesResponse:
-    profile = await _get_or_create_longevity_profile(user)
-    wearables = profile.get("wearables") or {}
-    return LongevityWearablesResponse(
-        devices=[LongevityWearableDeviceResponse(**item) for item in wearables.get("devices") or []],
-        last_synced_at=wearables.get("last_synced_at"),
-        has_data=bool(wearables.get("has_data")),
-        sync_message=str(wearables.get("sync_message") or ""),
-    )
-
-
-@app.post("/longevity-os/wearables/sync", response_model=LongevityWearablesResponse)
-async def longevity_sync_wearables(
-    user: dict = Depends(_require_access_user),
-) -> LongevityWearablesResponse:
-    profile = await _get_or_create_longevity_profile(user)
-    now = datetime.now(timezone.utc)
-    devices = [dict(item) for item in (profile.get("wearables") or {}).get("devices") or DEFAULT_LONGEVITY_WEARABLES]
-    for device in devices:
-        if device.get("id") == "apple-health":
-            device["active"] = True
-            device["status"] = "CONNECTED"
-
-    wearables = {
-        "devices": devices,
-        "last_synced_at": now,
-        "has_data": True,
-        "sync_message": "Wearable data synced successfully.",
-    }
-    await longevity_os_profiles_collection.update_one(
-        {"_id": profile["_id"]},
-        {"$set": {"wearables": wearables, "updated_at": now}},
-    )
-    return LongevityWearablesResponse(
-        devices=[LongevityWearableDeviceResponse(**item) for item in wearables.get("devices") or []],
-        last_synced_at=wearables.get("last_synced_at"),
-        has_data=bool(wearables.get("has_data")),
-        sync_message=str(wearables.get("sync_message") or ""),
     )
 
 
@@ -1640,6 +1600,9 @@ async def get_challenge_chat_thread(
         {"$set": {"last_read_message_at": now, "updated_at": now}},
     )
 
+    challenge_points = max(int(challenge.get("points") or 0), 0)
+    membership_with_points = dict(membership)
+    membership_with_points["challenge_points"] = challenge_points
     return ChallengeChatThreadResponse(
         challenge_id=challenge_id,
         title=str(challenge.get("title") or ""),
@@ -1648,13 +1611,18 @@ async def get_challenge_chat_thread(
         plan_days=[ChallengePlanDay(**day) for day in _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])],
         category=str(challenge.get("category") or "Challenge"),
         duration_days=max(int(challenge.get("duration_days") or 0), 0),
-        points=max(int(challenge.get("points") or 0), 0),
+        points=challenge_points,
         difficulty=str(challenge.get("difficulty") or "BEGINNER"),
         status=str(challenge.get("status") or "ACTIVE"),
         thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
         participant_count=participant_count,
         viewer_membership_status=str(membership.get("status") or "ACTIVE"),
         viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
+        viewer_points_earned=_calculate_challenge_points_earned(
+            _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []),
+            membership_with_points,
+            challenge_points,
+        ),
         viewer_plan_progress=_build_viewer_plan_progress(
             _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []),
             membership,
@@ -1871,6 +1839,7 @@ async def _store_membership_plan_progress(
     user: dict,
     day_number: int,
     completed_section_ids: list[str],
+    completed_exercise_ids: list[str],
     completed: bool,
     emit_progress_message: bool,
 ) -> ChallengePlanProgressResponse:
@@ -1889,6 +1858,31 @@ async def _store_membership_plan_progress(
         if section_id in valid_section_ids and section_id not in normalized_section_ids:
             normalized_section_ids.append(section_id)
 
+    normalized_exercise_ids = []
+    valid_exercise_ids = {
+        str(exercise.get("id") or "")
+        for section in plan_day.get("sections") or []
+        for exercise in (section.get("exercises") or [])
+        if str(exercise.get("id") or "")
+    }
+    for exercise_id in completed_exercise_ids:
+        if exercise_id in valid_exercise_ids and exercise_id not in normalized_exercise_ids:
+            normalized_exercise_ids.append(exercise_id)
+
+    for section in plan_day.get("sections") or []:
+        section_id = str(section.get("id") or "")
+        exercises = section.get("exercises") if isinstance(section.get("exercises"), list) else []
+        exercise_ids = [
+            str(exercise.get("id") or "")
+            for exercise in exercises
+            if str(exercise.get("id") or "")
+        ]
+        if exercise_ids and all(exercise_id in normalized_exercise_ids for exercise_id in exercise_ids):
+            if section_id and section_id not in normalized_section_ids:
+                normalized_section_ids.append(section_id)
+        elif section_id in normalized_section_ids and exercise_ids:
+            normalized_section_ids = [value for value in normalized_section_ids if value != section_id]
+
     total_sections = len(valid_section_ids)
     is_day_completed = bool(completed or (total_sections > 0 and len(normalized_section_ids) >= total_sections))
     if total_sections == 0 and completed:
@@ -1899,6 +1893,7 @@ async def _store_membership_plan_progress(
     next_plan_progress[str(day_number)] = {
         "completed": is_day_completed,
         "completed_section_ids": normalized_section_ids,
+        "completed_exercise_ids": normalized_exercise_ids,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1949,7 +1944,27 @@ async def _store_membership_plan_progress(
     if not updated_membership:
         raise HTTPException(status_code=404, detail="Challenge membership not found")
 
-    return _serialize_challenge_plan_progress_response(str(challenge["_id"]), updated_membership, plan_days)
+    membership_with_points = dict(updated_membership)
+    membership_with_points["challenge_points"] = max(int(challenge.get("points") or 0), 0)
+    return _serialize_challenge_plan_progress_response(str(challenge["_id"]), membership_with_points, plan_days)
+
+
+def _get_current_challenge_day_number(membership: dict, plan_days: list[dict], duration_days: int) -> int:
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    for day in plan_days:
+        day_number = max(int(day.get("day_number") or 0), 0)
+        raw_day_progress = raw_progress.get(str(day_number), {}) if isinstance(raw_progress, dict) else {}
+        if not bool(isinstance(raw_day_progress, dict) and raw_day_progress.get("completed")):
+            return day_number
+
+    next_day = max(int(membership.get("progress_days_completed") or 0), 0) + 1
+    return min(max(next_day, 1), max(duration_days, 1))
+
+
+def _ensure_current_challenge_day_only(day_number: int, membership: dict, plan_days: list[dict], duration_days: int) -> None:
+    current_day_number = _get_current_challenge_day_number(membership, plan_days, duration_days)
+    if day_number != current_day_number:
+        raise HTTPException(status_code=400, detail="Only today's challenge day can be updated")
 
 
 @app.post("/challenges/{challenge_id}/plan/days/{day_number}/complete", response_model=ChallengePlanProgressResponse)
@@ -1966,17 +1981,53 @@ async def complete_challenge_plan_day(
     plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
     if not plan_day:
         raise HTTPException(status_code=404, detail="Challenge plan day not found")
-    completed_section_ids = [
+    duration_days = max(int(challenge.get("duration_days") or 0), 1)
+    _ensure_current_challenge_day_only(day_number, membership, plan_days, duration_days)
+
+    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
+    valid_section_ids = [
         str(section.get("id") or "")
         for section in plan_day.get("sections") or []
         if str(section.get("id") or "")
-    ] if payload.completed else []
+    ]
+    valid_exercise_ids = [
+        str(exercise.get("id") or "")
+        for section in plan_day.get("sections") or []
+        for exercise in (section.get("exercises") or [])
+        if str(exercise.get("id") or "")
+    ]
+    completed_section_ids = [
+        str(value)
+        for value in existing_day_progress.get("completed_section_ids", [])
+        if isinstance(value, str) and value in valid_section_ids
+    ] if isinstance(existing_day_progress, dict) else []
+    completed_exercise_ids = [
+        str(value)
+        for value in existing_day_progress.get("completed_exercise_ids", [])
+        if isinstance(value, str) and value in valid_exercise_ids
+    ] if isinstance(existing_day_progress, dict) else []
+
+    if payload.completed and valid_exercise_ids and len(completed_exercise_ids) < len(valid_exercise_ids):
+        raise HTTPException(status_code=400, detail="Complete every exercise before marking the day done")
+    if payload.completed and not valid_exercise_ids and valid_section_ids and len(completed_section_ids) < len(valid_section_ids):
+        raise HTTPException(status_code=400, detail="Complete every section before marking the day done")
+
+    if payload.completed and not valid_section_ids:
+        completed_section_ids = []
+    if payload.completed and not valid_exercise_ids:
+        completed_exercise_ids = []
+    if not payload.completed:
+        completed_section_ids = []
+        completed_exercise_ids = []
+
     return await _store_membership_plan_progress(
         challenge=challenge,
         membership=membership,
         user=user,
         day_number=day_number,
         completed_section_ids=completed_section_ids,
+        completed_exercise_ids=completed_exercise_ids,
         completed=payload.completed,
         emit_progress_message=payload.completed,
     )
@@ -2001,6 +2052,8 @@ async def complete_challenge_plan_section(
     plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
     if not plan_day:
         raise HTTPException(status_code=404, detail="Challenge plan day not found")
+    duration_days = max(int(challenge.get("duration_days") or 0), 1)
+    _ensure_current_challenge_day_only(day_number, membership, plan_days, duration_days)
     valid_section_ids = {
         str(section.get("id") or "")
         for section in plan_day.get("sections") or []
@@ -2016,11 +2069,34 @@ async def complete_challenge_plan_section(
         for value in existing_day_progress.get("completed_section_ids", [])
         if isinstance(value, str) and value in valid_section_ids
     ] if isinstance(existing_day_progress, dict) else []
+    existing_completed_exercise_ids = [
+        str(value)
+        for value in existing_day_progress.get("completed_exercise_ids", [])
+        if isinstance(value, str)
+    ] if isinstance(existing_day_progress, dict) else []
+
+    section_record = next(
+        (section for section in (plan_day.get("sections") or []) if str(section.get("id") or "") == section_id),
+        None,
+    )
+    section_exercise_ids = [
+        str(exercise.get("id") or "")
+        for exercise in ((section_record or {}).get("exercises") or [])
+        if str(exercise.get("id") or "")
+    ]
 
     if payload.completed and section_id not in completed_section_ids:
         completed_section_ids.append(section_id)
     if not payload.completed:
         completed_section_ids = [value for value in completed_section_ids if value != section_id]
+
+    completed_exercise_ids = [value for value in existing_completed_exercise_ids if value]
+    if payload.completed and section_exercise_ids:
+        for exercise_id in section_exercise_ids:
+            if exercise_id not in completed_exercise_ids:
+                completed_exercise_ids.append(exercise_id)
+    if not payload.completed and section_exercise_ids:
+        completed_exercise_ids = [value for value in completed_exercise_ids if value not in section_exercise_ids]
 
     prior_completed = bool(isinstance(existing_day_progress, dict) and existing_day_progress.get("completed"))
     will_complete_day = len(completed_section_ids) >= len(valid_section_ids) > 0
@@ -2030,6 +2106,97 @@ async def complete_challenge_plan_section(
         user=user,
         day_number=day_number,
         completed_section_ids=completed_section_ids,
+        completed_exercise_ids=completed_exercise_ids,
+        completed=will_complete_day,
+        emit_progress_message=will_complete_day and not prior_completed,
+    )
+
+
+@app.post(
+    "/challenges/{challenge_id}/plan/days/{day_number}/sections/{section_id}/exercises/{exercise_id}/complete",
+    response_model=ChallengePlanProgressResponse,
+)
+async def complete_challenge_plan_exercise(
+    challenge_id: str,
+    day_number: int,
+    section_id: str,
+    exercise_id: str,
+    payload: ChallengePlanCompletionRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengePlanProgressResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership, challenge)
+
+    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
+    if not plan_day:
+        raise HTTPException(status_code=404, detail="Challenge plan day not found")
+    duration_days = max(int(challenge.get("duration_days") or 0), 1)
+    _ensure_current_challenge_day_only(day_number, membership, plan_days, duration_days)
+
+    section_record = next(
+        (section for section in (plan_day.get("sections") or []) if str(section.get("id") or "") == section_id),
+        None,
+    )
+    if not section_record:
+        raise HTTPException(status_code=404, detail="Challenge plan section not found")
+
+    section_exercise_ids = [
+        str(exercise.get("id") or "")
+        for exercise in (section_record.get("exercises") or [])
+        if str(exercise.get("id") or "")
+    ]
+    if exercise_id not in section_exercise_ids:
+        raise HTTPException(status_code=404, detail="Challenge plan exercise not found")
+
+    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
+    valid_section_ids = {
+        str(section.get("id") or "")
+        for section in plan_day.get("sections") or []
+        if str(section.get("id") or "")
+    }
+    valid_exercise_ids = {
+        str(exercise.get("id") or "")
+        for section in plan_day.get("sections") or []
+        for exercise in (section.get("exercises") or [])
+        if str(exercise.get("id") or "")
+    }
+    completed_section_ids = [
+        str(value)
+        for value in existing_day_progress.get("completed_section_ids", [])
+        if isinstance(value, str) and value in valid_section_ids
+    ] if isinstance(existing_day_progress, dict) else []
+    completed_exercise_ids = [
+        str(value)
+        for value in existing_day_progress.get("completed_exercise_ids", [])
+        if isinstance(value, str) and value in valid_exercise_ids
+    ] if isinstance(existing_day_progress, dict) else []
+
+    if payload.completed and exercise_id not in completed_exercise_ids:
+        completed_exercise_ids.append(exercise_id)
+    if not payload.completed:
+        completed_exercise_ids = [value for value in completed_exercise_ids if value != exercise_id]
+
+    if section_exercise_ids and all(value in completed_exercise_ids for value in section_exercise_ids):
+        if section_id not in completed_section_ids:
+            completed_section_ids.append(section_id)
+    else:
+        completed_section_ids = [value for value in completed_section_ids if value != section_id]
+
+    prior_completed = bool(isinstance(existing_day_progress, dict) and existing_day_progress.get("completed"))
+    will_complete_day = False
+    if valid_section_ids:
+        will_complete_day = len({value for value in completed_section_ids if value in valid_section_ids}) >= len(valid_section_ids)
+
+    return await _store_membership_plan_progress(
+        challenge=challenge,
+        membership=membership,
+        user=user,
+        day_number=day_number,
+        completed_section_ids=completed_section_ids,
+        completed_exercise_ids=completed_exercise_ids,
         completed=will_complete_day,
         emit_progress_message=will_complete_day and not prior_completed,
     )
@@ -4928,6 +5095,74 @@ def _count_completed_plan_days(plan_progress: dict) -> int:
     return total
 
 
+def _build_challenge_completion_units(plan_days: list[dict]) -> list[dict[str, str | int]]:
+    units: list[dict[str, str | int]] = []
+    for day in plan_days:
+        day_number = max(int(day.get("day_number") or 0), 0)
+        for section in day.get("sections") or []:
+            section_id = str(section.get("id") or "")
+            exercises = section.get("exercises") if isinstance(section.get("exercises"), list) else []
+            if exercises:
+                for exercise in exercises:
+                    exercise_id = str(exercise.get("id") or "")
+                    if not exercise_id:
+                        continue
+                    units.append(
+                        {
+                            "day_number": day_number,
+                            "section_id": section_id,
+                            "exercise_id": exercise_id,
+                        }
+                    )
+            elif section_id:
+                units.append(
+                    {
+                        "day_number": day_number,
+                        "section_id": section_id,
+                        "exercise_id": "",
+                    }
+                )
+    return units
+
+
+def _calculate_challenge_points_earned(plan_days: list[dict], membership: dict, challenge_points: int) -> int:
+    if challenge_points <= 0:
+        return 0
+
+    units = _build_challenge_completion_units(plan_days)
+    if not units:
+        return 0
+
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    completed_unit_count = 0
+    for unit in units:
+        day_progress = raw_progress.get(str(unit["day_number"]), {}) if isinstance(raw_progress, dict) else {}
+        if not isinstance(day_progress, dict):
+            continue
+        completed_exercise_ids = {
+            str(exercise_id)
+            for exercise_id in day_progress.get("completed_exercise_ids", [])
+            if isinstance(exercise_id, str) and exercise_id
+        }
+        completed_section_ids = {
+            str(section_id)
+            for section_id in day_progress.get("completed_section_ids", [])
+            if isinstance(section_id, str) and section_id
+        }
+        unit_exercise_id = str(unit["exercise_id"] or "")
+        unit_section_id = str(unit["section_id"] or "")
+        if unit_exercise_id:
+            if unit_exercise_id in completed_exercise_ids:
+                completed_unit_count += 1
+        elif unit_section_id and unit_section_id in completed_section_ids:
+            completed_unit_count += 1
+
+    if completed_unit_count <= 0:
+        return 0
+
+    return round((challenge_points * completed_unit_count) / len(units))
+
+
 def _build_viewer_plan_progress(plan_days: list[dict], membership: dict) -> list[ChallengePlanDayProgressResponse]:
     raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
     progress_responses: list[ChallengePlanDayProgressResponse] = []
@@ -4940,11 +5175,17 @@ def _build_viewer_plan_progress(plan_days: list[dict], membership: dict) -> list
             for section_id in raw_day_progress.get("completed_section_ids", [])
             if isinstance(section_id, str) and section_id
         ] if isinstance(raw_day_progress, dict) else []
+        completed_exercise_ids = [
+            str(exercise_id)
+            for exercise_id in raw_day_progress.get("completed_exercise_ids", [])
+            if isinstance(exercise_id, str) and exercise_id
+        ] if isinstance(raw_day_progress, dict) else []
         progress_responses.append(
             ChallengePlanDayProgressResponse(
                 day_number=day_number,
                 completed=bool(isinstance(raw_day_progress, dict) and raw_day_progress.get("completed")),
                 completed_section_ids=completed_section_ids,
+                completed_exercise_ids=completed_exercise_ids,
             )
         )
 
@@ -4953,10 +5194,12 @@ def _build_viewer_plan_progress(plan_days: list[dict], membership: dict) -> list
 
 def _serialize_challenge_plan_progress_response(challenge_id: str, membership: dict, plan_days: list[dict]) -> ChallengePlanProgressResponse:
     viewer_plan_progress = _build_viewer_plan_progress(plan_days, membership)
+    challenge_points = max(int((membership.get("challenge_points") or membership.get("points") or 0)), 0)
     return ChallengePlanProgressResponse(
         challenge_id=challenge_id,
         viewer_membership_status=str(membership.get("status") or "ACTIVE"),
         viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
+        viewer_points_earned=_calculate_challenge_points_earned(plan_days, membership, challenge_points),
         viewer_plan_progress=viewer_plan_progress,
     )
 

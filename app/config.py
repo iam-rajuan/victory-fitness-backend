@@ -92,5 +92,25 @@ class Settings:
     admin_email = os.getenv("ADMIN_EMAIL", "admin@victoryfitness.com").strip().lower()
     admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
 
+    wearable_token_encryption_key = os.getenv("WEARABLE_TOKEN_ENCRYPTION_KEY", "").strip()
+    wearable_scheduler_enabled = _get_bool("WEARABLE_SCHEDULER_ENABLED", True)
+    wearable_scheduler_interval_minutes = _get_int("WEARABLE_SCHEDULER_INTERVAL_MINUTES", 30)
+    wearable_scheduler_lookback_days = _get_int("WEARABLE_SCHEDULER_LOOKBACK_DAYS", 1)
+
+    fitbit_client_id = os.getenv("FITBIT_CLIENT_ID", "").strip()
+    fitbit_client_secret = os.getenv("FITBIT_CLIENT_SECRET", "").strip()
+    fitbit_redirect_uri = os.getenv("FITBIT_REDIRECT_URI", "").strip()
+    fitbit_scopes = _get_csv_list("FITBIT_SCOPES", "activity,heartrate,sleep,profile")
+
+    garmin_client_id = os.getenv("GARMIN_CLIENT_ID", "").strip()
+    garmin_client_secret = os.getenv("GARMIN_CLIENT_SECRET", "").strip()
+    garmin_redirect_uri = os.getenv("GARMIN_REDIRECT_URI", "").strip()
+    garmin_authorize_url = os.getenv("GARMIN_AUTHORIZE_URL", "").strip()
+    garmin_token_url = os.getenv("GARMIN_TOKEN_URL", "").strip()
+    garmin_api_base_url = os.getenv("GARMIN_API_BASE_URL", "").strip()
+    garmin_daily_summary_path = os.getenv("GARMIN_DAILY_SUMMARY_PATH", "/wellness-api/rest/dailies").strip()
+    garmin_scopes = _get_csv_list("GARMIN_SCOPES", "")
+    garmin_webhook_secret = os.getenv("GARMIN_WEBHOOK_SECRET", "").strip()
+
 
 settings = Settings()

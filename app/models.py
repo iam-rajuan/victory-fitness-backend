@@ -399,12 +399,14 @@ class ChallengePlanDayProgressResponse(BaseModel):
     day_number: int
     completed: bool = False
     completed_section_ids: list[str] = Field(default_factory=list)
+    completed_exercise_ids: list[str] = Field(default_factory=list)
 
 
 class ChallengePlanProgressResponse(BaseModel):
     challenge_id: str
     viewer_membership_status: str
     viewer_progress_days_completed: int = 0
+    viewer_points_earned: int = 0
     viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
 
 
@@ -509,6 +511,7 @@ class ChallengeChatThreadResponse(BaseModel):
     participant_count: int = 0
     viewer_membership_status: str
     viewer_progress_days_completed: int = 0
+    viewer_points_earned: int = 0
     viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
     unread_count: int = 0
     messages: list[ChallengeChatMessageResponse] = Field(default_factory=list)
