@@ -48,6 +48,11 @@ class MeResponse(BaseModel):
     next_rank: str = "Bronze"
     points_to_next_rank: int = 0
     rank_progress_fraction: float = 0
+    subscription_tier: str = "NONE"
+    subscription_status: str = "NONE"
+    subscription_started_at: datetime | None = None
+    subscription_confirmed_at: datetime | None = None
+    subscription_access: list[str] = Field(default_factory=list)
 
 
 class UpdateMeRequest(BaseModel):
@@ -55,6 +60,11 @@ class UpdateMeRequest(BaseModel):
     email: EmailStr | None = None
     country: str | None = Field(default=None, max_length=120)
     profileImage: str | None = Field(default=None, max_length=500)
+
+
+class UpdateSubscriptionRequest(BaseModel):
+    subscription_tier: str = Field(pattern=r"^(NONE|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+    confirm_payment: bool = True
 
 
 class ProfileImageUploadRequest(BaseModel):

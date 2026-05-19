@@ -157,6 +157,7 @@ from .models import (
     WorkoutLibraryCategory,
     WorkoutLibraryItem,
     WorkoutLibraryResponse,
+    UpdateSubscriptionRequest,
 )
 from .database import (
     challenge_chat_messages_collection,
@@ -227,6 +228,24 @@ MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
 PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
+SUBSCRIPTION_TIERS = ("NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
+SUBSCRIPTION_ACCESS = {
+    "NONE": [],
+    "SILVER": ["home", "workout", "challenge", "profile"],
+    "GOLD": ["home", "workout", "challenge", "mealPlan", "profile"],
+    "PLATINUM": ["home", "workout", "challenge", "mealPlan", "profile", "workoutplan", "longevity"],
+    "INNER_CIRCLE": [
+        "home",
+        "workout",
+        "challenge",
+        "mealPlan",
+        "profile",
+        "workoutplan",
+        "longevity",
+        "application",
+        "community",
+    ],
+}
 PRIVACY_POLICY_KEY = "privacy_policy"
 TERMS_CONDITION_KEY = "terms_condition"
 ABOUT_US_KEY = "about_us"
@@ -648,6 +667,8 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "is_verified": False,
             "role": "user",
             "is_admin": False,
+            "subscription_tier": "NONE",
+            "subscription_status": "NONE",
             "verification_code_hash": hash_password(code),
             "verification_code_expires_at": now + timedelta(minutes=10),
             "updated_at": now,
@@ -818,6 +839,35 @@ async def upload_profile_image(
 
     logger.info("profile_image_upload_success user_id=%s", user_id)
     return ProfileImageUploadResponse(image_url=image_url)
+
+
+@app.patch("/me/subscription", response_model=MeResponse)
+async def update_subscription(
+    payload: UpdateSubscriptionRequest,
+    user: dict = Depends(_require_access_user),
+) -> MeResponse:
+    tier = _normalize_subscription_tier(payload.subscription_tier)
+    now = datetime.now(timezone.utc)
+    subscription_status = "ACTIVE" if payload.confirm_payment and tier != "NONE" else "NONE"
+    update_doc: dict = {
+        "subscription_tier": tier,
+        "subscription_status": subscription_status,
+        "updated_at": now,
+    }
+
+    if tier == "NONE":
+        update_doc["subscription_started_at"] = None
+        update_doc["subscription_confirmed_at"] = None
+    else:
+        update_doc["subscription_started_at"] = user.get("subscription_started_at") or now
+        update_doc["subscription_confirmed_at"] = now if subscription_status == "ACTIVE" else user.get("subscription_confirmed_at")
+
+    await users_collection.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    updated_user = await users_collection.find_one({"_id": user["_id"]})
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return MeResponse(**(await _serialize_me_record(updated_user)))
 
 
 @app.get("/admin/me", response_model=AdminProfileResponse)
@@ -4680,6 +4730,8 @@ async def _seed_admin_user() -> None:
                     "role": "admin",
                     "is_admin": True,
                     "is_verified": True,
+                    "subscription_tier": "INNER_CIRCLE",
+                    "subscription_status": "ACTIVE",
                     "updated_at": now,
                 },
                 "$unset": {
@@ -4699,6 +4751,8 @@ async def _seed_admin_user() -> None:
             "is_verified": True,
             "role": "admin",
             "is_admin": True,
+            "subscription_tier": "INNER_CIRCLE",
+            "subscription_status": "ACTIVE",
             "created_at": now,
             "updated_at": now,
         }
@@ -4720,8 +4774,27 @@ def _normalize_admin_user_status(record: dict) -> str:
     return "ACTIVE" if record.get("is_verified") else "PENDING"
 
 
+def _normalize_subscription_tier(value: object) -> str:
+    tier = str(value or "").strip().upper().replace(" ", "_")
+    return tier if tier in SUBSCRIPTION_TIERS else "NONE"
+
+
+def _normalize_subscription_status(value: object, tier: str) -> str:
+    status = str(value or "").strip().upper().replace(" ", "_")
+    if status in {"ACTIVE", "PENDING_PAYMENT", "CANCELLED"}:
+        return status
+    return "ACTIVE" if tier != "NONE" else "NONE"
+
+
+def _resolve_subscription_access(tier: str) -> list[str]:
+    normalized_tier = _normalize_subscription_tier(tier)
+    return list(SUBSCRIPTION_ACCESS.get(normalized_tier, []))
+
+
 async def _serialize_me_record(record: dict) -> dict:
     stats = await _calculate_user_fitness_stats(str(record["_id"]))
+    tier = _normalize_subscription_tier(record.get("subscription_tier") or record.get("tier"))
+    status = _normalize_subscription_status(record.get("subscription_status") or record.get("subscription_state"), tier)
     return {
         "id": str(record["_id"]),
         "name": str(record.get("name") or ""),
@@ -4739,6 +4812,11 @@ async def _serialize_me_record(record: dict) -> dict:
         "next_rank": stats["next_rank"],
         "points_to_next_rank": stats["points_to_next_rank"],
         "rank_progress_fraction": stats["rank_progress_fraction"],
+        "subscription_tier": tier,
+        "subscription_status": status,
+        "subscription_started_at": record.get("subscription_started_at"),
+        "subscription_confirmed_at": record.get("subscription_confirmed_at"),
+        "subscription_access": _resolve_subscription_access(tier),
     }
 
 RANK_TIERS = [
