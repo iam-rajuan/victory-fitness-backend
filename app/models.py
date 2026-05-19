@@ -478,12 +478,16 @@ class UserActiveChallengeResponse(BaseModel):
     id: str
     challenge_id: str
     title: str
+    description: str = ""
     type: str
     plan_text: str = ""
+    duration_days: int = 0
     days_left: int = 0
     total_days: int = 0
     progress: float = 0
     points: int = 0
+    participants: int = 0
+    thumbnail: str = ""
     color: str = "#4F8EF7"
 
 

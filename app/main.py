@@ -6236,6 +6236,7 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
 
     active_challenges: list[UserActiveChallengeResponse] = []
     active_challenge_ids: list[str] = []
+    active_stats = await _load_challenge_stats_map([str(membership.get("challenge_id") or "") for membership in active_memberships if membership.get("challenge_id")])
     for membership in active_memberships:
         challenge_id = str(membership.get("challenge_id") or "")
         challenge = challenges_by_id.get(challenge_id)
@@ -6254,12 +6255,16 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 id=str(membership.get("_id") or challenge_id),
                 challenge_id=challenge_id,
                 title=str(challenge.get("title") or ""),
+                description=str(challenge.get("description") or ""),
                 type=str(challenge.get("category") or "Challenge"),
                 plan_text=str(challenge.get("plan_text") or ""),
+                duration_days=total_days,
                 days_left=days_left,
                 total_days=total_days,
                 progress=progress_fraction,
                 points=max(int(challenge.get("points") or 0), 0),
+                participants=int(active_stats.get(challenge_id, {}).get("participants", 0)),
+                thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
                 color=_challenge_color(str(challenge.get("category") or ""), str(challenge.get("difficulty") or "")),
             )
         )
