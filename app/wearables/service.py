@@ -631,6 +631,7 @@ async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
     body_battery_avg = avg("body_battery") or 0
     steps_avg = avg("steps") or 0
     spo2_avg = avg("spo2") or 0
+    workouts_total = int(round(sum(metrics_by_type.get("workouts") or []))) if metrics_by_type.get("workouts") else 0
 
     sleep_score = max(0, min(int(round((sleep_avg / 8.0) * 100)), 100))
     recovery_score = max(
@@ -689,6 +690,7 @@ async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
             "body_battery": int(round(body_battery_avg)) if body_battery_avg else 0,
             "steps": int(round(steps_avg)) if steps_avg else 0,
             "spo2": int(round(spo2_avg)) if spo2_avg else 0,
+            "workouts": workouts_total,
         },
         "focus_areas": focus_areas[:3],
     }
@@ -730,7 +732,7 @@ async def refresh_longevity_profile_cache(user_id: str) -> dict[str, Any]:
                 "heal_categories": heal_categories,
                 "wearables.has_data": True,
                 "wearables.last_synced_at": now,
-                "wearables.sync_message": "Data synced successfully and cached for Longevity OS calculations.",
+                "wearables.sync_message": "Data synced successfully. All Longevity OS calculations are using the synced data.",
                 "updated_at": now,
             }
         },
