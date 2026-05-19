@@ -237,7 +237,7 @@ PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 SUBSCRIPTION_TIERS = ("NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
 SUBSCRIPTION_ACCESS = {
     "NONE": [],
-    "SILVER": ["home", "workout", "challenge", "profile"],
+    "SILVER": ["home", "workout", "profile"],
     "GOLD": ["home", "workout", "challenge", "mealPlan", "profile"],
     "PLATINUM": ["home", "workout", "challenge", "mealPlan", "profile", "workoutplan", "longevity"],
     "INNER_CIRCLE": [
@@ -1631,15 +1631,15 @@ async def admin_delete_community_post(
 
 @app.get("/challenges/overview", response_model=ChallengeOverviewResponse)
 async def get_challenge_overview(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengeOverviewResponse:
-    return await _build_challenge_overview_response(str(user["_id"]))
+    return await _build_challenge_overview_response(user)
 
 
 @app.get("/challenges/{challenge_id}/chat", response_model=ChallengeChatThreadResponse)
 async def get_challenge_chat_thread(
     challenge_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengeChatThreadResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -1702,6 +1702,7 @@ async def challenge_chat_socket(
 
     try:
         user = await _get_verified_user_from_access_token(token)
+        _ensure_subscription_feature_access(user, "challenge", "Your current plan does not include challenge access")
         membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
         challenge = await _get_challenge_or_404(challenge_id)
         _ensure_challenge_read_access(membership, challenge)
@@ -1721,7 +1722,7 @@ async def challenge_chat_socket(
 async def create_challenge_chat_message(
     challenge_id: str,
     payload: ChallengeChatMessageCreateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengeChatMessageResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -1786,7 +1787,7 @@ async def update_challenge_chat_message(
     challenge_id: str,
     message_id: str,
     payload: ChallengeChatMessageUpdateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengeChatMessageResponse:
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
     challenge = await _get_challenge_or_404(challenge_id)
@@ -1821,7 +1822,7 @@ async def update_challenge_chat_message(
 async def delete_challenge_chat_message(
     challenge_id: str,
     message_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> Response:
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
     challenge = await _get_challenge_or_404(challenge_id)
@@ -1855,7 +1856,7 @@ async def toggle_challenge_chat_reaction(
     challenge_id: str,
     message_id: str,
     payload: ChallengeChatReactionToggleRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengeChatMessageResponse:
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
     challenge = await _get_challenge_or_404(challenge_id)
@@ -2093,7 +2094,7 @@ async def complete_challenge_plan_day(
     challenge_id: str,
     day_number: int,
     payload: ChallengePlanCompletionRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengePlanProgressResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -2142,7 +2143,7 @@ async def complete_challenge_plan_section(
     day_number: int,
     section_id: str,
     payload: ChallengePlanCompletionRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengePlanProgressResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -2248,7 +2249,7 @@ async def complete_challenge_plan_exercise_direct(
     day_number: int,
     exercise_id: str,
     payload: ChallengePlanCompletionRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengePlanProgressResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -2273,7 +2274,7 @@ async def complete_challenge_plan_exercise(
     section_id: str,
     exercise_id: str,
     payload: ChallengePlanCompletionRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengePlanProgressResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -2293,7 +2294,7 @@ async def complete_challenge_plan_exercise(
 async def post_challenge_progress_update(
     challenge_id: str,
     payload: ChallengeProgressUpdateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengeChatMessageResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -2377,7 +2378,7 @@ async def post_challenge_progress_update(
 @app.get("/challenges/{challenge_id}/progress/report", response_model=ChallengeProgressReportResponse)
 async def get_challenge_progress_report(
     challenge_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengeProgressReportResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
@@ -2395,7 +2396,7 @@ async def get_challenge_progress_report(
 @app.post("/challenges/{challenge_id}/start", response_model=StartChallengeResponse, status_code=status.HTTP_201_CREATED)
 async def start_challenge(
     challenge_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_challenge_access_user),
 ) -> StartChallengeResponse:
     try:
         object_id = ObjectId(challenge_id)
@@ -2412,6 +2413,17 @@ async def start_challenge(
         raise HTTPException(status_code=400, detail="This challenge cannot be started")
 
     user_id = str(user["_id"])
+    active_challenge_limit = _get_user_active_challenge_limit(user)
+    if active_challenge_limit is not None:
+        active_membership_count = await challenge_memberships_collection.count_documents(
+            {"user_id": user_id, "status": "ACTIVE"}
+        )
+        if active_membership_count >= active_challenge_limit:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Your current plan allows up to {active_challenge_limit} active challenges",
+            )
+
     existing_membership = await challenge_memberships_collection.find_one(
         {"user_id": user_id, "challenge_id": challenge_id}
     )
@@ -4810,6 +4822,30 @@ def _resolve_subscription_access(tier: str) -> list[str]:
     return list(SUBSCRIPTION_ACCESS.get(normalized_tier, []))
 
 
+def _user_has_subscription_access(user: dict, feature: str) -> bool:
+    if bool(user.get("is_admin")):
+        return True
+    return feature in _resolve_subscription_access(
+        str(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier") or "")
+    )
+
+
+def _ensure_subscription_feature_access(user: dict, feature: str, detail: str) -> None:
+    if not _user_has_subscription_access(user, feature):
+        raise HTTPException(status_code=403, detail=detail)
+
+
+def _get_user_active_challenge_limit(user: dict) -> int | None:
+    return None
+
+
+def _get_user_ready_challenge_limit(user: dict) -> int:
+    active_limit = _get_user_active_challenge_limit(user)
+    if active_limit is not None:
+        return active_limit
+    return 8
+
+
 def _require_pillow() -> None:
     if Image is None or ImageDraw is None or ImageFont is None:
         raise HTTPException(
@@ -6025,7 +6061,8 @@ async def _broadcast_challenge_chat_event(
     await challenge_chat_socket_manager.broadcast(challenge_id, payload)
 
 
-async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewResponse:
+async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewResponse:
+    user_id = str(user["_id"])
     memberships = await challenge_memberships_collection.find(
         {"user_id": user_id},
         projection=CHALLENGE_OVERVIEW_MEMBERSHIP_PROJECTION,
@@ -6137,6 +6174,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
         )
 
     excluded_challenge_ids = {str(membership.get("challenge_id") or "") for membership in memberships}
+    ready_limit = _get_user_ready_challenge_limit(user)
     ready_records = await challenges_collection.find(
         {
             "status": {"$in": ["ACTIVE", "UPCOMING"]},
@@ -6144,8 +6182,10 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
         },
         projection=CHALLENGE_OVERVIEW_CHALLENGE_PROJECTION,
         sort=[("created_at", -1), ("_id", -1)],
-    ).limit(8).to_list(length=8)
+    ).limit(ready_limit).to_list(length=ready_limit)
     ready_stats = await _load_challenge_stats_map([str(record["_id"]) for record in ready_records])
+    active_challenge_limit = _get_user_active_challenge_limit(user)
+    can_start_more = active_challenge_limit is None or len(active_challenges) < active_challenge_limit
     ready_to_start = [
         UserReadyChallengeResponse(
             id=str(record["_id"]),
@@ -6159,7 +6199,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
             difficulty=str(record.get("difficulty") or "BEGINNER"),
             difficulty_color=_difficulty_color(str(record.get("difficulty") or "")),
             status=str(record.get("status") or "ACTIVE"),
-            can_start=str(record.get("status") or "").upper() == "ACTIVE",
+            can_start=str(record.get("status") or "").upper() == "ACTIVE" and can_start_more,
             thumbnail=_normalize_challenge_thumbnail(record.get("thumbnail")),
         )
         for record in ready_records
@@ -6279,3 +6319,8 @@ async def _get_verified_user(authorization: str | None) -> dict:
 
 async def _get_verified_user_from_access_token(token: str) -> dict:
     return await dependency_get_verified_user_from_access_token(token)
+
+
+async def _require_challenge_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "challenge", "Your current plan does not include challenge access")
+    return user
