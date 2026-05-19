@@ -238,8 +238,8 @@ SUBSCRIPTION_TIERS = ("NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
 SUBSCRIPTION_ACCESS = {
     "NONE": [],
     "SILVER": ["home", "workout", "challenge", "community", "profile"],
-    "GOLD": ["home", "workout", "challenge", "mealPlan", "profile"],
-    "PLATINUM": ["home", "workout", "challenge", "mealPlan", "profile", "workoutplan", "longevity"],
+    "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
+    "PLATINUM": ["home", "workout", "challenge", "community", "mealPlan", "profile", "workoutplan", "longevity"],
     "INNER_CIRCLE": [
         "home",
         "workout",
