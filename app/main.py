@@ -219,6 +219,7 @@ from .security import (
     verify_password,
 )
 from .wearables import (
+    build_longevity_metric_insights,
     build_longevity_wearables_response,
     router as wearables_router,
     start_wearables_scheduler,
@@ -264,6 +265,7 @@ SUBSCRIPTION_ACCESS = {
         "application",
         "community",
         "coach_victor",
+        "longevity_plan",
     ],
 }
 PRIVACY_POLICY_KEY = "privacy_policy"
@@ -516,6 +518,11 @@ async def _require_community_access_user(user: dict = Depends(_require_access_us
 
 async def _require_coach_victor_access_user(user: dict = Depends(_require_access_user)) -> dict:
     _ensure_subscription_feature_access(user, "coach_victor", "Your current plan does not include Coach Victor access")
+    return user
+
+
+async def _require_longevity_plan_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "longevity_plan", "Your current plan does not include Longevity plan generation")
     return user
 
 
@@ -1090,9 +1097,14 @@ async def _get_or_create_longevity_profile(user: dict) -> dict:
 
 async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardResponse:
     habits_raw = [dict(item) for item in profile.get("habits") or []]
-    wearables = await build_longevity_wearables_response(str(profile.get("user_id") or ""))
+    user_id = str(profile.get("user_id") or "")
+    wearables = await build_longevity_wearables_response(user_id)
+    metric_insights = await build_longevity_metric_insights(user_id)
+    overview_payload = dict(profile.get("overview") or {})
+    if metric_insights.get("has_metrics"):
+        overview_payload.update(metric_insights.get("overview") or {})
     return LongevityDashboardResponse(
-        overview=LongevityOverviewResponse(**(profile.get("overview") or {})),
+        overview=LongevityOverviewResponse(**overview_payload),
         quick_actions=[LongevityQuickActionResponse(**item) for item in profile.get("quick_actions") or []],
         wearables=wearables,
         habits=LongevityHabitsResponse(
@@ -1125,11 +1137,23 @@ async def longevity_heal_categories(
 
 @app.post("/longevity-os/heal/weekly-plan", response_model=LongevityWeeklyPlanResponse)
 async def longevity_generate_weekly_plan(
-    user: dict = Depends(_require_longevity_access_user),
+    user: dict = Depends(_require_longevity_plan_access_user),
 ) -> LongevityWeeklyPlanResponse:
     await _get_or_create_longevity_profile(user)
+    metric_insights = await build_longevity_metric_insights(str(user["_id"]))
+    if metric_insights.get("has_metrics"):
+        summary = metric_insights.get("summary") or {}
+        focus_areas = [str(item) for item in metric_insights.get("focus_areas") or []]
+        message = (
+            f"Weekly plan generated from your synced data. Recovery score {metric_insights['overview']['recovery_score']}%, "
+            f"sleep average {summary.get('sleep_hours', 0)}h, HRV {summary.get('hrv_ms', 0)} ms, "
+            f"and daily steps around {summary.get('steps', 0)}. "
+            f"This week focuses on {', '.join(focus_areas)}."
+        )
+    else:
+        message = "Your longevity weekly plan has been prepared. Sync wearable data to make the next plan more personalized."
     return LongevityWeeklyPlanResponse(
-        message="Your longevity weekly plan has been prepared. AI meal strategy can be expanded from here.",
+        message=message,
         generated_at=datetime.now(timezone.utc),
     )
 

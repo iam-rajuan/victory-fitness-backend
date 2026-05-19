@@ -1,5 +1,6 @@
 from .router import router
 from .service import (
+    build_longevity_metric_insights,
     build_longevity_wearables_response,
     start_wearables_scheduler,
     stop_wearables_scheduler,
@@ -7,6 +8,7 @@ from .service import (
 )
 
 __all__ = [
+    "build_longevity_metric_insights",
     "build_longevity_wearables_response",
     "router",
     "start_wearables_scheduler",

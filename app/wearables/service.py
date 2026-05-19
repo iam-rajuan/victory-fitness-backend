@@ -57,6 +57,12 @@ PROVIDER_DISPLAY = {
         "image": "https://images.unsplash.com/photo-1557438159-8664b4c7301c?w=600&q=80",
     },
 }
+DEMO_PROVIDER_SOURCE_DEVICE = {
+    "apple-health": "Apple Watch Series 9",
+    "health-connect": "Pixel Watch 3",
+    "fitbit": "Fitbit Charge 6",
+    "garmin": "Garmin Venu 3",
+}
 FITBIT_AUTHORIZE_URL = "https://www.fitbit.com/oauth2/authorize"
 FITBIT_TOKEN_URL = "https://api.fitbit.com/oauth2/token"
 FITBIT_API_BASE = "https://api.fitbit.com"
@@ -72,6 +78,13 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _coerce_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _date_to_bounds(value: date | None, is_end: bool = False) -> datetime | None:
@@ -234,6 +247,24 @@ async def list_user_connections(user_id: str) -> list[dict]:
         sort=[("provider", 1)],
     ).to_list(length=None)
     return [_serialize_connection(record) for record in records]
+
+
+async def connect_demo_provider(user_id: str, provider: str) -> dict:
+    provider = _ensure_supported_provider(provider)
+    now = _utc_now()
+    return await upsert_wearable_connection(
+        user_id,
+        provider,
+        status_value="connected",
+        metadata={
+            "demo_sync_enabled": True,
+            "demo_profile_key": provider,
+            "source": "demo",
+        },
+        connected_at=now,
+        last_sync_status="idle",
+        last_sync_message="Demo provider connected. Press sync to load demo health data.",
+    )
 
 
 async def disconnect_provider(user_id: str, provider: str) -> None:
@@ -433,6 +464,171 @@ async def summarize_health_metrics(
         )
     items.sort(key=lambda item: (item["metric_type"], item["provider"]))
     return items
+
+
+def _build_demo_metrics(provider: str) -> list[dict[str, Any]]:
+    provider = _ensure_supported_provider(provider)
+    now = _utc_now()
+    source_device = DEMO_PROVIDER_SOURCE_DEVICE.get(provider, "Demo Wearable")
+    days = [
+        {"date": now - timedelta(days=3), "steps": 7240, "sleep": 6.7, "heart_rate": 66, "hrv": 37, "spo2": 97, "stress": 44, "body_battery": 61, "calories": 2180, "distance": 5.4, "workouts": 1},
+        {"date": now - timedelta(days=2), "steps": 9380, "sleep": 7.1, "heart_rate": 63, "hrv": 42, "spo2": 98, "stress": 39, "body_battery": 68, "calories": 2310, "distance": 6.8, "workouts": 1},
+        {"date": now - timedelta(days=1), "steps": 11040, "sleep": 7.5, "heart_rate": 61, "hrv": 46, "spo2": 98, "stress": 34, "body_battery": 74, "calories": 2440, "distance": 7.9, "workouts": 1},
+        {"date": now, "steps": 8640, "sleep": 7.0, "heart_rate": 62, "hrv": 44, "spo2": 99, "stress": 31, "body_battery": 79, "calories": 2265, "distance": 6.2, "workouts": 1},
+    ]
+    metrics: list[dict[str, Any]] = []
+    for index, item in enumerate(days):
+        start = datetime.combine(item["date"].date(), time.min, tzinfo=timezone.utc)
+        end = datetime.combine(item["date"].date(), time.max, tzinfo=timezone.utc)
+        for metric_type, unit in (
+            ("steps", "count"),
+            ("sleep", "hours"),
+            ("heart_rate", "bpm"),
+            ("hrv", "ms"),
+            ("spo2", "%"),
+            ("stress", "score"),
+            ("body_battery", "score"),
+            ("calories", "kcal"),
+            ("distance", "km"),
+            ("workouts", "count"),
+        ):
+            metrics.append(
+                {
+                    "metric_type": metric_type,
+                    "value": item[metric_type],
+                    "unit": unit,
+                    "start_time": start,
+                    "end_time": end,
+                    "source_device": source_device,
+                    "metadata": {
+                        "source": "demo",
+                        "external_id": f"demo-{provider}-{metric_type}-{index}",
+                    },
+                }
+            )
+    return metrics
+
+
+async def _sync_demo_provider(connection: dict) -> tuple[int, int]:
+    provider = str(connection.get("provider") or "")
+    user_id = str(connection.get("user_id") or "")
+    inserted, skipped = await store_normalized_metrics(
+        user_id,
+        provider,
+        _build_demo_metrics(provider),
+        source_device=DEMO_PROVIDER_SOURCE_DEVICE.get(provider, "Demo Wearable"),
+    )
+    await upsert_wearable_connection(
+        user_id,
+        provider,
+        status_value="connected",
+        metadata={
+            **dict(connection.get("metadata") or {}),
+            "demo_sync_enabled": True,
+            "demo_profile_key": provider,
+            "source": "demo",
+        },
+        connected_at=connection.get("connected_at") or _utc_now(),
+        last_synced_at=_utc_now(),
+        last_sync_status="success",
+        last_sync_message=f"{PROVIDER_DISPLAY[provider]['name']} demo sync completed with {inserted} records.",
+    )
+    return inserted, skipped
+
+
+async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
+    records = await health_metrics_collection.find(
+        {"user_id": user_id},
+        sort=[("start_time", -1), ("_id", -1)],
+    ).to_list(length=500)
+    if not records:
+        return {"has_metrics": False}
+
+    metrics_by_type: dict[str, list[float]] = {}
+    for record in records:
+        metric_type = str(record.get("metric_type") or "")
+        value = _coerce_float(record.get("value"))
+        if value is None:
+            continue
+        metrics_by_type.setdefault(metric_type, []).append(value)
+
+    def avg(metric_type: str) -> float | None:
+        values = metrics_by_type.get(metric_type) or []
+        if not values:
+            return None
+        return round(sum(values) / len(values), 2)
+
+    user = await users_collection.find_one({"_id": ObjectId(user_id)}, {"body_metrics.age": 1})
+    age_raw = str(((user or {}).get("body_metrics") or {}).get("age") or "").strip()
+    chronological_age = age_raw if age_raw else "N/A"
+    sleep_avg = avg("sleep") or 0
+    hrv_avg = avg("hrv") or 0
+    heart_rate_avg = avg("heart_rate") or 0
+    stress_avg = avg("stress") or 0
+    body_battery_avg = avg("body_battery") or 0
+    steps_avg = avg("steps") or 0
+    spo2_avg = avg("spo2") or 0
+
+    sleep_score = max(0, min(int(round((sleep_avg / 8.0) * 100)), 100))
+    recovery_score = max(
+        0,
+        min(
+            int(
+                round(
+                    (sleep_score * 0.35)
+                    + (min(hrv_avg, 70) / 70 * 100 * 0.25)
+                    + (body_battery_avg * 0.2)
+                    + ((100 - min(stress_avg, 100)) * 0.2)
+                )
+            ),
+            100,
+        ),
+    )
+    trending_years_younger = round(
+        max(0, min(5, ((sleep_avg - 6.0) * 0.6) + ((hrv_avg - 35) * 0.04) + ((body_battery_avg - 50) * 0.03))),
+        1,
+    )
+
+    biological_age = chronological_age
+    if age_raw:
+        try:
+            biological_age = str(max(int(float(age_raw) - trending_years_younger), 18))
+        except ValueError:
+            biological_age = chronological_age
+
+    focus_areas: list[str] = []
+    if sleep_avg < 7:
+        focus_areas.append("improve sleep consistency")
+    if hrv_avg < 40:
+        focus_areas.append("reduce nervous-system stress")
+    if steps_avg < 9000:
+        focus_areas.append("increase daily movement")
+    if spo2_avg and spo2_avg < 97:
+        focus_areas.append("support recovery and breathing quality")
+    if not focus_areas:
+        focus_areas.append("maintain your current recovery momentum")
+
+    return {
+        "has_metrics": True,
+        "overview": {
+            "biological_age": biological_age,
+            "chronological_age": chronological_age,
+            "trending_years_younger": trending_years_younger,
+            "recovery_score": recovery_score,
+            "hrv_ms": int(round(hrv_avg)),
+            "sleep_score": sleep_score,
+        },
+        "summary": {
+            "sleep_hours": round(sleep_avg, 1),
+            "hrv_ms": int(round(hrv_avg)),
+            "resting_heart_rate": int(round(heart_rate_avg)) if heart_rate_avg else 0,
+            "stress_score": int(round(stress_avg)) if stress_avg else 0,
+            "body_battery": int(round(body_battery_avg)) if body_battery_avg else 0,
+            "steps": int(round(steps_avg)) if steps_avg else 0,
+            "spo2": int(round(spo2_avg)) if spo2_avg else 0,
+        },
+        "focus_areas": focus_areas[:3],
+    }
 
 
 async def _http_json_request(
@@ -946,7 +1142,7 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
     sync_message = (
         f"{total_records} normalized wearable records available."
         if total_records
-        else "No data synced yet. Connect a device and press sync to begin your longevity analysis."
+        else "No data synced yet. Press sync to import your health data into Longevity OS."
     )
     return LongevityWearablesResponse(
         devices=devices,
@@ -958,13 +1154,22 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
 
 async def sync_connected_wearables_for_user(user_id: str) -> LongevityWearablesResponse:
     connections = await wearable_connections_collection.find(
-        {"user_id": user_id, "provider": {"$in": ["fitbit", "garmin"]}, "status": "connected"}
+        {"user_id": user_id, "provider": {"$in": list(SUPPORTED_PROVIDERS)}, "status": "connected"}
     ).to_list(length=None)
+    if not connections:
+        for provider in SUPPORTED_PROVIDERS:
+            await connect_demo_provider(user_id, provider)
+        connections = await wearable_connections_collection.find(
+            {"user_id": user_id, "provider": {"$in": list(SUPPORTED_PROVIDERS)}, "status": "connected"}
+        ).to_list(length=None)
     today = _utc_now().date()
     for connection in connections:
         provider = str(connection.get("provider") or "")
         try:
-            if provider == "fitbit":
+            metadata = dict(connection.get("metadata") or {})
+            if bool(metadata.get("demo_sync_enabled")):
+                await _sync_demo_provider(connection)
+            elif provider == "fitbit":
                 await _sync_fitbit_remote(connection, today, today)
             elif provider == "garmin":
                 await _sync_garmin_remote(connection, today, today)

@@ -23,6 +23,7 @@ from .schemas import (
 from .service import (
     build_longevity_wearables_response,
     build_oauth_connect_url,
+    connect_demo_provider,
     disconnect_provider,
     exchange_fitbit_code,
     exchange_garmin_code,
@@ -75,6 +76,15 @@ async def wearable_disconnect(
 ) -> ProviderDisconnectResponse:
     await disconnect_provider(str(user["_id"]), provider)
     return ProviderDisconnectResponse(provider=provider)
+
+
+@router.post("/wearables/{provider}/demo-connect", response_model=WearableConnectionResponse)
+async def wearable_demo_connect(
+    provider: str,
+    user: dict = Depends(require_access_user),
+) -> WearableConnectionResponse:
+    connection = await connect_demo_provider(str(user["_id"]), provider)
+    return WearableConnectionResponse(**connection)
 
 
 @router.post("/wearables/apple-health/sync", response_model=ProviderSyncResponse)
