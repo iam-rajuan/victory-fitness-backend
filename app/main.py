@@ -490,6 +490,11 @@ async def _require_challenge_access_user(user: dict = Depends(_require_access_us
     return user
 
 
+async def _require_longevity_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "longevity", "Your current plan does not include Longevity OS access")
+    return user
+
+
 @app.on_event("startup")
 async def startup() -> None:
     logger.info("startup_begin")
@@ -1078,7 +1083,7 @@ async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardRes
 
 @app.get("/longevity-os/dashboard", response_model=LongevityDashboardResponse)
 async def longevity_dashboard(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityDashboardResponse:
     profile = await _get_or_create_longevity_profile(user)
     return await _serialize_longevity_dashboard(profile)
@@ -1086,7 +1091,7 @@ async def longevity_dashboard(
 
 @app.get("/longevity-os/heal/categories", response_model=LongevityHealCategoriesResponse)
 async def longevity_heal_categories(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityHealCategoriesResponse:
     profile = await _get_or_create_longevity_profile(user)
     return LongevityHealCategoriesResponse(
@@ -1096,7 +1101,7 @@ async def longevity_heal_categories(
 
 @app.post("/longevity-os/heal/weekly-plan", response_model=LongevityWeeklyPlanResponse)
 async def longevity_generate_weekly_plan(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityWeeklyPlanResponse:
     await _get_or_create_longevity_profile(user)
     return LongevityWeeklyPlanResponse(
@@ -1107,7 +1112,7 @@ async def longevity_generate_weekly_plan(
 
 @app.get("/longevity-os/habits", response_model=LongevityHabitsResponse)
 async def longevity_habits(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityHabitsResponse:
     profile = await _get_or_create_longevity_profile(user)
     habits = [dict(item) for item in profile.get("habits") or []]
@@ -1121,7 +1126,7 @@ async def longevity_habits(
 async def longevity_update_habit(
     habit_id: str,
     payload: LongevityHabitUpdateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityHabitsResponse:
     profile = await _get_or_create_longevity_profile(user)
     habits = [dict(item) for item in profile.get("habits") or []]
@@ -1146,7 +1151,7 @@ async def longevity_update_habit(
 
 @app.get("/longevity-os/masterclasses", response_model=LongevityMasterclassListResponse)
 async def longevity_masterclasses(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityMasterclassListResponse:
     profile = await _get_or_create_longevity_profile(user)
     return LongevityMasterclassListResponse(
@@ -1156,7 +1161,7 @@ async def longevity_masterclasses(
 
 @app.get("/longevity-os/circles", response_model=LongevityCircleListResponse)
 async def longevity_circles(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityCircleListResponse:
     profile = await _get_or_create_longevity_profile(user)
     return LongevityCircleListResponse(
