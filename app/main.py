@@ -495,6 +495,11 @@ async def _require_longevity_access_user(user: dict = Depends(_require_access_us
     return user
 
 
+async def _require_community_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "community", "Your current plan does not include community access")
+    return user
+
+
 @app.on_event("startup")
 async def startup() -> None:
     logger.info("startup_begin")
@@ -1371,7 +1376,7 @@ async def admin_update_support_message(
 
 
 @app.get("/community/posts", response_model=CommunityPostListResponse)
-async def get_community_posts(user: dict = Depends(_require_access_user)) -> CommunityPostListResponse:
+async def get_community_posts(user: dict = Depends(_require_community_access_user)) -> CommunityPostListResponse:
     allowed_audiences = _get_allowed_community_audiences(user)
     records = await community_posts_collection.find(
         {"audience": {"$in": allowed_audiences}},
@@ -1387,7 +1392,7 @@ async def get_community_posts(user: dict = Depends(_require_access_user)) -> Com
 @app.post("/community/posts", response_model=CommunityPostResponse, status_code=status.HTTP_201_CREATED)
 async def create_community_post(
     payload: CommunityPostCreateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_community_access_user),
 ) -> CommunityPostResponse:
     content = str(payload.content or "").strip()
     if not content and not payload.image_base64:
@@ -1426,7 +1431,7 @@ async def create_community_post(
 @app.delete("/community/posts/{post_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_own_community_post(
     post_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_community_access_user),
 ) -> Response:
     record = await _get_community_post_or_404(post_id)
     _ensure_community_post_access(record, user)
@@ -1442,7 +1447,7 @@ async def delete_own_community_post(
 @app.get("/community/posts/{post_id}/comments", response_model=list[CommunityCommentResponse])
 async def get_community_post_comments(
     post_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_community_access_user),
 ) -> list[CommunityCommentResponse]:
     record = await _get_community_post_or_404(post_id)
     _ensure_community_post_access(record, user)
@@ -1454,7 +1459,7 @@ async def get_community_post_comments(
 async def create_community_post_comment(
     post_id: str,
     payload: CommunityCommentCreateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_community_access_user),
 ) -> CommunityCommentResponse:
     record = await _get_community_post_or_404(post_id)
     _ensure_community_post_access(record, user)
@@ -1480,7 +1485,7 @@ async def create_community_post_comment(
 @app.post("/community/posts/{post_id}/reactions/toggle", response_model=CommunityReactionToggleResponse)
 async def toggle_community_post_reaction(
     post_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_community_access_user),
 ) -> CommunityReactionToggleResponse:
     record = await _get_community_post_or_404(post_id)
     _ensure_community_post_access(record, user)
