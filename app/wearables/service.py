@@ -63,6 +63,28 @@ DEMO_PROVIDER_SOURCE_DEVICE = {
     "fitbit": "Fitbit Charge 6",
     "garmin": "Garmin Venu 3",
 }
+DEMO_PROVIDER_METADATA = {
+    "apple-health": {
+        "source_app": "HealthKit",
+        "ecosystem": "Apple",
+        "sample_origin": "ios_demo_seed",
+    },
+    "health-connect": {
+        "source_app": "Health Connect",
+        "ecosystem": "Android",
+        "sample_origin": "android_demo_seed",
+    },
+    "fitbit": {
+        "source_app": "Fitbit Cloud",
+        "ecosystem": "Fitbit",
+        "sample_origin": "fitbit_demo_seed",
+    },
+    "garmin": {
+        "source_app": "Garmin Connect",
+        "ecosystem": "Garmin",
+        "sample_origin": "garmin_demo_seed",
+    },
+}
 FITBIT_AUTHORIZE_URL = "https://www.fitbit.com/oauth2/authorize"
 FITBIT_TOKEN_URL = "https://api.fitbit.com/oauth2/token"
 FITBIT_API_BASE = "https://api.fitbit.com"
@@ -470,12 +492,38 @@ def _build_demo_metrics(provider: str) -> list[dict[str, Any]]:
     provider = _ensure_supported_provider(provider)
     now = _utc_now()
     source_device = DEMO_PROVIDER_SOURCE_DEVICE.get(provider, "Demo Wearable")
-    days = [
-        {"date": now - timedelta(days=3), "steps": 7240, "sleep": 6.7, "heart_rate": 66, "hrv": 37, "spo2": 97, "stress": 44, "body_battery": 61, "calories": 2180, "distance": 5.4, "workouts": 1},
-        {"date": now - timedelta(days=2), "steps": 9380, "sleep": 7.1, "heart_rate": 63, "hrv": 42, "spo2": 98, "stress": 39, "body_battery": 68, "calories": 2310, "distance": 6.8, "workouts": 1},
-        {"date": now - timedelta(days=1), "steps": 11040, "sleep": 7.5, "heart_rate": 61, "hrv": 46, "spo2": 98, "stress": 34, "body_battery": 74, "calories": 2440, "distance": 7.9, "workouts": 1},
-        {"date": now, "steps": 8640, "sleep": 7.0, "heart_rate": 62, "hrv": 44, "spo2": 99, "stress": 31, "body_battery": 79, "calories": 2265, "distance": 6.2, "workouts": 1},
-    ]
+    demo_profiles: dict[str, list[dict[str, Any]]] = {
+        "apple-health": [
+            {"date": now - timedelta(days=4), "steps": 8124, "sleep": 6.9, "heart_rate": 64, "hrv": 39, "spo2": 98, "stress": 41, "body_battery": 66, "calories": 2214, "distance": 5.9, "workouts": 1},
+            {"date": now - timedelta(days=3), "steps": 9688, "sleep": 7.2, "heart_rate": 62, "hrv": 43, "spo2": 98, "stress": 37, "body_battery": 71, "calories": 2338, "distance": 6.8, "workouts": 1},
+            {"date": now - timedelta(days=2), "steps": 11236, "sleep": 7.7, "heart_rate": 60, "hrv": 48, "spo2": 99, "stress": 30, "body_battery": 79, "calories": 2475, "distance": 8.1, "workouts": 1},
+            {"date": now - timedelta(days=1), "steps": 10452, "sleep": 7.4, "heart_rate": 61, "hrv": 46, "spo2": 99, "stress": 33, "body_battery": 76, "calories": 2390, "distance": 7.4, "workouts": 1},
+            {"date": now, "steps": 8875, "sleep": 7.0, "heart_rate": 63, "hrv": 42, "spo2": 98, "stress": 36, "body_battery": 72, "calories": 2281, "distance": 6.3, "workouts": 1},
+        ],
+        "health-connect": [
+            {"date": now - timedelta(days=4), "steps": 6892, "sleep": 6.5, "heart_rate": 67, "hrv": 35, "spo2": 97, "stress": 46, "body_battery": 59, "calories": 2142, "distance": 5.1, "workouts": 0},
+            {"date": now - timedelta(days=3), "steps": 8450, "sleep": 6.8, "heart_rate": 65, "hrv": 38, "spo2": 97, "stress": 43, "body_battery": 63, "calories": 2236, "distance": 6.0, "workouts": 1},
+            {"date": now - timedelta(days=2), "steps": 9234, "sleep": 7.0, "heart_rate": 64, "hrv": 41, "spo2": 98, "stress": 39, "body_battery": 68, "calories": 2319, "distance": 6.6, "workouts": 1},
+            {"date": now - timedelta(days=1), "steps": 10126, "sleep": 7.3, "heart_rate": 62, "hrv": 44, "spo2": 98, "stress": 35, "body_battery": 73, "calories": 2405, "distance": 7.2, "workouts": 1},
+            {"date": now, "steps": 7810, "sleep": 6.9, "heart_rate": 63, "hrv": 40, "spo2": 98, "stress": 38, "body_battery": 69, "calories": 2261, "distance": 5.8, "workouts": 1},
+        ],
+        "fitbit": [
+            {"date": now - timedelta(days=4), "steps": 7420, "sleep": 6.6, "heart_rate": 66, "hrv": 36, "spo2": 97, "stress": 45, "body_battery": 60, "calories": 2176, "distance": 5.5, "workouts": 1},
+            {"date": now - timedelta(days=3), "steps": 9312, "sleep": 7.0, "heart_rate": 64, "hrv": 40, "spo2": 98, "stress": 40, "body_battery": 66, "calories": 2298, "distance": 6.7, "workouts": 1},
+            {"date": now - timedelta(days=2), "steps": 10884, "sleep": 7.4, "heart_rate": 62, "hrv": 45, "spo2": 98, "stress": 34, "body_battery": 75, "calories": 2436, "distance": 7.8, "workouts": 1},
+            {"date": now - timedelta(days=1), "steps": 9861, "sleep": 7.1, "heart_rate": 63, "hrv": 43, "spo2": 99, "stress": 36, "body_battery": 72, "calories": 2362, "distance": 7.0, "workouts": 1},
+            {"date": now, "steps": 8526, "sleep": 6.8, "heart_rate": 64, "hrv": 41, "spo2": 98, "stress": 37, "body_battery": 70, "calories": 2248, "distance": 6.1, "workouts": 1},
+        ],
+        "garmin": [
+            {"date": now - timedelta(days=4), "steps": 8805, "sleep": 7.1, "heart_rate": 61, "hrv": 44, "spo2": 98, "stress": 38, "body_battery": 72, "calories": 2288, "distance": 6.4, "workouts": 1},
+            {"date": now - timedelta(days=3), "steps": 10472, "sleep": 7.3, "heart_rate": 60, "hrv": 47, "spo2": 99, "stress": 33, "body_battery": 78, "calories": 2401, "distance": 7.6, "workouts": 1},
+            {"date": now - timedelta(days=2), "steps": 11894, "sleep": 7.8, "heart_rate": 58, "hrv": 51, "spo2": 99, "stress": 29, "body_battery": 84, "calories": 2529, "distance": 8.7, "workouts": 1},
+            {"date": now - timedelta(days=1), "steps": 11106, "sleep": 7.5, "heart_rate": 59, "hrv": 49, "spo2": 99, "stress": 31, "body_battery": 81, "calories": 2452, "distance": 8.0, "workouts": 1},
+            {"date": now, "steps": 9368, "sleep": 7.2, "heart_rate": 60, "hrv": 46, "spo2": 99, "stress": 34, "body_battery": 77, "calories": 2337, "distance": 6.9, "workouts": 1},
+        ],
+    }
+    days = demo_profiles[provider]
+    provider_metadata = DEMO_PROVIDER_METADATA.get(provider, {})
     metrics: list[dict[str, Any]] = []
     for index, item in enumerate(days):
         start = datetime.combine(item["date"].date(), time.min, tzinfo=timezone.utc)
@@ -501,8 +549,10 @@ def _build_demo_metrics(provider: str) -> list[dict[str, Any]]:
                     "end_time": end,
                     "source_device": source_device,
                     "metadata": {
+                        **provider_metadata,
                         "source": "demo",
                         "external_id": f"demo-{provider}-{metric_type}-{index}",
+                        "recorded_on": item["date"].date().isoformat(),
                     },
                 }
             )
