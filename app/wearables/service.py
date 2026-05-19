@@ -767,12 +767,50 @@ async def refresh_longevity_profile_cache(user_id: str) -> dict[str, Any]:
     workouts = int(summary.get("workouts") or 0)
     recovery_score = int((insights.get("overview") or {}).get("recovery_score") or 0)
 
-    habits = [
-        {**LONGEVITY_HABIT_TEMPLATES[0], "done": True},
-        {**LONGEVITY_HABIT_TEMPLATES[1], "done": sleep_hours >= 7},
-        {**LONGEVITY_HABIT_TEMPLATES[2], "done": workouts >= 1 or steps >= 9000},
-        {**LONGEVITY_HABIT_TEMPLATES[3], "done": stress_score <= 35},
-    ]
+    existing_profile = await longevity_os_profiles_collection.find_one({"user_id": user_id}) or {}
+    existing_habits = [dict(item) for item in existing_profile.get("habits") or []]
+    existing_habit_by_id = {
+        str(item.get("id") or "").strip(): dict(item)
+        for item in existing_habits
+        if str(item.get("id") or "").strip()
+    }
+
+    computed_done_by_id = {
+        "hydration": True,
+        "sleep-7h": sleep_hours >= 7,
+        "zone-2": workouts >= 1 or steps >= 9000,
+        "breathwork": stress_score <= 35,
+    }
+
+    habits: list[dict[str, Any]] = []
+    template_ids: set[str] = set()
+    for template in LONGEVITY_HABIT_TEMPLATES:
+        template_id = str(template.get("id") or "").strip()
+        template_ids.add(template_id)
+        existing = existing_habit_by_id.get(template_id, {})
+        habits.append(
+            {
+                "id": template_id,
+                "title": str(existing.get("title") or template.get("title") or "").strip(),
+                "subtitle": str(existing.get("subtitle") or template.get("subtitle") or "").strip(),
+                "icon": str(existing.get("icon") or template.get("icon") or "").strip(),
+                "done": bool(computed_done_by_id.get(template_id, existing.get("done", False))),
+            }
+        )
+
+    for existing in existing_habits:
+        existing_id = str(existing.get("id") or "").strip()
+        if not existing_id or existing_id in template_ids:
+            continue
+        habits.append(
+            {
+                "id": existing_id,
+                "title": str(existing.get("title") or "Custom Habit").strip(),
+                "subtitle": str(existing.get("subtitle") or "").strip(),
+                "icon": str(existing.get("icon") or "sparkles-outline").strip(),
+                "done": bool(existing.get("done", False)),
+            }
+        )
 
     heal_categories = [dict(item) for item in LONGEVITY_HEAL_CATEGORY_TEMPLATES]
     if stress_score > 40:

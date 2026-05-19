@@ -232,6 +232,7 @@ class LongevityDashboardResponse(BaseModel):
     wearables: LongevityWearablesResponse
     habits: LongevityHabitsResponse
     heal_categories: list[LongevityHealCategoryResponse] = Field(default_factory=list)
+    weekly_plan: LongevityWeeklyPlanResponse | None = None
     masterclasses: list[LongevityMasterclassResponse] = Field(default_factory=list)
     circles: list[LongevityCircleResponse] = Field(default_factory=list)
 

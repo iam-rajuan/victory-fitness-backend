@@ -1079,6 +1079,7 @@ def _build_default_longevity_profile(user: dict) -> dict:
         },
         "habits": [dict(item) for item in DEFAULT_LONGEVITY_HABITS],
         "heal_categories": [dict(item) for item in DEFAULT_LONGEVITY_HEAL_CATEGORIES],
+        "weekly_plan": None,
         "masterclasses": [],
         "circles": [],
         "created_at": now,
@@ -1114,6 +1115,7 @@ async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardRes
             habits=[LongevityHabitResponse(**item) for item in habits_raw],
         ),
         heal_categories=[LongevityHealCategoryResponse(**item) for item in profile.get("heal_categories") or []],
+        weekly_plan=LongevityWeeklyPlanResponse(**profile["weekly_plan"]) if isinstance(profile.get("weekly_plan"), dict) else None,
         masterclasses=[LongevityMasterclassResponse(**item) for item in profile.get("masterclasses") or []],
         circles=[LongevityCircleResponse(**item) for item in profile.get("circles") or []],
     )
@@ -1163,7 +1165,7 @@ async def longevity_generate_weekly_plan(
             "completed_habits": habit_titles,
         }
     )
-    return LongevityWeeklyPlanResponse(
+    response = LongevityWeeklyPlanResponse(
         message=plan.summary,
         plan_sections=[
             LongevityWeeklyPlanSectionResponse(
@@ -1176,6 +1178,11 @@ async def longevity_generate_weekly_plan(
         ],
         generated_at=datetime.now(timezone.utc),
     )
+    await longevity_os_profiles_collection.update_one(
+        {"_id": profile["_id"]},
+        {"$set": {"weekly_plan": response.model_dump(), "updated_at": datetime.now(timezone.utc)}},
+    )
+    return response
 
 
 @app.get("/longevity-os/habits", response_model=LongevityHabitsResponse)
