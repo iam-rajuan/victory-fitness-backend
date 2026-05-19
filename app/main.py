@@ -3354,6 +3354,8 @@ async def nutrition_plan(
         )
         return NutritionPlanSaveResponse(plan=NutritionPlanResponse(**plan_data))
 
+    await _enforce_nutrition_generation_limit(user)
+
     try:
         result = await asyncio.to_thread(generate_nutrition_plan, payload_data)
     except NutritionPlanRefusalError as exc:
@@ -3404,6 +3406,8 @@ async def nutrition_plan_job(
             created_at=now,
             updated_at=now,
         )
+
+    await _enforce_nutrition_generation_limit(user)
 
     created_at = datetime.now(timezone.utc)
     job_id = str(uuid4())
@@ -3680,6 +3684,8 @@ async def progressive_nutrition_plan_job(
             created_at=now,
             updated_at=now,
         )
+
+    await _enforce_nutrition_generation_limit(user)
 
     created_at = datetime.now(timezone.utc)
     job_id = str(uuid4())
@@ -4876,6 +4882,36 @@ def _get_user_ready_challenge_limit(user: dict) -> int:
     if active_limit is not None:
         return active_limit
     return 8
+
+
+def _get_user_monthly_nutrition_generation_limit(user: dict) -> int | None:
+    tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+    if tier == "GOLD":
+        return 3
+    return None
+
+
+async def _enforce_nutrition_generation_limit(user: dict) -> None:
+    monthly_limit = _get_user_monthly_nutrition_generation_limit(user)
+    if monthly_limit is None:
+        return
+
+    user_id = str(user["_id"])
+    window_start = datetime.now(timezone.utc) - timedelta(days=30)
+    standard_count, progressive_count = await asyncio.gather(
+        nutrition_plans_collection.count_documents(
+            {"user_id": user_id, "created_at": {"$gte": window_start}}
+        ),
+        nutrition_progressive_plans_collection.count_documents(
+            {"user_id": user_id, "created_at": {"$gte": window_start}}
+        ),
+    )
+    total_generated = int(standard_count or 0) + int(progressive_count or 0)
+    if total_generated >= monthly_limit:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Your current plan allows up to {monthly_limit} nutrition plan generations every 30 days",
+        )
 
 
 def _require_pillow() -> None:
