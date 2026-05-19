@@ -305,6 +305,7 @@ CHALLENGE_OVERVIEW_MEMBERSHIP_PROJECTION = {
     "challenge_id": 1,
     "status": 1,
     "progress_days_completed": 1,
+    "plan_progress": 1,
     "completed_at": 1,
     "last_read_message_at": 1,
     "joined_at": 1,
@@ -320,6 +321,7 @@ CHALLENGE_OVERVIEW_CHALLENGE_PROJECTION = {
     "difficulty": 1,
     "status": 1,
     "thumbnail": 1,
+    "plan_days": 1,
     "created_at": 1,
 }
 DEFAULT_LONGEVITY_WEARABLES = [
@@ -1328,6 +1330,10 @@ async def create_community_post(
     payload: CommunityPostCreateRequest,
     user: dict = Depends(_require_access_user),
 ) -> CommunityPostResponse:
+    content = str(payload.content or "").strip()
+    if not content and not payload.image_base64:
+        raise HTTPException(status_code=400, detail="Post content or image is required.")
+
     now = datetime.now(timezone.utc)
     image_url = ""
     if payload.image_base64:
@@ -1346,7 +1352,7 @@ async def create_community_post(
         "_id": ObjectId(),
         "author_id": str(user["_id"]),
         "audience": "ALL",
-        "content": payload.content.strip(),
+        "content": content,
         "image_url": image_url,
         "like_count": 0,
         "comment_count": 0,
@@ -4794,41 +4800,14 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
             membership_with_points = dict(membership)
             membership_with_points["challenge_points"] = challenge_points
             points += _calculate_challenge_points_earned(plan_days, membership_with_points, challenge_points)
-            plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+            completed_units, total_units = _calculate_challenge_completion_counts(plan_days, membership)
+            workouts_completed += completed_units
+            workouts_total += total_units
 
+            plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
             for day in plan_days:
                 day_number = str(day.get("day_number") or "")
                 day_progress = plan_progress.get(day_number, {}) if isinstance(plan_progress, dict) else {}
-
-                sections = day.get("sections") if isinstance(day.get("sections"), list) else []
-                if not sections:
-                    continue
-
-                completed_section_ids = {
-                    str(section_id)
-                    for section_id in day_progress.get("completed_section_ids", [])
-                    if isinstance(section_id, str) and section_id
-                } if isinstance(day_progress, dict) else set()
-                completed_exercise_ids = {
-                    str(exercise_id)
-                    for exercise_id in day_progress.get("completed_exercise_ids", [])
-                    if isinstance(exercise_id, str) and exercise_id
-                } if isinstance(day_progress, dict) else set()
-                for section in sections:
-                    exercises = section.get("exercises") if isinstance(section.get("exercises"), list) else []
-                    linked_exercises = [exercise for exercise in exercises if str(exercise.get("workout_vimeo_id") or "").strip()]
-                    workout_count = len(linked_exercises)
-                    if workout_count == 0:
-                        continue
-                    workouts_total += workout_count
-                    if str(section.get("id") or "") in completed_section_ids:
-                        workouts_completed += workout_count
-                        continue
-                    workouts_completed += sum(
-                        1
-                        for exercise in linked_exercises
-                        if str(exercise.get("id") or "") in completed_exercise_ids
-                    )
                 if isinstance(day_progress, dict) and bool(day_progress.get("completed")):
                     completed_at = _parse_completed_activity_date(day_progress.get("updated_at"))
                     if completed_at:
@@ -5127,13 +5106,11 @@ def _build_challenge_completion_units(plan_days: list[dict]) -> list[dict[str, s
     return units
 
 
-def _calculate_challenge_points_earned(plan_days: list[dict], membership: dict, challenge_points: int) -> int:
-    if challenge_points <= 0:
-        return 0
-
+def _calculate_challenge_completion_counts(plan_days: list[dict], membership: dict) -> tuple[int, int]:
     units = _build_challenge_completion_units(plan_days)
-    if not units:
-        return 0
+    total_unit_count = len(units)
+    if total_unit_count == 0:
+        return 0, 0
 
     raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
     completed_unit_count = 0
@@ -5159,10 +5136,25 @@ def _calculate_challenge_points_earned(plan_days: list[dict], membership: dict, 
         elif unit_section_id and unit_section_id in completed_section_ids:
             completed_unit_count += 1
 
-    if completed_unit_count <= 0:
+    return completed_unit_count, total_unit_count
+
+
+def _calculate_challenge_completion_fraction(plan_days: list[dict], membership: dict) -> float:
+    completed_unit_count, total_unit_count = _calculate_challenge_completion_counts(plan_days, membership)
+    if total_unit_count <= 0:
+        return 0.0
+    return min(max(completed_unit_count / total_unit_count, 0.0), 1.0)
+
+
+def _calculate_challenge_points_earned(plan_days: list[dict], membership: dict, challenge_points: int) -> int:
+    if challenge_points <= 0:
         return 0
 
-    return round((challenge_points * completed_unit_count) / len(units))
+    completed_unit_count, total_unit_count = _calculate_challenge_completion_counts(plan_days, membership)
+    if total_unit_count <= 0 or completed_unit_count <= 0:
+        return 0
+
+    return round((challenge_points * completed_unit_count) / total_unit_count)
 
 
 def _build_viewer_plan_progress(plan_days: list[dict], membership: dict) -> list[ChallengePlanDayProgressResponse]:
@@ -5656,6 +5648,10 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
         total_days = max(int(challenge.get("duration_days") or 0), 1)
         progress_days = min(max(int(membership.get("progress_days_completed") or 0), 0), total_days)
         days_left = max(total_days - progress_days, 0)
+        plan_days = _normalize_challenge_plan_days(
+            challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []
+        )
+        progress_fraction = _calculate_challenge_completion_fraction(plan_days, membership)
         active_challenge_ids.append(challenge_id)
         active_challenges.append(
             UserActiveChallengeResponse(
@@ -5666,7 +5662,7 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
                 plan_text=str(challenge.get("plan_text") or ""),
                 days_left=days_left,
                 total_days=total_days,
-                progress=progress_days / total_days if total_days else 0,
+                progress=progress_fraction,
                 points=max(int(challenge.get("points") or 0), 0),
                 color=_challenge_color(str(challenge.get("category") or ""), str(challenge.get("difficulty") or "")),
             )

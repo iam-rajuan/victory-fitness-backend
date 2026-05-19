@@ -352,7 +352,7 @@ class CommunityPostListResponse(BaseModel):
 
 
 class CommunityPostCreateRequest(BaseModel):
-    content: str = Field(min_length=1, max_length=5000)
+    content: str | None = Field(default=None, max_length=5000)
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
