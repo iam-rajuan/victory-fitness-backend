@@ -668,9 +668,11 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "role": "user",
             "is_admin": False,
             "subscription_tier": "NONE",
+            "subscription_role": "NONE",
             "subscription_status": "NONE",
             "subscription_billing_cycle": "yearly",
             "subscription_is_purchased": False,
+            "subscription_purchase_source": "",
             "verification_code_hash": hash_password(code),
             "verification_code_expires_at": now + timedelta(minutes=10),
             "updated_at": now,
@@ -4695,11 +4697,13 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
             "streak_days": profile_summary.get("streak_days", 0),
             "rank": profile_summary.get("rank", "Noob"),
             "subscription_tier": profile_summary.get("subscription_tier", "NONE"),
+            "subscription_role": profile_summary.get("subscription_role", "NONE"),
             "subscription_status": profile_summary.get("subscription_status", "NONE"),
             "subscription_started_at": profile_summary.get("subscription_started_at"),
             "subscription_confirmed_at": profile_summary.get("subscription_confirmed_at"),
             "subscription_billing_cycle": profile_summary.get("subscription_billing_cycle", "yearly"),
             "subscription_is_purchased": profile_summary.get("subscription_is_purchased", False),
+            "subscription_purchase_source": profile_summary.get("subscription_purchase_source", ""),
             "subscription_access": profile_summary.get("subscription_access", []),
             "subscription": profile_summary.get("subscription", {}),
         },
@@ -4727,9 +4731,11 @@ async def _seed_admin_user() -> None:
                     "is_admin": True,
                     "is_verified": True,
                     "subscription_tier": "INNER_CIRCLE",
+                    "subscription_role": "INNER_CIRCLE",
                     "subscription_status": "ACTIVE",
                     "subscription_billing_cycle": "yearly",
                     "subscription_is_purchased": True,
+                    "subscription_purchase_source": "admin_seed",
                     "updated_at": now,
                 },
                 "$unset": {
@@ -4750,9 +4756,11 @@ async def _seed_admin_user() -> None:
             "role": "admin",
             "is_admin": True,
             "subscription_tier": "INNER_CIRCLE",
+            "subscription_role": "INNER_CIRCLE",
             "subscription_status": "ACTIVE",
             "subscription_billing_cycle": "yearly",
             "subscription_is_purchased": True,
+            "subscription_purchase_source": "admin_seed",
             "created_at": now,
             "updated_at": now,
         }
@@ -4800,13 +4808,16 @@ def _build_subscription_summary(record: dict) -> dict:
     tier = _normalize_subscription_tier(record.get("subscription_tier") or record.get("tier"))
     status = _normalize_subscription_status(record.get("subscription_status") or record.get("subscription_state"), tier)
     is_purchased = bool(record.get("subscription_is_purchased")) and tier != "NONE" and status == "ACTIVE"
+    purchase_source = str(record.get("subscription_purchase_source") or "").strip()
     return {
         "tier": tier,
+        "role": tier,
         "status": status,
         "started_at": record.get("subscription_started_at"),
         "confirmed_at": record.get("subscription_confirmed_at"),
         "billing_cycle": _normalize_billing_cycle(record.get("subscription_billing_cycle")),
         "is_purchased": is_purchased,
+        "purchase_source": purchase_source,
         "access": _resolve_subscription_access(tier),
     }
 
@@ -4818,9 +4829,11 @@ def _build_subscription_update_doc(existing_user: dict, payload: UpdateSubscript
     is_purchased = bool(payload.confirm_payment and tier != "NONE")
     update_doc: dict = {
         "subscription_tier": tier,
+        "subscription_role": tier,
         "subscription_status": subscription_status,
         "subscription_billing_cycle": billing_cycle,
         "subscription_is_purchased": is_purchased,
+        "subscription_purchase_source": "manual_confirm" if is_purchased else "",
         "updated_at": now,
     }
 
@@ -4829,6 +4842,8 @@ def _build_subscription_update_doc(existing_user: dict, payload: UpdateSubscript
         update_doc["subscription_confirmed_at"] = None
         update_doc["subscription_billing_cycle"] = "yearly"
         update_doc["subscription_is_purchased"] = False
+        update_doc["subscription_role"] = "NONE"
+        update_doc["subscription_purchase_source"] = ""
     else:
         update_doc["subscription_started_at"] = existing_user.get("subscription_started_at") or now
         update_doc["subscription_confirmed_at"] = now if subscription_status == "ACTIVE" else existing_user.get("subscription_confirmed_at")
@@ -4857,11 +4872,13 @@ async def _serialize_me_record(record: dict) -> dict:
         "points_to_next_rank": stats["points_to_next_rank"],
         "rank_progress_fraction": stats["rank_progress_fraction"],
         "subscription_tier": subscription_summary["tier"],
+        "subscription_role": subscription_summary["role"],
         "subscription_status": subscription_summary["status"],
         "subscription_started_at": subscription_summary["started_at"],
         "subscription_confirmed_at": subscription_summary["confirmed_at"],
         "subscription_billing_cycle": subscription_summary["billing_cycle"],
         "subscription_is_purchased": subscription_summary["is_purchased"],
+        "subscription_purchase_source": subscription_summary["purchase_source"],
         "subscription_access": subscription_summary["access"],
         "subscription": subscription_summary,
     }
