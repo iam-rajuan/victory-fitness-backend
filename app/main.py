@@ -4,6 +4,7 @@ from io import BytesIO
 import logging
 import os
 import re
+from typing import Any
 from uuid import uuid4
 from calendar import month_abbr
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,12 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ModuleNotFoundError:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
 
 from .coach_archive import (
     build_archive_record,
@@ -4804,6 +4810,14 @@ def _resolve_subscription_access(tier: str) -> list[str]:
     return list(SUBSCRIPTION_ACCESS.get(normalized_tier, []))
 
 
+def _require_pillow() -> None:
+    if Image is None or ImageDraw is None or ImageFont is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Progress report image generation is unavailable because Pillow is not installed on the server",
+        )
+
+
 def _build_subscription_summary(record: dict) -> dict:
     tier = _normalize_subscription_tier(record.get("subscription_tier") or record.get("tier"))
     status = _normalize_subscription_status(record.get("subscription_status") or record.get("subscription_state"), tier)
@@ -5402,7 +5416,8 @@ def _serialize_challenge_plan_progress_response(challenge_id: str, membership: d
     )
 
 
-def _load_report_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _load_report_font(size: int, bold: bool = False) -> Any:
+    _require_pillow()
     font_candidates = [
         "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
         "arialbd.ttf" if bold else "arial.ttf",
@@ -5415,7 +5430,7 @@ def _load_report_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont |
     return ImageFont.load_default()
 
 
-def _wrap_report_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
+def _wrap_report_text(draw: Any, text: str, font: Any, max_width: int) -> list[str]:
     words = str(text or "").split()
     if not words:
         return [""]
@@ -5434,7 +5449,7 @@ def _wrap_report_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.Imag
     return lines
 
 
-def _draw_centered_text(draw: ImageDraw.ImageDraw, center_x: int, y: int, text: str, font: ImageFont.ImageFont, fill: str) -> None:
+def _draw_centered_text(draw: Any, center_x: int, y: int, text: str, font: Any, fill: str) -> None:
     bbox = draw.textbbox((0, 0), text, font=font)
     width = bbox[2] - bbox[0]
     draw.text((center_x - width / 2, y), text, font=font, fill=fill)
@@ -5490,6 +5505,7 @@ def _build_challenge_progress_report_png(
     membership: dict,
     user_name: str,
 ) -> tuple[bytes, str]:
+    _require_pillow()
     plan_days = _normalize_challenge_plan_days(thread.get("plan_days") if isinstance(thread.get("plan_days"), list) else [])
     challenge_points = max(int(thread.get("points") or 0), 0)
     membership_with_points = dict(membership)
