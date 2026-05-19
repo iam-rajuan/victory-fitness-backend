@@ -2600,7 +2600,7 @@ async def admin_list_challenges(
 
     records = await challenges_collection.find(
         filter_doc,
-        sort=[("created_at", -1), ("_id", -1)],
+        sort=[("duration_days", 1), ("created_at", -1), ("_id", -1)],
     ).to_list(length=None)
     stats = await _load_challenge_stats_map([str(record["_id"]) for record in records])
 
