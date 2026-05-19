@@ -239,17 +239,31 @@ SUBSCRIPTION_ACCESS = {
     "NONE": [],
     "SILVER": ["home", "workout", "challenge", "community", "profile"],
     "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
-    "PLATINUM": ["home", "workout", "challenge", "community", "mealPlan", "profile", "workoutplan", "longevity"],
+    "PLATINUM": [
+        "home",
+        "workout",
+        "challenge",
+        "community",
+        "mealPlan",
+        "nutrition_tracker",
+        "meal_analysis",
+        "profile",
+        "workoutplan",
+        "longevity",
+    ],
     "INNER_CIRCLE": [
         "home",
         "workout",
         "challenge",
         "mealPlan",
+        "nutrition_tracker",
+        "meal_analysis",
         "profile",
         "workoutplan",
         "longevity",
         "application",
         "community",
+        "coach_victor",
     ],
 }
 PRIVACY_POLICY_KEY = "privacy_policy"
@@ -497,6 +511,11 @@ async def _require_longevity_access_user(user: dict = Depends(_require_access_us
 
 async def _require_community_access_user(user: dict = Depends(_require_access_user)) -> dict:
     _ensure_subscription_feature_access(user, "community", "Your current plan does not include community access")
+    return user
+
+
+async def _require_coach_victor_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "coach_victor", "Your current plan does not include Coach Victor access")
     return user
 
 
@@ -3231,7 +3250,7 @@ async def list_meal_analyses(
 @app.post("/ai/coach-victor/chat", response_model=CoachVictorChatResponse)
 async def coach_victor_chat(
     payload: CoachVictorChatRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_coach_victor_access_user),
 ) -> CoachVictorChatResponse:
     user_id = str(user["_id"])
     logger.info("coach_chat_attempt user_id=%s", user_id)
@@ -3300,7 +3319,7 @@ async def coach_victor_chat(
 
 @app.get("/ai/coach-victor/history", response_model=CoachVictorHistoryResponse)
 async def coach_victor_history(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_coach_victor_access_user),
 ) -> CoachVictorHistoryResponse:
     user_id = str(user["_id"])
     logger.info("coach_history_attempt user_id=%s", user_id)
