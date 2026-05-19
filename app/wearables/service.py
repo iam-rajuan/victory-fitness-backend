@@ -1192,7 +1192,7 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
     sync_message = (
         f"{total_records} normalized wearable records available."
         if total_records
-        else "No data synced yet. Press sync to import your health data into Longevity OS."
+        else "No data synced yet. Add a wearable and press sync to import health data into Longevity OS."
     )
     return LongevityWearablesResponse(
         devices=devices,
@@ -1207,11 +1207,7 @@ async def sync_connected_wearables_for_user(user_id: str) -> LongevityWearablesR
         {"user_id": user_id, "provider": {"$in": list(SUPPORTED_PROVIDERS)}, "status": "connected"}
     ).to_list(length=None)
     if not connections:
-        for provider in SUPPORTED_PROVIDERS:
-            await connect_demo_provider(user_id, provider)
-        connections = await wearable_connections_collection.find(
-            {"user_id": user_id, "provider": {"$in": list(SUPPORTED_PROVIDERS)}, "status": "connected"}
-        ).to_list(length=None)
+        raise HTTPException(status_code=400, detail="Select a wearable first, then sync your health data")
     today = _utc_now().date()
     for connection in connections:
         provider = str(connection.get("provider") or "")
