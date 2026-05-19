@@ -1852,28 +1852,15 @@ async def _store_membership_plan_progress(
     completed: bool,
     emit_progress_message: bool,
 ) -> ChallengePlanProgressResponse:
-    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
-    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
-    if not plan_day:
-        raise HTTPException(status_code=404, detail="Challenge plan day not found")
-
+    plan_days = _get_normalized_plan_days(challenge)
+    plan_day = _get_plan_day_or_404(plan_days, day_number)
+    valid_section_ids, valid_exercise_ids = _get_plan_day_ids(plan_day)
     normalized_section_ids = []
-    valid_section_ids = {
-        str(section.get("id") or "")
-        for section in plan_day.get("sections") or []
-        if str(section.get("id") or "")
-    }
     for section_id in completed_section_ids:
         if section_id in valid_section_ids and section_id not in normalized_section_ids:
             normalized_section_ids.append(section_id)
 
     normalized_exercise_ids = []
-    valid_exercise_ids = {
-        str(exercise.get("id") or "")
-        for section in plan_day.get("sections") or []
-        for exercise in (section.get("exercises") or [])
-        if str(exercise.get("id") or "")
-    }
     for exercise_id in completed_exercise_ids:
         if exercise_id in valid_exercise_ids and exercise_id not in normalized_exercise_ids:
             normalized_exercise_ids.append(exercise_id)
@@ -1970,23 +1957,18 @@ def _get_current_challenge_day_number(membership: dict, plan_days: list[dict], d
     return min(max(next_day, 1), max(duration_days, 1))
 
 
-@app.post("/challenges/{challenge_id}/plan/days/{day_number}/complete", response_model=ChallengePlanProgressResponse)
-async def complete_challenge_plan_day(
-    challenge_id: str,
-    day_number: int,
-    payload: ChallengePlanCompletionRequest,
-    user: dict = Depends(_require_access_user),
-) -> ChallengePlanProgressResponse:
-    challenge = await _get_challenge_or_404(challenge_id)
-    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_write_access(membership, challenge)
-    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+def _get_normalized_plan_days(challenge: dict) -> list[dict]:
+    return _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+
+
+def _get_plan_day_or_404(plan_days: list[dict], day_number: int) -> dict:
     plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
     if not plan_day:
         raise HTTPException(status_code=404, detail="Challenge plan day not found")
+    return plan_day
 
-    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
-    existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
+
+def _get_plan_day_ids(plan_day: dict) -> tuple[list[str], list[str]]:
     valid_section_ids = [
         str(section.get("id") or "")
         for section in plan_day.get("sections") or []
@@ -1998,16 +1980,84 @@ async def complete_challenge_plan_day(
         for exercise in (section.get("exercises") or [])
         if str(exercise.get("id") or "")
     ]
+    return valid_section_ids, valid_exercise_ids
+
+
+def _get_membership_day_progress(membership: dict, day_number: int) -> dict:
+    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
+    return existing_day_progress if isinstance(existing_day_progress, dict) else {}
+
+
+def _normalize_completed_progress_ids(
+    existing_day_progress: dict,
+    valid_section_ids: list[str] | set[str],
+    valid_exercise_ids: list[str] | set[str],
+) -> tuple[list[str], list[str]]:
+    allowed_section_ids = set(valid_section_ids)
+    allowed_exercise_ids = set(valid_exercise_ids)
     completed_section_ids = [
         str(value)
         for value in existing_day_progress.get("completed_section_ids", [])
-        if isinstance(value, str) and value in valid_section_ids
-    ] if isinstance(existing_day_progress, dict) else []
+        if isinstance(value, str) and value in allowed_section_ids
+    ]
     completed_exercise_ids = [
         str(value)
         for value in existing_day_progress.get("completed_exercise_ids", [])
-        if isinstance(value, str) and value in valid_exercise_ids
-    ] if isinstance(existing_day_progress, dict) else []
+        if isinstance(value, str) and value in allowed_exercise_ids
+    ]
+    return completed_section_ids, completed_exercise_ids
+
+
+def _get_plan_section_or_404(plan_day: dict, section_id: str) -> dict:
+    section_record = next(
+        (section for section in (plan_day.get("sections") or []) if str(section.get("id") or "") == section_id),
+        None,
+    )
+    if not section_record:
+        raise HTTPException(status_code=404, detail="Challenge plan section not found")
+    return section_record
+
+
+def _get_section_exercise_ids(section_record: dict) -> list[str]:
+    return [
+        str(exercise.get("id") or "")
+        for exercise in (section_record.get("exercises") or [])
+        if str(exercise.get("id") or "")
+    ]
+
+
+def _resolve_plan_section_for_exercise(plan_day: dict, exercise_id: str, section_id: str | None = None) -> dict:
+    for section in plan_day.get("sections") or []:
+        current_section_id = str(section.get("id") or "")
+        if section_id and current_section_id != section_id:
+            continue
+        if exercise_id in _get_section_exercise_ids(section):
+            return section
+    if section_id:
+        raise HTTPException(status_code=404, detail="Challenge plan section not found")
+    raise HTTPException(status_code=404, detail="Challenge plan exercise not found")
+
+
+@app.post("/challenges/{challenge_id}/plan/days/{day_number}/complete", response_model=ChallengePlanProgressResponse)
+async def complete_challenge_plan_day(
+    challenge_id: str,
+    day_number: int,
+    payload: ChallengePlanCompletionRequest,
+    user: dict = Depends(_require_access_user),
+) -> ChallengePlanProgressResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership, challenge)
+    plan_days = _get_normalized_plan_days(challenge)
+    plan_day = _get_plan_day_or_404(plan_days, day_number)
+    existing_day_progress = _get_membership_day_progress(membership, day_number)
+    valid_section_ids, valid_exercise_ids = _get_plan_day_ids(plan_day)
+    completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
+        existing_day_progress,
+        valid_section_ids,
+        valid_exercise_ids,
+    )
 
     if payload.completed and valid_exercise_ids and len(completed_exercise_ids) < len(valid_exercise_ids):
         raise HTTPException(status_code=400, detail="Complete every exercise before marking the day done")
@@ -2049,47 +2099,26 @@ async def complete_challenge_plan_section(
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
     _ensure_challenge_write_access(membership, challenge)
 
-    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
-    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
-    if not plan_day:
-        raise HTTPException(status_code=404, detail="Challenge plan day not found")
-    valid_section_ids = {
-        str(section.get("id") or "")
-        for section in plan_day.get("sections") or []
-        if str(section.get("id") or "")
-    }
+    plan_days = _get_normalized_plan_days(challenge)
+    plan_day = _get_plan_day_or_404(plan_days, day_number)
+    valid_section_ids, valid_exercise_ids = _get_plan_day_ids(plan_day)
     if section_id not in valid_section_ids:
         raise HTTPException(status_code=404, detail="Challenge plan section not found")
 
-    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
-    existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
-    completed_section_ids = [
-        str(value)
-        for value in existing_day_progress.get("completed_section_ids", [])
-        if isinstance(value, str) and value in valid_section_ids
-    ] if isinstance(existing_day_progress, dict) else []
-    existing_completed_exercise_ids = [
-        str(value)
-        for value in existing_day_progress.get("completed_exercise_ids", [])
-        if isinstance(value, str)
-    ] if isinstance(existing_day_progress, dict) else []
-
-    section_record = next(
-        (section for section in (plan_day.get("sections") or []) if str(section.get("id") or "") == section_id),
-        None,
+    existing_day_progress = _get_membership_day_progress(membership, day_number)
+    completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
+        existing_day_progress,
+        valid_section_ids,
+        valid_exercise_ids,
     )
-    section_exercise_ids = [
-        str(exercise.get("id") or "")
-        for exercise in ((section_record or {}).get("exercises") or [])
-        if str(exercise.get("id") or "")
-    ]
+    section_record = _get_plan_section_or_404(plan_day, section_id)
+    section_exercise_ids = _get_section_exercise_ids(section_record)
 
     if payload.completed and section_id not in completed_section_ids:
         completed_section_ids.append(section_id)
     if not payload.completed:
         completed_section_ids = [value for value in completed_section_ids if value != section_id]
 
-    completed_exercise_ids = [value for value in existing_completed_exercise_ids if value]
     if payload.completed and section_exercise_ids:
         for exercise_id in section_exercise_ids:
             if exercise_id not in completed_exercise_ids:
@@ -2120,61 +2149,18 @@ async def _complete_challenge_plan_exercise_internal(
     payload: ChallengePlanCompletionRequest,
     section_id: str | None = None,
 ) -> ChallengePlanProgressResponse:
-    plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
-    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
-    if not plan_day:
-        raise HTTPException(status_code=404, detail="Challenge plan day not found")
-
-    matched_section: dict | None = None
-    for section in plan_day.get("sections") or []:
-        current_section_id = str(section.get("id") or "")
-        if section_id and current_section_id != section_id:
-            continue
-        section_exercise_ids = [
-            str(exercise.get("id") or "")
-            for exercise in (section.get("exercises") or [])
-            if str(exercise.get("id") or "")
-        ]
-        if exercise_id in section_exercise_ids:
-            matched_section = section
-            break
-
-    if not matched_section and section_id:
-        raise HTTPException(status_code=404, detail="Challenge plan section not found")
-
-    if not matched_section:
-        raise HTTPException(status_code=404, detail="Challenge plan exercise not found")
-
+    plan_days = _get_normalized_plan_days(challenge)
+    plan_day = _get_plan_day_or_404(plan_days, day_number)
+    matched_section = _resolve_plan_section_for_exercise(plan_day, exercise_id, section_id)
     resolved_section_id = str(matched_section.get("id") or "")
-    section_exercise_ids = [
-        str(exercise.get("id") or "")
-        for exercise in (matched_section.get("exercises") or [])
-        if str(exercise.get("id") or "")
-    ]
-
-    existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
-    existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
-    valid_section_ids = {
-        str(section.get("id") or "")
-        for section in plan_day.get("sections") or []
-        if str(section.get("id") or "")
-    }
-    valid_exercise_ids = {
-        str(exercise.get("id") or "")
-        for section in plan_day.get("sections") or []
-        for exercise in (section.get("exercises") or [])
-        if str(exercise.get("id") or "")
-    }
-    completed_section_ids = [
-        str(value)
-        for value in existing_day_progress.get("completed_section_ids", [])
-        if isinstance(value, str) and value in valid_section_ids
-    ] if isinstance(existing_day_progress, dict) else []
-    completed_exercise_ids = [
-        str(value)
-        for value in existing_day_progress.get("completed_exercise_ids", [])
-        if isinstance(value, str) and value in valid_exercise_ids
-    ] if isinstance(existing_day_progress, dict) else []
+    section_exercise_ids = _get_section_exercise_ids(matched_section)
+    valid_section_ids, valid_exercise_ids = _get_plan_day_ids(plan_day)
+    existing_day_progress = _get_membership_day_progress(membership, day_number)
+    completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
+        existing_day_progress,
+        valid_section_ids,
+        valid_exercise_ids,
+    )
 
     if payload.completed and exercise_id not in completed_exercise_ids:
         completed_exercise_ids.append(exercise_id)
