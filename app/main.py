@@ -47,6 +47,7 @@ from .dependencies import (
 )
 from .email_service import send_verification_email
 from .journal_ai import generate_journal_analysis
+from .longevity_ai import generate_longevity_weekly_plan
 from .models import (
     AdminCoachingApplicationUpdateRequest,
     AdminChangePasswordRequest,
@@ -121,6 +122,7 @@ from .models import (
     LongevityQuickActionResponse,
     LongevityWearableDeviceResponse,
     LongevityWearablesResponse,
+    LongevityWeeklyPlanSectionResponse,
     LongevityWeeklyPlanResponse,
     MealImageAnalysisListResponse,
     MealImageAnalysisRequest,
@@ -1141,24 +1143,37 @@ async def longevity_generate_weekly_plan(
 ) -> LongevityWeeklyPlanResponse:
     profile = await _get_or_create_longevity_profile(user)
     metric_insights = await build_longevity_metric_insights(str(user["_id"]))
-    if metric_insights.get("has_metrics"):
-        summary = metric_insights.get("summary") or {}
-        focus_areas = [str(item) for item in metric_insights.get("focus_areas") or []]
-        heal_categories = [str(item.get("label") or "").strip() for item in profile.get("heal_categories") or [] if str(item.get("label") or "").strip()]
-        habit_titles = [str(item.get("title") or "").strip() for item in profile.get("habits") or [] if str(item.get("title") or "").strip() and bool(item.get("done"))]
-        category_text = ", ".join(heal_categories[:4]) if heal_categories else "heart health, post workout recovery, mental health and anxiety, immunity and infection"
-        habits_text = ", ".join(habit_titles[:3]) if habit_titles else "hydration, sleep, and recovery habits"
-        message = (
-            f"Weekly plan generated from your synced data. Recovery score {metric_insights['overview']['recovery_score']}%, "
-            f"sleep average {summary.get('sleep_hours', 0)}h, HRV {summary.get('hrv_ms', 0)} ms, "
-            f"daily steps around {summary.get('steps', 0)}, and {summary.get('workouts', 0)} recent workout sessions. "
-            f"This week focuses on {', '.join(focus_areas)} with priority areas in {category_text}. "
-            f"Active habit guidance is built from {habits_text}."
-        )
-    else:
-        message = "Your longevity weekly plan has been prepared. Sync wearable data to make the next plan more personalized."
+    heal_categories = [
+        str(item.get("label") or "").strip()
+        for item in profile.get("heal_categories") or []
+        if str(item.get("label") or "").strip()
+    ]
+    habit_titles = [
+        str(item.get("title") or "").strip()
+        for item in profile.get("habits") or []
+        if str(item.get("title") or "").strip() and bool(item.get("done"))
+    ]
+    plan = generate_longevity_weekly_plan(
+        {
+            "user_name": str(user.get("name") or "Victory member").strip(),
+            "overview": metric_insights.get("overview") or {},
+            "summary": metric_insights.get("summary") or {},
+            "focus_areas": metric_insights.get("focus_areas") or [],
+            "heal_categories": heal_categories,
+            "completed_habits": habit_titles,
+        }
+    )
     return LongevityWeeklyPlanResponse(
-        message=message,
+        message=plan.summary,
+        plan_sections=[
+            LongevityWeeklyPlanSectionResponse(
+                id=section.id,
+                title=section.title,
+                summary=section.summary,
+                actions=section.actions,
+            )
+            for section in plan.sections
+        ],
         generated_at=datetime.now(timezone.utc),
     )
 

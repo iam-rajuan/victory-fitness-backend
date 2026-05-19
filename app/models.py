@@ -190,9 +190,17 @@ class LongevityHealCategoriesResponse(BaseModel):
     categories: list[LongevityHealCategoryResponse] = Field(default_factory=list)
 
 
+class LongevityWeeklyPlanSectionResponse(BaseModel):
+    id: str
+    title: str
+    summary: str = ""
+    actions: list[str] = Field(default_factory=list)
+
+
 class LongevityWeeklyPlanResponse(BaseModel):
     status: str = "success"
     message: str
+    plan_sections: list[LongevityWeeklyPlanSectionResponse] = Field(default_factory=list)
     generated_at: datetime
 
 

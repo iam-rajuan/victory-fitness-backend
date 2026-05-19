@@ -98,6 +98,65 @@ LONGEVITY_HEAL_CATEGORY_TEMPLATES = [
     {"id": "mental", "label": "MENTAL HEALTH AND ANXIETY", "image": "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&q=80", "color": "#F97316"},
     {"id": "immunity", "label": "IMMUNITY AND INFECTION", "image": "https://images.unsplash.com/photo-1584362917165-526a968579e8?w=600&q=80", "color": "#FF6B6B"},
 ]
+LONGEVITY_QUICK_ACTION_TEMPLATES = {
+    "recovery": {
+        "id": "recovery-reset",
+        "label": "Recovery Reset",
+        "image": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80",
+        "color": "#EC4899",
+    },
+    "sleep": {
+        "id": "sleep-protocol",
+        "label": "Sleep Protocol",
+        "image": "https://images.unsplash.com/photo-1505576399279-565b52d4ac71?w=600&q=80",
+        "color": "#4F8EF7",
+    },
+    "stress": {
+        "id": "stress-reset",
+        "label": "Stress Reset",
+        "image": "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&q=80",
+        "color": "#F97316",
+    },
+    "movement": {
+        "id": "movement-boost",
+        "label": "Movement Boost",
+        "image": "https://images.unsplash.com/photo-1517836357463-d25dfeac3438?w=600&q=80",
+        "color": "#10B981",
+    },
+    "breath": {
+        "id": "breath-lab",
+        "label": "Breath Lab",
+        "image": "https://images.unsplash.com/photo-1506126613408-eca07ce68773?w=600&q=80",
+        "color": "#14B8A6",
+    },
+}
+
+LONGEVITY_MASTERCLASS_TEMPLATES = {
+    "heart": {
+        "id": "mc-heart-zone2",
+        "title": "Zone 2 For Heart Health",
+        "description": "Build aerobic capacity, improve recovery, and support long-term cardiovascular resilience.",
+        "thumbnail": "https://images.unsplash.com/photo-1530026405186-ed1f139313f8?w=600&q=80",
+    },
+    "recovery": {
+        "id": "mc-recovery-blueprint",
+        "title": "Post Workout Recovery Blueprint",
+        "description": "Use sleep, hydration, and recovery windows to turn training stress into adaptation.",
+        "thumbnail": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80",
+    },
+    "mental": {
+        "id": "mc-stress-anxiety",
+        "title": "Mental Health And Anxiety Reset",
+        "description": "Lower baseline stress with breathing, routine, and recovery practices built from your data.",
+        "thumbnail": "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&q=80",
+    },
+    "immunity": {
+        "id": "mc-immunity-foundation",
+        "title": "Immunity And Infection Foundation",
+        "description": "Strengthen resilience with sleep quality, movement consistency, and nutrition timing.",
+        "thumbnail": "https://images.unsplash.com/photo-1584362917165-526a968579e8?w=600&q=80",
+    },
+}
 FITBIT_AUTHORIZE_URL = "https://www.fitbit.com/oauth2/authorize"
 FITBIT_TOKEN_URL = "https://api.fitbit.com/oauth2/token"
 FITBIT_API_BASE = "https://api.fitbit.com"
@@ -706,6 +765,7 @@ async def refresh_longevity_profile_cache(user_id: str) -> dict[str, Any]:
     steps = int(summary.get("steps") or 0)
     stress_score = int(summary.get("stress_score") or 0)
     workouts = int(summary.get("workouts") or 0)
+    recovery_score = int((insights.get("overview") or {}).get("recovery_score") or 0)
 
     habits = [
         {**LONGEVITY_HABIT_TEMPLATES[0], "done": True},
@@ -722,14 +782,49 @@ async def refresh_longevity_profile_cache(user_id: str) -> dict[str, Any]:
     else:
         heal_categories.sort(key=lambda item: 0 if item["id"] == "heart" else 1)
 
+    quick_actions: list[dict[str, Any]] = []
+    if recovery_score < 75:
+        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["recovery"]))
+    if sleep_hours < 7:
+        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["sleep"]))
+    if stress_score > 38:
+        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["stress"]))
+    if steps < 9000:
+        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["movement"]))
+    if len(quick_actions) < 4:
+        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["breath"]))
+    deduped_quick_actions: list[dict[str, Any]] = []
+    seen_quick_action_ids: set[str] = set()
+    for item in quick_actions:
+        item_id = str(item.get("id") or "")
+        if item_id and item_id not in seen_quick_action_ids:
+            seen_quick_action_ids.add(item_id)
+            deduped_quick_actions.append(item)
+    quick_actions = deduped_quick_actions[:5]
+
+    prioritized_category_ids = [str(item.get("id") or "") for item in heal_categories[:4]]
+    masterclass_key_map = {
+        "heart": "heart",
+        "recovery": "recovery",
+        "mental": "mental",
+        "immunity": "immunity",
+    }
+    masterclasses: list[dict[str, Any]] = []
+    for category_id in prioritized_category_ids:
+        template_key = masterclass_key_map.get(category_id)
+        if template_key:
+            masterclasses.append(dict(LONGEVITY_MASTERCLASS_TEMPLATES[template_key]))
+
     now = _utc_now()
     await longevity_os_profiles_collection.update_one(
         {"user_id": user_id},
         {
             "$set": {
                 "overview": dict(insights.get("overview") or {}),
+                "quick_actions": quick_actions,
                 "habits": habits,
                 "heal_categories": heal_categories,
+                "masterclasses": masterclasses,
                 "wearables.has_data": True,
                 "wearables.last_synced_at": now,
                 "wearables.sync_message": "Data synced successfully. All Longevity OS calculations are using the synced data.",
