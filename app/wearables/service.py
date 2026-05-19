@@ -19,7 +19,7 @@ from fastapi import HTTPException, Request, status
 from pymongo import UpdateOne
 
 from ..config import settings
-from ..database import health_metrics_collection, users_collection, wearable_connections_collection
+from ..database import health_metrics_collection, longevity_os_profiles_collection, users_collection, wearable_connections_collection
 from ..models import LongevityWearableDeviceResponse, LongevityWearablesResponse
 
 
@@ -85,6 +85,19 @@ DEMO_PROVIDER_METADATA = {
         "sample_origin": "garmin_demo_seed",
     },
 }
+LONGEVITY_HABIT_TEMPLATES = [
+    {"id": "hydration", "title": "Hydration", "subtitle": "Daily protocol for longevity", "icon": "water-outline"},
+    {"id": "sleep-7h", "title": "7h+ Sleep", "subtitle": "Daily protocol for longevity", "icon": "moon-outline"},
+    {"id": "zone-2", "title": "Zone 2 Cardio", "subtitle": "Aerobic base for recovery and heart health", "icon": "heart-outline"},
+    {"id": "breathwork", "title": "Breathwork", "subtitle": "Reduce stress and support recovery", "icon": "reorder-two-outline"},
+]
+
+LONGEVITY_HEAL_CATEGORY_TEMPLATES = [
+    {"id": "recovery", "label": "POST WORKOUT RECOVERY", "image": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80", "color": "#EC4899"},
+    {"id": "heart", "label": "HEART HEALTH", "image": "https://images.unsplash.com/photo-1530026405186-ed1f139313f8?w=600&q=80", "color": "#00C9A7"},
+    {"id": "mental", "label": "MENTAL HEALTH AND ANXIETY", "image": "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&q=80", "color": "#F97316"},
+    {"id": "immunity", "label": "IMMUNITY AND INFECTION", "image": "https://images.unsplash.com/photo-1584362917165-526a968579e8?w=600&q=80", "color": "#FF6B6B"},
+]
 FITBIT_AUTHORIZE_URL = "https://www.fitbit.com/oauth2/authorize"
 FITBIT_TOKEN_URL = "https://api.fitbit.com/oauth2/token"
 FITBIT_API_BASE = "https://api.fitbit.com"
@@ -681,6 +694,51 @@ async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
     }
 
 
+async def refresh_longevity_profile_cache(user_id: str) -> dict[str, Any]:
+    insights = await build_longevity_metric_insights(user_id)
+    if not insights.get("has_metrics"):
+        return insights
+
+    summary = dict(insights.get("summary") or {})
+    sleep_hours = float(summary.get("sleep_hours") or 0)
+    steps = int(summary.get("steps") or 0)
+    stress_score = int(summary.get("stress_score") or 0)
+    workouts = int(summary.get("workouts") or 0)
+
+    habits = [
+        {**LONGEVITY_HABIT_TEMPLATES[0], "done": True},
+        {**LONGEVITY_HABIT_TEMPLATES[1], "done": sleep_hours >= 7},
+        {**LONGEVITY_HABIT_TEMPLATES[2], "done": workouts >= 1 or steps >= 9000},
+        {**LONGEVITY_HABIT_TEMPLATES[3], "done": stress_score <= 35},
+    ]
+
+    heal_categories = [dict(item) for item in LONGEVITY_HEAL_CATEGORY_TEMPLATES]
+    if stress_score > 40:
+        heal_categories.sort(key=lambda item: 0 if item["id"] == "mental" else 1)
+    elif sleep_hours < 7:
+        heal_categories.sort(key=lambda item: 0 if item["id"] == "recovery" else 1)
+    else:
+        heal_categories.sort(key=lambda item: 0 if item["id"] == "heart" else 1)
+
+    now = _utc_now()
+    await longevity_os_profiles_collection.update_one(
+        {"user_id": user_id},
+        {
+            "$set": {
+                "overview": dict(insights.get("overview") or {}),
+                "habits": habits,
+                "heal_categories": heal_categories,
+                "wearables.has_data": True,
+                "wearables.last_synced_at": now,
+                "wearables.sync_message": "Data synced successfully and cached for Longevity OS calculations.",
+                "updated_at": now,
+            }
+        },
+        upsert=True,
+    )
+    return insights
+
+
 async def _http_json_request(
     method: str,
     url: str,
@@ -1189,10 +1247,16 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
         )
 
     total_records = await health_metrics_collection.count_documents({"user_id": user_id})
+    profile = await longevity_os_profiles_collection.find_one({"user_id": user_id}, {"wearables.sync_message": 1})
+    cached_sync_message = str((((profile or {}).get("wearables") or {}).get("sync_message") or "")).strip()
     sync_message = (
-        f"{total_records} normalized wearable records available."
-        if total_records
-        else "No data synced yet. Add a wearable and press sync to import health data into Longevity OS."
+        cached_sync_message
+        if cached_sync_message
+        else (
+            f"{total_records} normalized wearable records available."
+            if total_records
+            else "No data synced yet. Add a wearable and press sync to import health data into Longevity OS."
+        )
     )
     return LongevityWearablesResponse(
         devices=devices,
@@ -1247,6 +1311,7 @@ async def sync_connected_wearables_for_user(
                 last_sync_message=str(exc),
             )
             logger.exception("wearable_sync_failed provider=%s user_id=%s", provider, user_id)
+    await refresh_longevity_profile_cache(user_id)
     return await build_longevity_wearables_response(user_id)
 
 
