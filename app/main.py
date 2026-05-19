@@ -237,7 +237,7 @@ PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 SUBSCRIPTION_TIERS = ("NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
 SUBSCRIPTION_ACCESS = {
     "NONE": [],
-    "SILVER": ["home", "workout", "challenge", "profile"],
+    "SILVER": ["home", "workout", "challenge", "community", "profile"],
     "GOLD": ["home", "workout", "challenge", "mealPlan", "profile"],
     "PLATINUM": ["home", "workout", "challenge", "mealPlan", "profile", "workoutplan", "longevity"],
     "INNER_CIRCLE": [
