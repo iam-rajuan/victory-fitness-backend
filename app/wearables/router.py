@@ -12,6 +12,7 @@ from .schemas import (
     HealthMetricListResponse,
     HealthMetricResponse,
     HealthMetricSummaryResponse,
+    LongevityWearableSyncRequest,
     MobileHealthSyncRequest,
     OAuthConnectResponse,
     ProviderDisconnectResponse,
@@ -310,6 +311,8 @@ async def longevity_os_wearables(
 
 @router.post("/longevity-os/wearables/sync", response_model=LongevityWearablesResponse)
 async def longevity_os_sync_wearables(
+    payload: LongevityWearableSyncRequest | None = None,
     user: dict = Depends(require_access_user),
 ):
-    return await sync_connected_wearables_for_user(str(user["_id"]))
+    selected_provider = payload.provider if payload else None
+    return await sync_connected_wearables_for_user(str(user["_id"]), providers=[selected_provider] if selected_provider else None)

@@ -109,6 +109,10 @@ class ProviderSyncRequest(BaseModel):
     metrics: list[NormalizedHealthMetricIn] = Field(default_factory=list)
 
 
+class LongevityWearableSyncRequest(BaseModel):
+    provider: WearableProvider | None = None
+
+
 class ProviderDisconnectResponse(BaseModel):
     provider: WearableProvider
     disconnected: bool = True

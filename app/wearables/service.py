@@ -1202,10 +1202,29 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
     )
 
 
-async def sync_connected_wearables_for_user(user_id: str) -> LongevityWearablesResponse:
-    connections = await wearable_connections_collection.find(
-        {"user_id": user_id, "provider": {"$in": list(SUPPORTED_PROVIDERS)}, "status": "connected"}
-    ).to_list(length=None)
+async def sync_connected_wearables_for_user(
+    user_id: str,
+    providers: list[str] | None = None,
+) -> LongevityWearablesResponse:
+    selected_providers = [_ensure_supported_provider(provider) for provider in (providers or []) if str(provider or "").strip()]
+    if selected_providers:
+        connection_filter: dict[str, Any] = {
+            "user_id": user_id,
+            "provider": {"$in": selected_providers},
+            "status": "connected",
+        }
+    else:
+        connection_filter = {
+            "user_id": user_id,
+            "provider": {"$in": list(SUPPORTED_PROVIDERS)},
+            "status": "connected",
+        }
+
+    connections = await wearable_connections_collection.find(connection_filter).to_list(length=None)
+    if selected_providers and not connections:
+        for provider in selected_providers:
+            await connect_demo_provider(user_id, provider)
+        connections = await wearable_connections_collection.find(connection_filter).to_list(length=None)
     if not connections:
         raise HTTPException(status_code=400, detail="Select a wearable first, then sync your health data")
     today = _utc_now().date()
