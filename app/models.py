@@ -495,8 +495,12 @@ class UserCompletedChallengeResponse(BaseModel):
     id: str
     challenge_id: str
     title: str
+    description: str = ""
+    duration_days: int = 0
     type: str
     earned_points: int = 0
+    participants: int = 0
+    thumbnail: str = ""
     completed_at: datetime
     color: str = "#22C55E"
 

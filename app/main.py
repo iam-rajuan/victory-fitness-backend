@@ -6281,8 +6281,12 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 id=str(membership.get("_id") or challenge_id),
                 challenge_id=challenge_id,
                 title=str(challenge.get("title") or ""),
+                description=str(challenge.get("description") or ""),
+                duration_days=max(int(challenge.get("duration_days") or 0), 0),
                 type=str(challenge.get("category") or "Challenge"),
                 earned_points=max(int(challenge.get("points") or 0), 0),
+                participants=int(active_stats.get(challenge_id, {}).get("participants", 0)),
+                thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
                 completed_at=_as_utc(completed_at),
                 color=_challenge_color(str(challenge.get("category") or ""), str(challenge.get("difficulty") or "")),
             )
