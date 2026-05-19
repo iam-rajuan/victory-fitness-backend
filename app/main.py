@@ -5185,11 +5185,11 @@ def _calculate_challenge_completion_counts(plan_days: list[dict], membership: di
         }
         unit_exercise_id = str(unit["exercise_id"] or "")
         unit_section_id = str(unit["section_id"] or "")
-        if unit_exercise_id:
+        if unit_section_id and unit_section_id in completed_section_ids:
+            completed_unit_count += 1
+        elif unit_exercise_id:
             if unit_exercise_id in completed_exercise_ids:
                 completed_unit_count += 1
-        elif unit_section_id and unit_section_id in completed_section_ids:
-            completed_unit_count += 1
 
     return completed_unit_count, total_unit_count
 
