@@ -237,7 +237,7 @@ PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 SUBSCRIPTION_TIERS = ("NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
 SUBSCRIPTION_ACCESS = {
     "NONE": [],
-    "SILVER": ["home", "workout", "profile"],
+    "SILVER": ["home", "workout", "challenge", "profile"],
     "GOLD": ["home", "workout", "challenge", "mealPlan", "profile"],
     "PLATINUM": ["home", "workout", "challenge", "mealPlan", "profile", "workoutplan", "longevity"],
     "INNER_CIRCLE": [
@@ -4841,6 +4841,9 @@ def _ensure_subscription_feature_access(user: dict, feature: str, detail: str) -
 
 
 def _get_user_active_challenge_limit(user: dict) -> int | None:
+    tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+    if tier == "SILVER":
+        return 5
     return None
 
 
