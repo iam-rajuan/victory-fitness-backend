@@ -485,6 +485,11 @@ async def _require_admin_user(user: dict = Depends(_require_access_user)) -> dic
     return await dependency_require_admin_user(user)
 
 
+async def _require_challenge_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "challenge", "Your current plan does not include challenge access")
+    return user
+
+
 @app.on_event("startup")
 async def startup() -> None:
     logger.info("startup_begin")
@@ -6319,8 +6324,3 @@ async def _get_verified_user(authorization: str | None) -> dict:
 
 async def _get_verified_user_from_access_token(token: str) -> dict:
     return await dependency_get_verified_user_from_access_token(token)
-
-
-async def _require_challenge_access_user(user: dict = Depends(_require_access_user)) -> dict:
-    _ensure_subscription_feature_access(user, "challenge", "Your current plan does not include challenge access")
-    return user
