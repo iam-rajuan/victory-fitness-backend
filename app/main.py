@@ -4770,14 +4770,11 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
     completed_dates: set = set()
 
     challenge_ids: list[ObjectId] = []
-    completed_memberships: list[dict] = []
     for membership in memberships:
-        if str(membership.get("status") or "").upper() == "COMPLETED":
-            completed_memberships.append(membership)
-            try:
-                challenge_ids.append(ObjectId(str(membership.get("challenge_id") or "")))
-            except Exception:
-                continue
+        try:
+            challenge_ids.append(ObjectId(str(membership.get("challenge_id") or "")))
+        except Exception:
+            continue
 
     if challenge_ids:
         challenge_records = await challenges_collection.find(
@@ -4793,6 +4790,10 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
             plan_days = _normalize_challenge_plan_days(
                 challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []
             )
+            challenge_points = max(int(challenge.get("points") or 0), 0)
+            membership_with_points = dict(membership)
+            membership_with_points["challenge_points"] = challenge_points
+            points += _calculate_challenge_points_earned(plan_days, membership_with_points, challenge_points)
             plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
 
             for day in plan_days:
@@ -4808,6 +4809,11 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
                     for section_id in day_progress.get("completed_section_ids", [])
                     if isinstance(section_id, str) and section_id
                 } if isinstance(day_progress, dict) else set()
+                completed_exercise_ids = {
+                    str(exercise_id)
+                    for exercise_id in day_progress.get("completed_exercise_ids", [])
+                    if isinstance(exercise_id, str) and exercise_id
+                } if isinstance(day_progress, dict) else set()
                 for section in sections:
                     exercises = section.get("exercises") if isinstance(section.get("exercises"), list) else []
                     linked_exercises = [exercise for exercise in exercises if str(exercise.get("workout_vimeo_id") or "").strip()]
@@ -4817,13 +4823,16 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
                     workouts_total += workout_count
                     if str(section.get("id") or "") in completed_section_ids:
                         workouts_completed += workout_count
+                        continue
+                    workouts_completed += sum(
+                        1
+                        for exercise in linked_exercises
+                        if str(exercise.get("id") or "") in completed_exercise_ids
+                    )
                 if isinstance(day_progress, dict) and bool(day_progress.get("completed")):
                     completed_at = _parse_completed_activity_date(day_progress.get("updated_at"))
                     if completed_at:
                         completed_dates.add(completed_at.date())
-
-            if str(membership.get("status") or "").upper() == "COMPLETED":
-                points += max(int(challenge.get("points") or 0), 0)
 
     rank_progress = _resolve_rank_progress(points)
     return {
