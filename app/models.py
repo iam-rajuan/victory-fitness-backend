@@ -31,6 +31,16 @@ class TokenResponse(BaseModel):
     user: dict
 
 
+class SubscriptionSummaryResponse(BaseModel):
+    tier: str = "NONE"
+    status: str = "NONE"
+    started_at: datetime | None = None
+    confirmed_at: datetime | None = None
+    billing_cycle: str = "yearly"
+    is_purchased: bool = False
+    access: list[str] = Field(default_factory=list)
+
+
 class MeResponse(BaseModel):
     id: str
     name: str
@@ -55,6 +65,7 @@ class MeResponse(BaseModel):
     subscription_billing_cycle: str = "yearly"
     subscription_is_purchased: bool = False
     subscription_access: list[str] = Field(default_factory=list)
+    subscription: SubscriptionSummaryResponse = Field(default_factory=SubscriptionSummaryResponse)
 
 
 class UpdateMeRequest(BaseModel):
