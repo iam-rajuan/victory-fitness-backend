@@ -410,6 +410,13 @@ class ChallengePlanProgressResponse(BaseModel):
     viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
 
 
+class ChallengeProgressReportResponse(BaseModel):
+    file_name: str
+    mime_type: str = "image/png"
+    image_base64: str = Field(min_length=32, max_length=20000000)
+    share_message: str = Field(min_length=1, max_length=5000)
+
+
 class ChallengePlanCompletionRequest(BaseModel):
     completed: bool = True
 

@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from io import BytesIO
 import logging
 import os
 import re
@@ -18,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from PIL import Image, ImageDraw, ImageFont
 
 from .coach_archive import (
     build_archive_record,
@@ -62,6 +64,7 @@ from .models import (
     ChallengePlanDay,
     ChallengePlanDayProgressResponse,
     ChallengePlanProgressResponse,
+    ChallengeProgressReportResponse,
     ChallengeChatReactionToggleRequest,
     ChallengeChatThreadResponse,
     CoachVictorChatRequest,
@@ -2323,6 +2326,24 @@ async def post_challenge_progress_update(
     await _broadcast_challenge_chat_event("message_created", challenge_id, document)
 
     return ChallengeChatMessageResponse(**_serialize_challenge_chat_message(document, user, str(user["_id"])))
+
+
+@app.get("/challenges/{challenge_id}/progress/report", response_model=ChallengeProgressReportResponse)
+async def get_challenge_progress_report(
+    challenge_id: str,
+    user: dict = Depends(_require_access_user),
+) -> ChallengeProgressReportResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_read_access(membership, challenge)
+    viewer_name = str(user.get("name") or "Victory Member").strip() or "Victory Member"
+    png_bytes, share_message = _build_challenge_progress_report_png(challenge, membership, viewer_name)
+    return ChallengeProgressReportResponse(
+        file_name="victory-fitness-progress-report.png",
+        mime_type="image/png",
+        image_base64=base64.b64encode(png_bytes).decode("ascii"),
+        share_message=share_message,
+    )
 
 
 @app.post("/challenges/{challenge_id}/start", response_model=StartChallengeResponse, status_code=status.HTTP_201_CREATED)
@@ -5237,6 +5258,207 @@ def _serialize_challenge_plan_progress_response(challenge_id: str, membership: d
         viewer_points_earned=_calculate_challenge_points_earned(plan_days, membership, challenge_points),
         viewer_plan_progress=viewer_plan_progress,
     )
+
+
+def _load_report_font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_candidates = [
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "arialbd.ttf" if bold else "arial.ttf",
+    ]
+    for candidate in font_candidates:
+        try:
+            return ImageFont.truetype(candidate, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _wrap_report_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_width: int) -> list[str]:
+    words = str(text or "").split()
+    if not words:
+        return [""]
+
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        bbox = draw.textbbox((0, 0), candidate, font=font)
+        if bbox[2] - bbox[0] <= max_width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def _draw_centered_text(draw: ImageDraw.ImageDraw, center_x: int, y: int, text: str, font: ImageFont.ImageFont, fill: str) -> None:
+    bbox = draw.textbbox((0, 0), text, font=font)
+    width = bbox[2] - bbox[0]
+    draw.text((center_x - width / 2, y), text, font=font, fill=fill)
+
+
+def _build_report_completed_entries(thread: dict, membership: dict) -> list[dict[str, str]]:
+    entries: list[dict[str, str]] = []
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+
+    for day in _normalize_challenge_plan_days(thread.get("plan_days") if isinstance(thread.get("plan_days"), list) else []):
+        day_progress = raw_progress.get(str(day.get("day_number") or 0), {}) if isinstance(raw_progress, dict) else {}
+        completed_exercise_ids = {
+            str(exercise_id)
+            for exercise_id in (day_progress.get("completed_exercise_ids") or [])
+            if isinstance(exercise_id, str) and exercise_id
+        } if isinstance(day_progress, dict) else set()
+        completed_section_ids = {
+            str(section_id)
+            for section_id in (day_progress.get("completed_section_ids") or [])
+            if isinstance(section_id, str) and section_id
+        } if isinstance(day_progress, dict) else set()
+
+        for section in day.get("sections") or []:
+            section_title = str(section.get("title") or "Section").strip() or "Section"
+            if str(section.get("id") or "") in completed_section_ids:
+                for exercise in section.get("exercises") or []:
+                    exercise_name = str(exercise.get("name") or "Exercise").strip() or "Exercise"
+                    entries.append({
+                        "title": exercise_name,
+                        "detail": f"Day {int(day.get('day_number') or 0)} | {section_title}",
+                    })
+                if not section.get("exercises"):
+                    entries.append({
+                        "title": f"{section_title} completed",
+                        "detail": f"Day {int(day.get('day_number') or 0)} | {str(day.get('title') or 'Day')}",
+                    })
+                continue
+
+            for exercise in section.get("exercises") or []:
+                exercise_id = str(exercise.get("id") or "")
+                if exercise_id and exercise_id in completed_exercise_ids:
+                    exercise_name = str(exercise.get("name") or "Exercise").strip() or "Exercise"
+                    entries.append({
+                        "title": exercise_name,
+                        "detail": f"Day {int(day.get('day_number') or 0)} | {section_title}",
+                    })
+
+    return entries[:10]
+
+
+def _build_challenge_progress_report_png(
+    thread: dict,
+    membership: dict,
+    user_name: str,
+) -> tuple[bytes, str]:
+    plan_days = _normalize_challenge_plan_days(thread.get("plan_days") if isinstance(thread.get("plan_days"), list) else [])
+    challenge_points = max(int(thread.get("points") or 0), 0)
+    membership_with_points = dict(membership)
+    membership_with_points["challenge_points"] = challenge_points
+    completed_units, total_units = _calculate_challenge_completion_counts(plan_days, membership_with_points)
+    completion_fraction = _calculate_challenge_completion_fraction(plan_days, membership_with_points)
+    completion_percent = max(min(int(round(completion_fraction * 100)), 100), 0)
+    viewer_points = _calculate_challenge_points_earned(plan_days, membership_with_points, challenge_points)
+    entries = _build_report_completed_entries(thread, membership_with_points)
+
+    width = 1080
+    row_height = 76
+    header_height = 430
+    footer_height = 288
+    rows = max(len(entries), 1)
+    height = header_height + rows * row_height + footer_height
+
+    image = Image.new("RGBA", (width, height), "#05111D")
+    draw = ImageDraw.Draw(image)
+
+    accent = "#00F0D0"
+    accent2 = "#F59E0B"
+    surface = "#081423"
+    surface2 = "#0E1826"
+    muted = "#8FA7C1"
+    white = "#FFFFFF"
+
+    draw.rounded_rectangle((36, 36, width - 36, height - 36), radius=42, fill=surface, outline=(255, 255, 255, 24), width=2)
+    draw.ellipse((820, 32, 1100, 312), fill=(0, 240, 208, 14))
+    draw.ellipse((900, 0, 1060, 160), fill=(255, 255, 255, 10))
+
+    title_font = _load_report_font(40, bold=True)
+    app_font = _load_report_font(24, bold=True)
+    body_font = _load_report_font(20)
+    small_font = _load_report_font(16)
+    metric_font = _load_report_font(28, bold=True)
+    section_font = _load_report_font(22, bold=True)
+
+    draw.ellipse((84, 84, 172, 172), fill=accent)
+    _draw_centered_text(draw, 128, 112, "VF", _load_report_font(30, bold=True), "#03131F")
+    draw.text((196, 92), "VICTORY FITNESS", font=app_font, fill=accent)
+    draw.text((196, 126), str(user_name or "Victory Member"), font=title_font, fill=white)
+    draw.text((196, 166), f"Challenge report generated {datetime.now(timezone.utc).strftime('%b %d, %Y')}", font=small_font, fill=muted)
+
+    challenge_name = str(thread.get("title") or "Challenge Progress")
+    challenge_lines = _wrap_report_text(draw, challenge_name, title_font, 900)
+    draw.multiline_text((84, 238), "\n".join(challenge_lines), font=title_font, fill=white, spacing=8)
+    draw.text(
+        (84, 300),
+        f"{completion_percent}% complete | {completed_units}/{max(total_units, completed_units or 1)} exercises done",
+        font=body_font,
+        fill=muted,
+    )
+
+    draw.rounded_rectangle((84, 334, 940, 352), radius=9, fill=(255, 255, 255, 18))
+    draw.rounded_rectangle((84, 334, 84 + int(856 * (completion_percent / 100)), 352), radius=9, fill=accent)
+
+    metric_boxes = [
+        ((84, 380, 336, 456), "DAYS COMPLETED", f"{max(int(membership.get('progress_days_completed') or 0), 0)}/{max(int(thread.get('duration_days') or 0), 1)}", accent),
+        ((356, 380, 608, 456), "POINTS EARNED", f"{viewer_points}/{challenge_points}", accent2),
+        ((628, 380, 940, 456), "EXERCISES DONE", f"{completed_units}", "#A78BFA"),
+    ]
+    for box, label, value, color in metric_boxes:
+        draw.rounded_rectangle(box, radius=24, fill=surface2, outline=tuple(int(color[i:i+2], 16) for i in (1, 3, 5)) + (40,), width=2)
+        draw.text((box[0] + 24, box[1] + 20), label, font=small_font, fill=color)
+        draw.text((box[0] + 24, box[1] + 48), value, font=metric_font, fill=white)
+
+    draw.text((84, 500), "Completed exercises", font=section_font, fill=white)
+    y = 546
+    if entries:
+      content_entries = entries
+    else:
+      content_entries = [{"title": "No completed items yet", "detail": "Finish exercises to build your share card."}]
+    for entry in content_entries:
+        draw.rounded_rectangle((84, y, 996, y + 60), radius=18, fill="#0D1725", outline=(255, 255, 255, 12), width=1)
+        draw.ellipse((102, y + 13, 130, y + 41), fill=accent)
+        draw.line((108, y + 27, 116, y + 35), fill="#03131F", width=3)
+        draw.line((116, y + 35, 124, y + 21), fill="#03131F", width=3)
+        draw.text((150, y + 10), entry["title"], font=body_font, fill=white)
+        draw.text((150, y + 34), entry["detail"], font=small_font, fill=muted)
+        y += row_height
+
+    footer_top = height - 238
+    draw.text((84, footer_top), "Download Victory Fitness", font=app_font, fill=white)
+    draw.text((84, footer_top + 32), "Train with the full app on Google Play and the App Store", font=small_font, fill=muted)
+
+    def draw_store_card(x: int, title: str, subtitle: str, accent_color: str, symbol: str) -> None:
+        draw.rounded_rectangle((x, height - 160, x + 396, height - 66), radius=28, fill="#0E1826", outline=(36, 50, 68, 255), width=2)
+        if symbol == "play":
+            draw.polygon([(x + 38, height - 128), (x + 38, height - 92), (x + 68, height - 110)], fill=accent_color)
+            draw.polygon([(x + 68, height - 110), (x + 80, height - 121), (x + 80, height - 99)], fill="#60A5FA")
+            draw.polygon([(x + 38, height - 128), (x + 61, height - 113), (x + 38, height - 92)], fill="#F59E0B")
+        else:
+            draw.rounded_rectangle((x + 30, height - 134, x + 78, height - 86), radius=14, fill=(255, 255, 255, 18))
+            draw.ellipse((x + 38, height - 124, x + 70, height - 92), fill=white)
+        draw.text((x + 104, height - 126), subtitle, font=small_font, fill=muted)
+        draw.text((x + 104, height - 98), title, font=app_font, fill=white)
+
+    draw_store_card(84, "Google Play", "Download on", accent, "play")
+    draw_store_card(514, "App Store", "Download on the", white, "apple")
+
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    png_bytes = output.getvalue()
+    share_message = "\n".join([
+        "Victory Fitness",
+        f"Member: {user_name}",
+        f"{challenge_name} progress report",
+        f"Completed {completion_percent}% | {max(int(membership.get('progress_days_completed') or 0), 0)}/{max(int(thread.get('duration_days') or 0), 1)} days | {viewer_points}/{challenge_points} pts",
+    ])
+    return png_bytes, share_message
 
 
 def _serialize_admin_challenge_record(
