@@ -1667,7 +1667,7 @@ async def create_challenge_chat_message(
 ) -> ChallengeChatMessageResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
-    _ensure_challenge_write_access(membership, challenge)
+    _ensure_challenge_chat_write_access(membership, challenge)
 
     content = str(payload.content or "").strip()
     if not content and not payload.image_base64:
@@ -1732,7 +1732,7 @@ async def update_challenge_chat_message(
 ) -> ChallengeChatMessageResponse:
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
     challenge = await _get_challenge_or_404(challenge_id)
-    _ensure_challenge_write_access(membership, challenge)
+    _ensure_challenge_chat_write_access(membership, challenge)
     message_record = await _get_challenge_message_or_404(challenge_id, message_id)
     if str(message_record.get("author_id") or "") != str(user["_id"]):
         raise HTTPException(status_code=403, detail="You can only edit your own messages")
@@ -1961,12 +1961,6 @@ def _get_current_challenge_day_number(membership: dict, plan_days: list[dict], d
     return min(max(next_day, 1), max(duration_days, 1))
 
 
-def _ensure_current_challenge_day_only(day_number: int, membership: dict, plan_days: list[dict], duration_days: int) -> None:
-    current_day_number = _get_current_challenge_day_number(membership, plan_days, duration_days)
-    if day_number != current_day_number:
-        raise HTTPException(status_code=400, detail="Only today's challenge day can be updated")
-
-
 @app.post("/challenges/{challenge_id}/plan/days/{day_number}/complete", response_model=ChallengePlanProgressResponse)
 async def complete_challenge_plan_day(
     challenge_id: str,
@@ -1981,8 +1975,6 @@ async def complete_challenge_plan_day(
     plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
     if not plan_day:
         raise HTTPException(status_code=404, detail="Challenge plan day not found")
-    duration_days = max(int(challenge.get("duration_days") or 0), 1)
-    _ensure_current_challenge_day_only(day_number, membership, plan_days, duration_days)
 
     existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
     existing_day_progress = existing_progress.get(str(day_number), {}) if isinstance(existing_progress, dict) else {}
@@ -2052,8 +2044,6 @@ async def complete_challenge_plan_section(
     plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
     if not plan_day:
         raise HTTPException(status_code=404, detail="Challenge plan day not found")
-    duration_days = max(int(challenge.get("duration_days") or 0), 1)
-    _ensure_current_challenge_day_only(day_number, membership, plan_days, duration_days)
     valid_section_ids = {
         str(section.get("id") or "")
         for section in plan_day.get("sections") or []
@@ -2132,8 +2122,6 @@ async def complete_challenge_plan_exercise(
     plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
     if not plan_day:
         raise HTTPException(status_code=404, detail="Challenge plan day not found")
-    duration_days = max(int(challenge.get("duration_days") or 0), 1)
-    _ensure_current_challenge_day_only(day_number, membership, plan_days, duration_days)
 
     section_record = next(
         (section for section in (plan_day.get("sections") or []) if str(section.get("id") or "") == section_id),
@@ -5360,6 +5348,19 @@ def _ensure_challenge_write_access(membership: dict, challenge: dict) -> None:
         raise HTTPException(status_code=403, detail="This challenge is not available")
 
 
+def _ensure_challenge_chat_write_access(membership: dict, challenge: dict) -> None:
+    membership_status = str(membership.get("status") or "").upper()
+    if membership_status not in {"ACTIVE", "COMPLETED"}:
+        raise HTTPException(status_code=403, detail="You do not have permission to post in this challenge chat")
+    challenge_status = str(challenge.get("status") or "").upper()
+    if challenge_status != "ACTIVE":
+        if challenge_status == "UPCOMING":
+            raise HTTPException(status_code=403, detail="This challenge has not started yet")
+        if challenge_status == "ARCHIVED":
+            raise HTTPException(status_code=403, detail="This challenge has been archived")
+        raise HTTPException(status_code=403, detail="This challenge is not available")
+
+
 async def _load_challenge_chat_author_records(records: list[dict]) -> dict[str, dict]:
     author_ids = {
         str(record.get("author_id") or "").strip()
@@ -5591,6 +5592,12 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
         and str((challenges_by_id.get(str(membership.get("challenge_id") or "")) or {}).get("status") or "").upper() == "ACTIVE"
     ]
     completed_memberships = [membership for membership in memberships if str(membership.get("status") or "").upper() == "COMPLETED"]
+    chat_memberships = [
+        membership
+        for membership in memberships
+        if str(membership.get("status") or "").upper() in {"ACTIVE", "COMPLETED"}
+        and str((challenges_by_id.get(str(membership.get("challenge_id") or "")) or {}).get("status") or "").upper() != "DRAFT"
+    ]
 
     active_challenges: list[UserActiveChallengeResponse] = []
     active_challenge_ids: list[str] = []
@@ -5637,17 +5644,18 @@ async def _build_challenge_overview_response(user_id: str) -> ChallengeOverviewR
             )
         )
 
+    chat_challenge_ids = list(dict.fromkeys(str(membership.get("challenge_id") or "") for membership in chat_memberships if membership.get("challenge_id")))
     active_chat_messages = await challenge_chat_messages_collection.aggregate(
         [
-            {"$match": {"challenge_id": {"$in": active_challenge_ids}}},
+            {"$match": {"challenge_id": {"$in": chat_challenge_ids}}},
             {"$sort": {"created_at": -1}},
             {"$group": {"_id": "$challenge_id", "content": {"$first": "$content"}, "created_at": {"$first": "$created_at"}}},
         ]
-    ).to_list(length=len(active_challenge_ids)) if active_challenge_ids else []
+    ).to_list(length=len(chat_challenge_ids)) if chat_challenge_ids else []
     chat_by_challenge = {str(item.get("_id") or ""): item for item in active_chat_messages}
 
     active_chats: list[ChallengeChatSummaryResponse] = []
-    for membership in active_memberships:
+    for membership in chat_memberships:
         challenge_id = str(membership.get("challenge_id") or "")
         if challenge_id not in challenges_by_id:
             continue
