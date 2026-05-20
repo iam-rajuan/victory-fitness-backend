@@ -16,6 +16,7 @@ from .schemas import (
     MobileHealthSyncRequest,
     OAuthConnectResponse,
     ProviderDisconnectResponse,
+    QRHealthSyncRequest,
     ProviderSyncRequest,
     ProviderSyncResponse,
     WearableConnectionResponse,
@@ -25,6 +26,7 @@ from .service import (
     build_longevity_wearables_response,
     build_oauth_connect_url,
     connect_demo_provider,
+    decode_qr_health_payload,
     disconnect_provider,
     exchange_fitbit_code,
     exchange_garmin_code,
@@ -142,6 +144,53 @@ async def health_connect_sync(
         connection_status=str((result["connection"] or {}).get("status") or "connected"),
         last_synced_at=result["last_synced_at"],
         message="Health Connect data synced successfully.",
+    )
+
+
+@router.post("/wearables/this-phone/sync", response_model=ProviderSyncResponse)
+async def this_phone_sync(
+    payload: MobileHealthSyncRequest,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderSyncResponse:
+    result = await ingest_mobile_sync(
+        str(user["_id"]),
+        "this-phone",
+        [item.model_dump() for item in payload.metrics],
+        source_device=payload.source_device or "This Phone",
+        batch_id=payload.batch_id,
+    )
+    return ProviderSyncResponse(
+        provider="this-phone",
+        user_id=str(user["_id"]),
+        synced_records=int(result["inserted"]),
+        skipped_duplicates=int(result["skipped"]),
+        connection_status=str((result["connection"] or {}).get("status") or "connected"),
+        last_synced_at=result["last_synced_at"],
+        message="This phone data synced successfully.",
+    )
+
+
+@router.post("/wearables/qr-import/sync", response_model=ProviderSyncResponse)
+async def qr_import_sync(
+    payload: QRHealthSyncRequest,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderSyncResponse:
+    decoded = decode_qr_health_payload(payload.qr_payload)
+    result = await ingest_mobile_sync(
+        str(user["_id"]),
+        "qr-import",
+        list(decoded["metrics"]),
+        source_device=payload.source_device or str(decoded.get("source_device") or "QR Import"),
+        batch_id=decoded.get("batch_id"),
+    )
+    return ProviderSyncResponse(
+        provider="qr-import",
+        user_id=str(user["_id"]),
+        synced_records=int(result["inserted"]),
+        skipped_duplicates=int(result["skipped"]),
+        connection_status=str((result["connection"] or {}).get("status") or "connected"),
+        last_synced_at=result["last_synced_at"],
+        message="QR wearable data synced successfully.",
     )
 
 
@@ -325,5 +374,12 @@ async def longevity_os_sync_wearables(
     payload: LongevityWearableSyncRequest | None = None,
     user: dict = Depends(require_longevity_access_user),
 ):
-    selected_provider = payload.provider if payload else None
-    return await sync_connected_wearables_for_user(str(user["_id"]), providers=[selected_provider] if selected_provider else None)
+    selected_providers: list[str] = []
+    if payload:
+        if payload.provider:
+            selected_providers.append(payload.provider)
+        selected_providers.extend([provider for provider in payload.providers if provider not in selected_providers])
+    return await sync_connected_wearables_for_user(
+        str(user["_id"]),
+        providers=selected_providers or None,
+    )

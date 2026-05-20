@@ -25,7 +25,7 @@ from ..models import LongevityWearableDeviceResponse, LongevityWearablesResponse
 
 logger = logging.getLogger("victory_fitness.wearables")
 
-SUPPORTED_PROVIDERS = ("apple-health", "health-connect", "fitbit", "garmin")
+SUPPORTED_PROVIDERS = ("apple-health", "health-connect", "fitbit", "garmin", "this-phone", "qr-import")
 OAUTH_PROVIDERS = {"fitbit", "garmin"}
 SUPPORTED_METRIC_TYPES = {
     "steps",
@@ -56,12 +56,22 @@ PROVIDER_DISPLAY = {
         "name": "Garmin",
         "image": "https://images.unsplash.com/photo-1557438159-8664b4c7301c?w=600&q=80",
     },
+    "this-phone": {
+        "name": "This Phone",
+        "image": "https://images.unsplash.com/photo-1511707171634-5f897ff02aa9?w=600&q=80",
+    },
+    "qr-import": {
+        "name": "QR Import",
+        "image": "https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?w=600&q=80",
+    },
 }
 DEMO_PROVIDER_SOURCE_DEVICE = {
     "apple-health": "Apple Watch Series 9",
     "health-connect": "Pixel Watch 3",
     "fitbit": "Fitbit Charge 6",
     "garmin": "Garmin Venu 3",
+    "this-phone": "This Phone",
+    "qr-import": "QR Scanner Import",
 }
 DEMO_PROVIDER_METADATA = {
     "apple-health": {
@@ -83,6 +93,16 @@ DEMO_PROVIDER_METADATA = {
         "source_app": "Garmin Connect",
         "ecosystem": "Garmin",
         "sample_origin": "garmin_demo_seed",
+    },
+    "this-phone": {
+        "source_app": "Victory Fitness App",
+        "ecosystem": "Mobile",
+        "sample_origin": "this_phone_manual_sync",
+    },
+    "qr-import": {
+        "source_app": "QR Import",
+        "ecosystem": "Manual",
+        "sample_origin": "qr_import_sync",
     },
 }
 LONGEVITY_HABIT_TEMPLATES = [
@@ -271,6 +291,45 @@ def _build_dedupe_key(document: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
+def decode_qr_health_payload(qr_payload: str) -> dict[str, Any]:
+    raw_payload = str(qr_payload or "").strip()
+    if not raw_payload:
+        raise HTTPException(status_code=400, detail="QR payload is empty")
+
+    candidates = [raw_payload]
+    try:
+        padding = (-len(raw_payload)) % 4
+        decoded = base64.urlsafe_b64decode((raw_payload + ("=" * padding)).encode("utf-8")).decode("utf-8")
+        candidates.append(decoded)
+    except Exception:
+        pass
+
+    parsed: dict[str, Any] | None = None
+    for candidate in candidates:
+        try:
+            candidate_value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate_value, dict):
+            parsed = candidate_value
+            break
+
+    if parsed is None:
+        raise HTTPException(status_code=400, detail="QR payload must contain valid JSON health sync data")
+
+    metrics = parsed.get("metrics")
+    if not isinstance(metrics, list) or not metrics:
+        raise HTTPException(status_code=400, detail="QR payload does not contain any metrics")
+
+    source_device = str(parsed.get("source_device") or "")
+    batch_id = str(parsed.get("batch_id") or "").strip() or None
+    return {
+        "metrics": metrics,
+        "source_device": source_device,
+        "batch_id": batch_id,
+    }
+
+
 async def upsert_wearable_connection(
     user_id: str,
     provider: str,
@@ -346,18 +405,36 @@ async def list_user_connections(user_id: str) -> list[dict]:
 async def connect_demo_provider(user_id: str, provider: str) -> dict:
     provider = _ensure_supported_provider(provider)
     now = _utc_now()
+    source = "demo"
+    last_sync_message = "Demo provider connected. Press sync to load demo health data."
+    metadata: dict[str, Any] = {
+        "demo_profile_key": provider,
+        "source": "demo",
+    }
+    if provider in {"apple-health", "health-connect", "fitbit", "garmin"}:
+        metadata["demo_sync_enabled"] = True
+    if provider == "this-phone":
+        source = "mobile"
+        metadata = {
+            "source": source,
+            "manual_sync_enabled": True,
+        }
+        last_sync_message = "This phone is ready. Import health data from the phone to save it in Longevity OS."
+    if provider == "qr-import":
+        source = "qr"
+        metadata = {
+            "source": source,
+            "manual_qr_enabled": True,
+        }
+        last_sync_message = "QR import is ready. Scan or paste a wearable QR payload to save the synced data."
     return await upsert_wearable_connection(
         user_id,
         provider,
         status_value="connected",
-        metadata={
-            "demo_sync_enabled": True,
-            "demo_profile_key": provider,
-            "source": "demo",
-        },
+        metadata=metadata,
         connected_at=now,
         last_sync_status="idle",
-        last_sync_message="Demo provider connected. Press sync to load demo health data.",
+        last_sync_message=last_sync_message,
     )
 
 

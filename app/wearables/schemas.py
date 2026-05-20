@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-WearableProvider = Literal["apple-health", "health-connect", "fitbit", "garmin"]
+WearableProvider = Literal["apple-health", "health-connect", "fitbit", "garmin", "this-phone", "qr-import"]
 HealthMetricType = Literal[
     "steps",
     "heart_rate",
@@ -74,6 +74,22 @@ class MobileHealthSyncRequest(BaseModel):
     }
 
 
+class QRHealthSyncRequest(BaseModel):
+    qr_payload: str = Field(min_length=8, max_length=500000)
+    source_device: str = Field(default="", max_length=160)
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "qr_payload": "{\"metrics\":[{\"metric_type\":\"steps\",\"value\":8421,\"unit\":\"count\",\"start_time\":\"2026-05-18T00:00:00Z\",\"end_time\":\"2026-05-18T23:59:59Z\",\"source_device\":\"Apple Watch Series 9\",\"metadata\":{\"external_id\":\"steps-2026-05-18\"}}],\"source_device\":\"iPhone 15 Pro\",\"batch_id\":\"qr-sync-2026-05-18-001\"}",
+                    "source_device": "iPhone 15 Pro",
+                }
+            ]
+        }
+    }
+
+
 class OAuthConnectResponse(BaseModel):
     provider: WearableProvider
     authorization_url: str
@@ -111,6 +127,7 @@ class ProviderSyncRequest(BaseModel):
 
 class LongevityWearableSyncRequest(BaseModel):
     provider: WearableProvider | None = None
+    providers: list[WearableProvider] = Field(default_factory=list)
 
 
 class ProviderDisconnectResponse(BaseModel):
