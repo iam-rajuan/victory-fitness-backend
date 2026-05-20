@@ -46,8 +46,14 @@ challenge_message_reactions_collection = db["challenge_message_reactions"]
 community_posts_collection = db["community_posts"]
 community_comments_collection = db["community_comments"]
 community_reactions_collection = db["community_reactions"]
-wearable_connections_collection = db["wearable_connections"]
-health_metrics_collection = db["health_metrics"]
+user_provider_connections_collection = db["user_provider_connections"]
+provider_tokens_collection = db["provider_tokens"]
+health_samples_collection = db["health_samples"]
+sync_jobs_collection = db["sync_jobs"]
+sync_errors_collection = db["sync_errors"]
+integration_audit_logs_collection = db["integration_audit_logs"]
+wearable_connections_collection = user_provider_connections_collection
+health_metrics_collection = health_samples_collection
 
 
 async def ensure_indexes() -> None:
@@ -97,13 +103,19 @@ async def ensure_indexes() -> None:
     await community_comments_collection.create_index([("author_id", 1), ("created_at", -1)])
     await community_reactions_collection.create_index([("post_id", 1), ("created_at", -1)])
     await community_reactions_collection.create_index([("post_id", 1), ("user_id", 1)], unique=True)
-    await wearable_connections_collection.create_index([("user_id", 1), ("provider", 1)], unique=True)
-    await wearable_connections_collection.create_index([("provider", 1), ("status", 1), ("updated_at", -1)])
-    await wearable_connections_collection.create_index([("provider", 1), ("provider_user_id", 1)])
-    await wearable_connections_collection.create_index([("provider", 1), ("oauth_state", 1)])
-    await health_metrics_collection.create_index([("user_id", 1), ("start_time", -1)])
-    await health_metrics_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("start_time", -1)])
-    await health_metrics_collection.create_index("dedupe_key", unique=True)
+    await user_provider_connections_collection.create_index([("user_id", 1), ("provider", 1)], unique=True)
+    await user_provider_connections_collection.create_index([("provider", 1), ("status", 1), ("updated_at", -1)])
+    await user_provider_connections_collection.create_index([("provider", 1), ("provider_user_id", 1)])
+    await user_provider_connections_collection.create_index([("provider", 1), ("oauth_state", 1)])
+    await provider_tokens_collection.create_index([("user_id", 1), ("provider", 1)], unique=True)
+    await health_samples_collection.create_index([("user_id", 1), ("start_time", -1)])
+    await health_samples_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("start_time", -1)])
+    await health_samples_collection.create_index("dedupe_key", unique=True)
+    await sync_jobs_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])
+    await sync_jobs_collection.create_index([("status", 1), ("updated_at", -1)])
+    await sync_errors_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])
+    await sync_errors_collection.create_index([("job_id", 1), ("created_at", -1)])
+    await integration_audit_logs_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])
 
 
 async def close_database_connection() -> None:

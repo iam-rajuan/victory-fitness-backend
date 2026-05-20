@@ -5,7 +5,14 @@ from datetime import date
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..dependencies import ensure_subscription_feature_access, require_access_user
-from ..models import LongevityWearablesResponse
+from ..models import (
+    IntegrationConnectStartResponse,
+    IntegrationConnectionResponse,
+    IntegrationListResponse,
+    LongevityWearablesResponse,
+    NativeIntegrationConnectedRequest,
+    NativeIntegrationSamplesRequest,
+)
 from .schemas import (
     GarminWebhookRequest,
     GarminWebhookResponse,
@@ -25,6 +32,7 @@ from .schemas import (
 from .service import (
     build_longevity_wearables_response,
     build_oauth_connect_url,
+    connect_local_provider,
     connect_demo_provider,
     decode_qr_health_payload,
     disconnect_provider,
@@ -32,7 +40,9 @@ from .service import (
     exchange_garmin_code,
     handle_garmin_webhook,
     ingest_mobile_sync,
+    list_integrations,
     list_user_connections,
+    mark_native_provider_connected,
     query_health_metrics,
     resolve_target_user_id,
     summarize_health_metrics,
@@ -73,6 +83,155 @@ def _metric_response(item: dict) -> HealthMetricResponse:
     )
 
 
+@router.get("/integrations", response_model=IntegrationListResponse)
+async def integrations_list(
+    user: dict = Depends(require_longevity_access_user),
+) -> IntegrationListResponse:
+    items = await list_integrations(str(user["_id"]))
+    return IntegrationListResponse(
+        items=[IntegrationConnectionResponse(**item) for item in items]
+    )
+
+
+@router.get("/integrations/{provider}/connect", response_model=IntegrationConnectStartResponse)
+async def integration_connect(
+    provider: str,
+    user: dict = Depends(require_longevity_access_user),
+) -> IntegrationConnectStartResponse:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider in {"fitbit", "garmin"}:
+        payload = await build_oauth_connect_url(str(user["_id"]), normalized_provider)
+        return IntegrationConnectStartResponse(
+            provider=normalized_provider,
+            connection_type="oauth",
+            authorization_url=str(payload.get("authorization_url") or ""),
+            state=str(payload.get("state") or ""),
+            expires_at=payload.get("expires_at"),
+            message="Continue in browser to complete provider login.",
+        )
+    if normalized_provider in {"apple-health", "health-connect", "this-phone"}:
+        return IntegrationConnectStartResponse(
+            provider=normalized_provider,
+            connection_type="native",
+            message="Continue in the mobile app to approve native health permissions.",
+        )
+    if normalized_provider == "qr-import":
+        return IntegrationConnectStartResponse(
+            provider=normalized_provider,
+            connection_type="import",
+            message="Continue in the app to import a supported QR or file payload.",
+        )
+    raise HTTPException(status_code=400, detail="Unsupported integration provider")
+
+
+@router.post("/integrations/{provider}/connect-local", response_model=WearableConnectionResponse)
+async def integration_connect_local(
+    provider: str,
+    user: dict = Depends(require_longevity_access_user),
+) -> WearableConnectionResponse:
+    connection = await connect_local_provider(str(user["_id"]), provider)
+    return WearableConnectionResponse(**connection)
+
+
+@router.get("/integrations/{provider}/callback", response_model=WearableConnectionResponse)
+async def integration_callback(
+    provider: str,
+    code: str,
+    state: str,
+) -> WearableConnectionResponse:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider == "fitbit":
+        connection = await exchange_fitbit_code(state, code)
+    elif normalized_provider == "garmin":
+        connection = await exchange_garmin_code(state, code)
+    else:
+        raise HTTPException(status_code=400, detail="Callback is only supported for OAuth providers")
+    return WearableConnectionResponse(**connection)
+
+
+@router.post("/integrations/native/connected", response_model=WearableConnectionResponse)
+async def integrations_native_connected(
+    payload: NativeIntegrationConnectedRequest,
+    user: dict = Depends(require_longevity_access_user),
+) -> WearableConnectionResponse:
+    connection = await mark_native_provider_connected(
+        str(user["_id"]),
+        payload.provider,
+        source_device=payload.source_device,
+        platform=payload.platform,
+        permission_granted=payload.permission_granted,
+        metadata=payload.metadata,
+    )
+    return WearableConnectionResponse(**connection)
+
+
+@router.post("/integrations/native/samples", response_model=ProviderSyncResponse)
+async def integrations_native_samples(
+    payload: NativeIntegrationSamplesRequest,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderSyncResponse:
+    mobile_payload = MobileHealthSyncRequest(
+        metrics=payload.metrics,
+        source_device=payload.source_device,
+        batch_id=payload.batch_id,
+    )
+    provider = payload.provider.strip().lower()
+    if provider == "this-phone":
+        provider = "apple-health" if payload.platform.strip().lower() == "ios" else "health-connect"
+    result = await ingest_mobile_sync(
+        str(user["_id"]),
+        provider,
+        [item.model_dump() for item in mobile_payload.metrics],
+        source_device=mobile_payload.source_device,
+        batch_id=mobile_payload.batch_id,
+        trigger="native_samples",
+    )
+    return ProviderSyncResponse(
+        provider=provider,
+        user_id=str(user["_id"]),
+        synced_records=int(result["inserted"]),
+        skipped_duplicates=int(result["skipped"]),
+        connection_status=str((result["connection"] or {}).get("status") or "connected"),
+        last_synced_at=result["last_synced_at"],
+        message=f"{provider} samples synced successfully.",
+    )
+
+
+@router.post("/integrations/{provider}/sync", response_model=ProviderSyncResponse)
+async def integration_sync(
+    provider: str,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderSyncResponse:
+    normalized_provider = provider.strip().lower()
+    if normalized_provider == "fitbit":
+        inserted, skipped = await sync_fitbit(str(user["_id"]))
+        return ProviderSyncResponse(provider="fitbit", user_id=str(user["_id"]), synced_records=inserted, skipped_duplicates=skipped, message="Fitbit sync completed.")
+    if normalized_provider == "garmin":
+        inserted, skipped = await sync_garmin(str(user["_id"]))
+        return ProviderSyncResponse(provider="garmin", user_id=str(user["_id"]), synced_records=inserted, skipped_duplicates=skipped, message="Garmin sync completed.")
+    if normalized_provider in {"apple-health", "health-connect", "this-phone", "qr-import"}:
+        connection = await connect_local_provider(str(user["_id"]), normalized_provider)
+        return ProviderSyncResponse(
+            provider=normalized_provider,
+            user_id=str(user["_id"]),
+            synced_records=0,
+            skipped_duplicates=0,
+            connection_status=str(connection.get("status") or "connected"),
+            last_synced_at=connection.get("last_synced_at"),
+            message="Sync is initiated from the mobile app for this provider.",
+        )
+    raise HTTPException(status_code=400, detail="Unsupported integration provider")
+
+
+@router.delete("/integrations/{provider}", response_model=ProviderDisconnectResponse)
+async def integration_disconnect(
+    provider: str,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderDisconnectResponse:
+    await disconnect_provider(str(user["_id"]), provider)
+    return ProviderDisconnectResponse(provider=provider)
+
+
 @router.get("/wearables/connections", response_model=WearableConnectionsResponse)
 async def wearable_connections(
     user: dict = Depends(require_longevity_access_user),
@@ -98,6 +257,15 @@ async def wearable_demo_connect(
     user: dict = Depends(require_longevity_access_user),
 ) -> WearableConnectionResponse:
     connection = await connect_demo_provider(str(user["_id"]), provider)
+    return WearableConnectionResponse(**connection)
+
+
+@router.post("/wearables/{provider}/connect-local", response_model=WearableConnectionResponse)
+async def wearable_local_connect(
+    provider: str,
+    user: dict = Depends(require_longevity_access_user),
+) -> WearableConnectionResponse:
+    connection = await connect_local_provider(str(user["_id"]), provider)
     return WearableConnectionResponse(**connection)
 
 

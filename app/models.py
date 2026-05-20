@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -160,6 +161,48 @@ class LongevityWearablesResponse(BaseModel):
     last_synced_at: datetime | None = None
     has_data: bool = False
     sync_message: str = ""
+
+
+class IntegrationConnectionResponse(BaseModel):
+    provider: str
+    display_name: str
+    connection_type: str = "native"
+    status: str = "not_connected"
+    connected: bool = False
+    needs_permission: bool = False
+    connected_at: datetime | None = None
+    last_synced_at: datetime | None = None
+    last_error: str = ""
+    last_sync_message: str = ""
+
+
+class IntegrationListResponse(BaseModel):
+    items: list[IntegrationConnectionResponse] = Field(default_factory=list)
+
+
+class IntegrationConnectStartResponse(BaseModel):
+    provider: str
+    connection_type: str
+    authorization_url: str | None = None
+    state: str | None = None
+    expires_at: datetime | None = None
+    message: str = ""
+
+
+class NativeIntegrationConnectedRequest(BaseModel):
+    provider: str
+    source_device: str = ""
+    permission_granted: bool = True
+    platform: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class NativeIntegrationSamplesRequest(BaseModel):
+    provider: str
+    source_device: str = Field(default="", max_length=160)
+    batch_id: str | None = Field(default=None, max_length=120)
+    platform: str = ""
+    metrics: list[dict[str, Any]] = Field(default_factory=list, min_length=1)
 
 
 class LongevityHabitResponse(BaseModel):

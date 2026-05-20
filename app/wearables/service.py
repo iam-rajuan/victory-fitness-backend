@@ -19,7 +19,16 @@ from fastapi import HTTPException, Request, status
 from pymongo import UpdateOne
 
 from ..config import settings
-from ..database import health_metrics_collection, longevity_os_profiles_collection, users_collection, wearable_connections_collection
+from ..database import (
+    health_metrics_collection,
+    integration_audit_logs_collection,
+    longevity_os_profiles_collection,
+    provider_tokens_collection,
+    sync_errors_collection,
+    sync_jobs_collection,
+    users_collection,
+    wearable_connections_collection,
+)
 from ..models import LongevityWearableDeviceResponse, LongevityWearablesResponse
 
 
@@ -64,6 +73,14 @@ PROVIDER_DISPLAY = {
         "name": "QR Import",
         "image": "https://images.unsplash.com/photo-1520607162513-77705c0f0d4a?w=600&q=80",
     },
+}
+PROVIDER_CONNECTION_TYPE = {
+    "apple-health": "native",
+    "health-connect": "native",
+    "fitbit": "oauth",
+    "garmin": "oauth",
+    "this-phone": "native",
+    "qr-import": "import",
 }
 DEMO_PROVIDER_SOURCE_DEVICE = {
     "apple-health": "Apple Watch Series 9",
@@ -188,6 +205,97 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _normalize_provider(provider: str) -> str:
+    normalized = _ensure_supported_provider(provider)
+    if normalized == "this-phone":
+        return "health-connect"
+    return normalized
+
+
+async def _append_audit_log(user_id: str, provider: str, action: str, *, status_value: str = "success", detail: str = "", metadata: dict[str, Any] | None = None) -> None:
+    await integration_audit_logs_collection.insert_one(
+        {
+            "user_id": user_id,
+            "provider": provider,
+            "action": action,
+            "status": status_value,
+            "detail": detail,
+            "metadata": dict(metadata or {}),
+            "created_at": _utc_now(),
+        }
+    )
+
+
+async def _start_sync_job(user_id: str, provider: str, *, trigger: str) -> str:
+    document = {
+        "_id": ObjectId(),
+        "user_id": user_id,
+        "provider": provider,
+        "trigger": trigger,
+        "status": "running",
+        "created_at": _utc_now(),
+        "updated_at": _utc_now(),
+    }
+    await sync_jobs_collection.insert_one(document)
+    return str(document["_id"])
+
+
+async def _finish_sync_job(job_id: str | None, *, status_value: str, synced_records: int = 0, skipped_duplicates: int = 0, detail: str = "") -> None:
+    if not job_id:
+        return
+    await sync_jobs_collection.update_one(
+        {"_id": ObjectId(job_id)},
+        {
+            "$set": {
+                "status": status_value,
+                "synced_records": synced_records,
+                "skipped_duplicates": skipped_duplicates,
+                "detail": detail,
+                "updated_at": _utc_now(),
+            }
+        },
+    )
+
+
+async def _record_sync_error(user_id: str, provider: str, *, job_id: str | None = None, stage: str = "", detail: str = "", metadata: dict[str, Any] | None = None) -> None:
+    await sync_errors_collection.insert_one(
+        {
+            "user_id": user_id,
+            "provider": provider,
+            "job_id": job_id,
+            "stage": stage,
+            "detail": detail,
+            "metadata": dict(metadata or {}),
+            "created_at": _utc_now(),
+        }
+    )
+
+
+async def _upsert_provider_token(user_id: str, provider: str, *, access_token: str | None = None, refresh_token: str | None = None, expires_at: datetime | None = None, metadata: dict[str, Any] | None = None) -> None:
+    await provider_tokens_collection.update_one(
+        {"user_id": user_id, "provider": provider},
+        {
+            "$set": {
+                "access_token_encrypted": encrypt_token(access_token) if access_token else "",
+                "refresh_token_encrypted": encrypt_token(refresh_token) if refresh_token else "",
+                "expires_at": _as_utc(expires_at) if expires_at else None,
+                "metadata": dict(metadata or {}),
+                "updated_at": _utc_now(),
+            },
+            "$setOnInsert": {
+                "user_id": user_id,
+                "provider": provider,
+                "created_at": _utc_now(),
+            },
+        },
+        upsert=True,
+    )
+
+
+async def _load_provider_token(user_id: str, provider: str) -> dict[str, Any] | None:
+    return await provider_tokens_collection.find_one({"user_id": user_id, "provider": provider})
+
+
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
@@ -230,6 +338,50 @@ def _serialize_connection(record: dict) -> dict[str, Any]:
         "metadata": dict(record.get("metadata") or {}),
         "created_at": record.get("created_at") or _utc_now(),
         "updated_at": record.get("updated_at") or _utc_now(),
+    }
+
+
+def _serialize_integration(record: dict | None, provider: str) -> dict[str, Any]:
+    display = PROVIDER_DISPLAY[provider]
+    connection_type = PROVIDER_CONNECTION_TYPE.get(provider, "native")
+    status_value = "not_connected"
+    connected = False
+    needs_permission = provider in {"apple-health", "health-connect", "this-phone"} and not bool(record)
+    last_error = ""
+    last_sync_message = ""
+    connected_at = None
+    last_synced_at = None
+
+    if record:
+        connected = str(record.get("status") or "").lower() == "connected"
+        connected_at = record.get("connected_at")
+        last_synced_at = record.get("last_synced_at")
+        last_sync_status = str(record.get("last_sync_status") or "idle").lower()
+        last_sync_message = str(record.get("last_sync_message") or "")
+        metadata = dict(record.get("metadata") or {})
+        last_error = last_sync_message if last_sync_status == "failed" else ""
+        if last_sync_status == "failed":
+            status_value = "error"
+        elif last_sync_status == "running":
+            status_value = "syncing"
+        elif connection_type == "native" and bool(metadata.get("native_permission_required")) and not bool(metadata.get("permission_granted")):
+            status_value = "needs_permission"
+        elif connected:
+            status_value = "connected"
+        else:
+            status_value = "not_connected"
+
+    return {
+        "provider": provider,
+        "display_name": display["name"],
+        "connection_type": connection_type,
+        "status": status_value,
+        "connected": connected,
+        "needs_permission": needs_permission and not connected,
+        "connected_at": connected_at,
+        "last_synced_at": last_synced_at,
+        "last_error": last_error,
+        "last_sync_message": last_sync_message,
     }
 
 
@@ -388,6 +540,15 @@ async def upsert_wearable_connection(
         },
         upsert=True,
     )
+    if access_token is not None or refresh_token is not None or token_expires_at is not None:
+        await _upsert_provider_token(
+            user_id,
+            provider,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_at=token_expires_at,
+            metadata={"oauth_state": oauth_state or ""},
+        )
     connection = await wearable_connections_collection.find_one({"user_id": user_id, "provider": provider})
     if not connection:
         raise HTTPException(status_code=500, detail="Failed to persist wearable connection")
@@ -402,17 +563,74 @@ async def list_user_connections(user_id: str) -> list[dict]:
     return [_serialize_connection(record) for record in records]
 
 
-async def connect_demo_provider(user_id: str, provider: str) -> dict:
+async def list_integrations(user_id: str) -> list[dict[str, Any]]:
+    records = await wearable_connections_collection.find({"user_id": user_id}).to_list(length=None)
+    records_by_provider = {str(item.get("provider") or ""): item for item in records}
+    return [_serialize_integration(records_by_provider.get(provider), provider) for provider in SUPPORTED_PROVIDERS]
+
+
+async def mark_native_provider_connected(
+    user_id: str,
+    provider: str,
+    *,
+    source_device: str = "",
+    platform: str = "",
+    permission_granted: bool = True,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    provider = _normalize_provider(provider)
+    if provider not in {"apple-health", "health-connect"}:
+        raise HTTPException(status_code=400, detail="Native connected endpoint only supports Apple Health or Health Connect")
+    merged_metadata = {
+        "source": "native",
+        "native_sync_enabled": True,
+        "native_permission_required": not permission_granted,
+        "permission_granted": permission_granted,
+        "platform": platform,
+        "source_device": source_device,
+        **dict(metadata or {}),
+    }
+    connection = await upsert_wearable_connection(
+        user_id,
+        provider,
+        status_value="connected" if permission_granted else "pending",
+        metadata=merged_metadata,
+        connected_at=_utc_now() if permission_granted else None,
+        last_sync_status="idle",
+        last_sync_message=f"{PROVIDER_DISPLAY[provider]['name']} connected successfully." if permission_granted else f"{PROVIDER_DISPLAY[provider]['name']} permission is required.",
+    )
+    await _append_audit_log(user_id, provider, "connect", detail=str(connection.get("last_sync_message") or ""), metadata={"platform": platform, "source_device": source_device})
+    return connection
+
+
+async def connect_local_provider(user_id: str, provider: str) -> dict:
     provider = _ensure_supported_provider(provider)
     now = _utc_now()
-    source = "demo"
-    last_sync_message = "Demo provider connected. Press sync to load demo health data."
+    source = "local"
+    last_sync_message = "Provider connected. Press sync to import health data."
     metadata: dict[str, Any] = {
-        "demo_profile_key": provider,
-        "source": "demo",
+        "source": source,
     }
-    if provider in {"apple-health", "health-connect", "fitbit", "garmin"}:
+    if provider in {"fitbit", "garmin"}:
         metadata["demo_sync_enabled"] = True
+    if provider == "apple-health":
+        source = "native"
+        metadata = {
+            "source": source,
+            "native_sync_enabled": True,
+            "native_permission_required": True,
+            "ecosystem": "Apple",
+        }
+        last_sync_message = "Apple Health connected successfully. Press sync to import health data."
+    if provider == "health-connect":
+        source = "native"
+        metadata = {
+            "source": source,
+            "native_sync_enabled": True,
+            "native_permission_required": True,
+            "ecosystem": "Android",
+        }
+        last_sync_message = "Health Connect connected successfully. Press sync to import health data."
     if provider == "this-phone":
         source = "mobile"
         metadata = {
@@ -427,7 +645,7 @@ async def connect_demo_provider(user_id: str, provider: str) -> dict:
             "manual_qr_enabled": True,
         }
         last_sync_message = "QR import is ready. Scan or paste a wearable QR payload to save the synced data."
-    return await upsert_wearable_connection(
+    connection = await upsert_wearable_connection(
         user_id,
         provider,
         status_value="connected",
@@ -436,6 +654,12 @@ async def connect_demo_provider(user_id: str, provider: str) -> dict:
         last_sync_status="idle",
         last_sync_message=last_sync_message,
     )
+    await _append_audit_log(user_id, provider, "connect", detail=last_sync_message, metadata={"connection_type": PROVIDER_CONNECTION_TYPE.get(provider, "native")})
+    return connection
+
+
+async def connect_demo_provider(user_id: str, provider: str) -> dict:
+    return await connect_local_provider(user_id, provider)
 
 
 async def disconnect_provider(user_id: str, provider: str) -> None:
@@ -455,6 +679,8 @@ async def disconnect_provider(user_id: str, provider: str) -> None:
             }
         },
     )
+    await provider_tokens_collection.delete_one({"user_id": user_id, "provider": provider})
+    await _append_audit_log(user_id, provider, "disconnect", detail="Provider disconnected by user.")
 
 
 def _normalize_metric_document(
@@ -522,31 +748,42 @@ async def ingest_mobile_sync(
     *,
     source_device: str = "",
     batch_id: str | None = None,
+    trigger: str = "native_upload",
 ) -> dict[str, Any]:
-    inserted, skipped = await store_normalized_metrics(
-        user_id,
-        provider,
-        metrics,
-        source_device=source_device,
-    )
-    now = _utc_now()
-    metadata = {"last_batch_id": batch_id or ""}
-    connection = await upsert_wearable_connection(
-        user_id,
-        provider,
-        status_value="connected",
-        metadata=metadata,
-        connected_at=now,
-        last_synced_at=now,
-        last_sync_status="success",
-        last_sync_message=f"Stored {inserted} health records from {provider}.",
-    )
-    return {
-        "inserted": inserted,
-        "skipped": skipped,
-        "connection": connection,
-        "last_synced_at": now,
-    }
+    job_id = await _start_sync_job(user_id, provider, trigger=trigger)
+    try:
+        inserted, skipped = await store_normalized_metrics(
+            user_id,
+            provider,
+            metrics,
+            source_device=source_device,
+        )
+        now = _utc_now()
+        metadata = {"last_batch_id": batch_id or ""}
+        connection = await upsert_wearable_connection(
+            user_id,
+            provider,
+            status_value="connected",
+            metadata=metadata,
+            connected_at=now,
+            last_synced_at=now,
+            last_sync_status="success",
+            last_sync_message=f"Stored {inserted} health records from {provider}.",
+        )
+        await _finish_sync_job(job_id, status_value="success", synced_records=inserted, skipped_duplicates=skipped, detail="Health samples stored.")
+        await _append_audit_log(user_id, provider, "sync", detail=f"Stored {inserted} health records.", metadata={"job_id": job_id, "skipped_duplicates": skipped})
+        return {
+            "inserted": inserted,
+            "skipped": skipped,
+            "connection": connection,
+            "last_synced_at": now,
+            "job_id": job_id,
+        }
+    except Exception as exc:
+        await _finish_sync_job(job_id, status_value="failed", detail=str(exc))
+        await _record_sync_error(user_id, provider, job_id=job_id, stage="native_upload", detail=str(exc))
+        await _append_audit_log(user_id, provider, "sync", status_value="failed", detail=str(exc), metadata={"job_id": job_id})
+        raise
 
 
 async def query_health_metrics(
@@ -959,6 +1196,7 @@ async def _http_json_request(
     data: dict[str, Any] | None = None,
     json_body: dict[str, Any] | None = None,
     timeout: int = 20,
+    retries: int = 3,
 ) -> dict[str, Any]:
     request_headers = headers or {}
     body: bytes | None = None
@@ -972,14 +1210,30 @@ async def _http_json_request(
     request = urllib.request.Request(url, data=body, method=method.upper(), headers=request_headers)
 
     def _do_request() -> dict[str, Any]:
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8") or "{}")
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")
-            raise HTTPException(status_code=502, detail=f"Wearable provider request failed: {detail or exc.reason}") from exc
-        except urllib.error.URLError as exc:
-            raise HTTPException(status_code=502, detail="Wearable provider is unavailable") from exc
+        last_error: Exception | None = None
+        for attempt in range(retries):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return json.loads(response.read().decode("utf-8") or "{}")
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")
+                last_error = exc
+                if exc.code in {429, 500, 502, 503, 504} and attempt < retries - 1:
+                    retry_after = exc.headers.get("Retry-After")
+                    delay_seconds = float(retry_after) if retry_after and retry_after.isdigit() else float(2 ** attempt)
+                    import time as _time
+                    _time.sleep(delay_seconds)
+                    continue
+                raise HTTPException(status_code=502, detail=f"Wearable provider request failed: {detail or exc.reason}") from exc
+            except urllib.error.URLError as exc:
+                last_error = exc
+                if attempt < retries - 1:
+                    import time as _time
+                    _time.sleep(float(2 ** attempt))
+                    continue
+                raise HTTPException(status_code=502, detail="Wearable provider is unavailable") from exc
+        if last_error:
+            raise HTTPException(status_code=502, detail="Wearable provider request failed") from last_error
 
     return await asyncio.to_thread(_do_request)
 
@@ -992,7 +1246,7 @@ def _basic_auth_header(client_id: str, client_secret: str) -> str:
 def _get_fitbit_settings() -> dict[str, Any]:
     client_id = (getattr(settings, "fitbit_client_id", "") or "").strip()
     client_secret = (getattr(settings, "fitbit_client_secret", "") or "").strip()
-    redirect_uri = (getattr(settings, "fitbit_redirect_uri", "") or "").strip()
+    redirect_uri = (getattr(settings, "fitbit_redirect_uri", "") or "").strip() or f"{settings.api_public_base_url}/integrations/fitbit/callback"
     if not client_id or not client_secret or not redirect_uri:
         raise HTTPException(status_code=503, detail="Fitbit OAuth is not configured")
     scopes = list(getattr(settings, "fitbit_scopes", []) or ["activity", "heartrate", "sleep", "profile"])
@@ -1007,7 +1261,7 @@ def _get_fitbit_settings() -> dict[str, Any]:
 def _get_garmin_settings() -> dict[str, Any]:
     client_id = (getattr(settings, "garmin_client_id", "") or "").strip()
     client_secret = (getattr(settings, "garmin_client_secret", "") or "").strip()
-    redirect_uri = (getattr(settings, "garmin_redirect_uri", "") or "").strip()
+    redirect_uri = (getattr(settings, "garmin_redirect_uri", "") or "").strip() or f"{settings.api_public_base_url}/integrations/garmin/callback"
     authorize_url = (getattr(settings, "garmin_authorize_url", "") or "").strip()
     token_url = (getattr(settings, "garmin_token_url", "") or "").strip()
     api_base = (getattr(settings, "garmin_api_base_url", "") or "").strip()
@@ -1499,7 +1753,7 @@ async def sync_connected_wearables_for_user(
     connections = await wearable_connections_collection.find(connection_filter).to_list(length=None)
     if selected_providers and not connections:
         for provider in selected_providers:
-            await connect_demo_provider(user_id, provider)
+            await connect_local_provider(user_id, provider)
         connections = await wearable_connections_collection.find(connection_filter).to_list(length=None)
     if not connections:
         raise HTTPException(status_code=400, detail="Select a wearable first, then sync your health data")
