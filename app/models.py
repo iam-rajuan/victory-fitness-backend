@@ -205,6 +205,18 @@ class NativeIntegrationSamplesRequest(BaseModel):
     metrics: list[dict[str, Any]] = Field(default_factory=list, min_length=1)
 
 
+class IntegrationImportQrRequest(BaseModel):
+    qr_payload: str = Field(min_length=1)
+    source_device: str = Field(default="", max_length=160)
+
+
+class IntegrationImportFileRequest(BaseModel):
+    provider: str = "qr-import"
+    file_name: str = Field(default="", max_length=200)
+    content_base64: str = Field(min_length=1)
+    source_device: str = Field(default="", max_length=160)
+
+
 class LongevityHabitResponse(BaseModel):
     id: str
     title: str

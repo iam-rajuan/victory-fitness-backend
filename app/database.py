@@ -111,6 +111,11 @@ async def ensure_indexes() -> None:
     await health_samples_collection.create_index([("user_id", 1), ("start_time", -1)])
     await health_samples_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("start_time", -1)])
     await health_samples_collection.create_index("dedupe_key", unique=True)
+    await health_samples_collection.create_index(
+        [("user_id", 1), ("provider", 1), ("external_id", 1), ("type", 1), ("started_at", 1)],
+        unique=True,
+        sparse=True,
+    )
     await sync_jobs_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])
     await sync_jobs_collection.create_index([("status", 1), ("updated_at", -1)])
     await sync_errors_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])

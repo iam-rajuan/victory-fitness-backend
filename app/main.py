@@ -225,7 +225,9 @@ from .wearables import (
     build_longevity_metric_insights,
     build_longevity_wearables_response,
     router as wearables_router,
+    start_integration_queue,
     start_wearables_scheduler,
+    stop_integration_queue,
     stop_wearables_scheduler,
 )
 
@@ -561,6 +563,7 @@ async def startup() -> None:
         logger.warning("security_warning using default JWT secret; set JWT_SECRET_KEY before production deployment")
     await ensure_indexes()
     await _seed_admin_user()
+    await start_integration_queue()
     await start_wearables_scheduler()
     logger.info("startup_complete")
 
@@ -569,6 +572,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     logger.info("shutdown_begin")
     await stop_wearables_scheduler()
+    await stop_integration_queue()
     await close_database_connection()
     logger.info("shutdown_complete")
 

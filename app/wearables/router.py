@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
+import base64
+import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -8,11 +10,14 @@ from ..dependencies import ensure_subscription_feature_access, require_access_us
 from ..models import (
     IntegrationConnectStartResponse,
     IntegrationConnectionResponse,
+    IntegrationImportFileRequest,
+    IntegrationImportQrRequest,
     IntegrationListResponse,
     LongevityWearablesResponse,
     NativeIntegrationConnectedRequest,
     NativeIntegrationSamplesRequest,
 )
+from .adapters import PROVIDER_NOT_CONFIGURED, is_provider_configured
 from .schemas import (
     GarminWebhookRequest,
     GarminWebhookResponse,
@@ -36,6 +41,8 @@ from .service import (
     connect_demo_provider,
     decode_qr_health_payload,
     disconnect_provider,
+    enqueue_import_job,
+    enqueue_provider_sync_job,
     exchange_fitbit_code,
     exchange_garmin_code,
     handle_garmin_webhook,
@@ -100,6 +107,8 @@ async def integration_connect(
 ) -> IntegrationConnectStartResponse:
     normalized_provider = provider.strip().lower()
     if normalized_provider in {"fitbit", "garmin"}:
+        if not is_provider_configured(normalized_provider):
+            raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
         payload = await build_oauth_connect_url(str(user["_id"]), normalized_provider)
         return IntegrationConnectStartResponse(
             provider=normalized_provider,
@@ -204,11 +213,13 @@ async def integration_sync(
 ) -> ProviderSyncResponse:
     normalized_provider = provider.strip().lower()
     if normalized_provider == "fitbit":
-        inserted, skipped = await sync_fitbit(str(user["_id"]))
-        return ProviderSyncResponse(provider="fitbit", user_id=str(user["_id"]), synced_records=inserted, skipped_duplicates=skipped, message="Fitbit sync completed.")
+        job_id = await enqueue_provider_sync_job(str(user["_id"]), "fitbit")
+        return ProviderSyncResponse(provider="fitbit", user_id=str(user["_id"]), connection_status="syncing", message=f"Fitbit sync queued with job {job_id}.")
     if normalized_provider == "garmin":
-        inserted, skipped = await sync_garmin(str(user["_id"]))
-        return ProviderSyncResponse(provider="garmin", user_id=str(user["_id"]), synced_records=inserted, skipped_duplicates=skipped, message="Garmin sync completed.")
+        if not is_provider_configured("garmin"):
+            raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
+        job_id = await enqueue_provider_sync_job(str(user["_id"]), "garmin")
+        return ProviderSyncResponse(provider="garmin", user_id=str(user["_id"]), connection_status="syncing", message=f"Garmin sync queued with job {job_id}.")
     if normalized_provider in {"apple-health", "health-connect", "this-phone", "qr-import"}:
         connection = await connect_local_provider(str(user["_id"]), normalized_provider)
         return ProviderSyncResponse(
@@ -230,6 +241,71 @@ async def integration_disconnect(
 ) -> ProviderDisconnectResponse:
     await disconnect_provider(str(user["_id"]), provider)
     return ProviderDisconnectResponse(provider=provider)
+
+
+@router.post("/integrations/import/qr", response_model=ProviderSyncResponse)
+async def integration_import_qr(
+    payload: IntegrationImportQrRequest,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderSyncResponse:
+    decoded = decode_qr_health_payload(payload.qr_payload)
+    job_id = await enqueue_import_job(
+        str(user["_id"]),
+        "qr-import",
+        metrics=list(decoded["metrics"]),
+        source_device=payload.source_device or str(decoded.get("source_device") or "QR Import"),
+        batch_id=decoded.get("batch_id"),
+    )
+    return ProviderSyncResponse(
+        provider="qr-import",
+        user_id=str(user["_id"]),
+        connection_status="syncing",
+        message=f"QR import queued with job {job_id}.",
+    )
+
+
+@router.post("/integrations/import/file", response_model=ProviderSyncResponse)
+async def integration_import_file(
+    payload: IntegrationImportFileRequest,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderSyncResponse:
+    try:
+        decoded_bytes = base64.b64decode(payload.content_base64.encode("utf-8"))
+        parsed = json.loads(decoded_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Imported file must be base64-encoded JSON health data") from exc
+    metrics = parsed.get("metrics") if isinstance(parsed, dict) else parsed
+    if not isinstance(metrics, list) or not metrics:
+        raise HTTPException(status_code=400, detail="Imported file does not contain any health metrics")
+    job_id = await enqueue_import_job(
+        str(user["_id"]),
+        "qr-import",
+        metrics=[dict(item) for item in metrics],
+        source_device=payload.source_device or payload.file_name or "Imported File",
+        batch_id=str(parsed.get("batch_id") or "") if isinstance(parsed, dict) else None,
+    )
+    return ProviderSyncResponse(
+        provider="qr-import",
+        user_id=str(user["_id"]),
+        connection_status="syncing",
+        message=f"File import queued with job {job_id}.",
+    )
+
+
+@router.post("/webhooks/fitbit")
+async def fitbit_webhook(
+    request: Request,
+) -> dict[str, object]:
+    if not is_provider_configured("fitbit"):
+        raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
+    payload = await request.json()
+    return {
+        "accepted": True,
+        "provider": "fitbit",
+        "queued": False,
+        "message": "Fitbit webhook received.",
+        "events": len(payload) if isinstance(payload, list) else 1,
+    }
 
 
 @router.get("/wearables/connections", response_model=WearableConnectionsResponse)
@@ -447,6 +523,8 @@ async def garmin_webhook(
     request: Request,
     payload: GarminWebhookRequest,
 ) -> GarminWebhookResponse:
+    if not is_provider_configured("garmin"):
+        raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
     await verify_garmin_webhook_signature(request)
     accepted, synced_records = await handle_garmin_webhook(payload.model_dump())
     if not accepted:

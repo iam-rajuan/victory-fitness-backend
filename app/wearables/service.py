@@ -30,6 +30,8 @@ from ..database import (
     wearable_connections_collection,
 )
 from ..models import LongevityWearableDeviceResponse, LongevityWearablesResponse
+from .adapters import PROVIDER_NOT_CONFIGURED, get_provider_adapter, is_provider_configured
+from .queue import enqueue_integration_job
 
 
 logger = logging.getLogger("victory_fitness.wearables")
@@ -42,6 +44,7 @@ SUPPORTED_METRIC_TYPES = {
     "sleep",
     "calories",
     "workouts",
+    "workout",
     "hrv",
     "spo2",
     "stress",
@@ -50,7 +53,7 @@ SUPPORTED_METRIC_TYPES = {
 }
 PROVIDER_DISPLAY = {
     "apple-health": {
-        "name": "Apple Health",
+        "name": "Apple Watch / Apple Health",
         "image": "https://images.unsplash.com/photo-1434493789847-2f02dc6ca35d?w=600&q=80",
     },
     "health-connect": {
@@ -227,14 +230,19 @@ async def _append_audit_log(user_id: str, provider: str, action: str, *, status_
 
 
 async def _start_sync_job(user_id: str, provider: str, *, trigger: str) -> str:
+    now = _utc_now()
     document = {
         "_id": ObjectId(),
         "user_id": user_id,
         "provider": provider,
         "trigger": trigger,
         "status": "running",
-        "created_at": _utc_now(),
-        "updated_at": _utc_now(),
+        "started_at": now,
+        "finished_at": None,
+        "records_processed": 0,
+        "error_message": "",
+        "created_at": now,
+        "updated_at": now,
     }
     await sync_jobs_collection.insert_one(document)
     return str(document["_id"])
@@ -250,7 +258,10 @@ async def _finish_sync_job(job_id: str | None, *, status_value: str, synced_reco
                 "status": status_value,
                 "synced_records": synced_records,
                 "skipped_duplicates": skipped_duplicates,
+                "records_processed": synced_records,
+                "error_message": detail if status_value == "failed" else "",
                 "detail": detail,
+                "finished_at": _utc_now(),
                 "updated_at": _utc_now(),
             }
         },
@@ -264,6 +275,9 @@ async def _record_sync_error(user_id: str, provider: str, *, job_id: str | None 
             "provider": provider,
             "job_id": job_id,
             "stage": stage,
+            "error_code": stage or "sync_error",
+            "error_message": detail,
+            "raw_error": detail,
             "detail": detail,
             "metadata": dict(metadata or {}),
             "created_at": _utc_now(),
@@ -351,6 +365,10 @@ def _serialize_integration(record: dict | None, provider: str) -> dict[str, Any]
     last_sync_message = ""
     connected_at = None
     last_synced_at = None
+    provider_configured = is_provider_configured(provider)
+
+    if not provider_configured:
+        status_value = PROVIDER_NOT_CONFIGURED
 
     if record:
         connected = str(record.get("status") or "").lower() == "connected"
@@ -360,7 +378,9 @@ def _serialize_integration(record: dict | None, provider: str) -> dict[str, Any]
         last_sync_message = str(record.get("last_sync_message") or "")
         metadata = dict(record.get("metadata") or {})
         last_error = last_sync_message if last_sync_status == "failed" else ""
-        if last_sync_status == "failed":
+        if not provider_configured:
+            status_value = PROVIDER_NOT_CONFIGURED
+        elif last_sync_status == "failed":
             status_value = "error"
         elif last_sync_status == "running":
             status_value = "syncing"
@@ -428,15 +448,15 @@ def decrypt_token(value: str | None) -> str:
 
 
 def _build_dedupe_key(document: dict[str, Any]) -> str:
-    external_id = str((document.get("metadata") or {}).get("external_id") or "").strip()
+    external_id = str(document.get("external_id") or (document.get("metadata") or {}).get("external_id") or "").strip()
     payload = {
         "user_id": str(document.get("user_id") or ""),
         "provider": str(document.get("provider") or ""),
-        "metric_type": str(document.get("metric_type") or ""),
+        "metric_type": str(document.get("metric_type") or document.get("type") or ""),
         "value": document.get("value"),
         "unit": str(document.get("unit") or ""),
-        "start_time": _as_utc(document["start_time"]).isoformat(),
-        "end_time": _as_utc(document["end_time"]).isoformat(),
+        "start_time": _as_utc(document["start_time"] if document.get("start_time") is not None else document["started_at"]).isoformat(),
+        "end_time": _as_utc(document["end_time"] if document.get("end_time") is not None else document["ended_at"]).isoformat(),
         "source_device": str(document.get("source_device") or ""),
         "external_id": external_id,
     }
@@ -569,6 +589,56 @@ async def list_integrations(user_id: str) -> list[dict[str, Any]]:
     return [_serialize_integration(records_by_provider.get(provider), provider) for provider in SUPPORTED_PROVIDERS]
 
 
+async def enqueue_provider_sync_job(user_id: str, provider: str, *, trigger: str = "manual_sync") -> str:
+    provider = _ensure_supported_provider(provider)
+    require_configured = provider in OAUTH_PROVIDERS
+    if require_configured and not is_provider_configured(provider):
+        raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
+    job_id = await _start_sync_job(user_id, provider, trigger=trigger)
+    await upsert_wearable_connection(
+        user_id,
+        provider,
+        status_value="connected",
+        last_sync_status="running",
+        last_sync_message=f"{provider} sync queued.",
+    )
+    await enqueue_integration_job(
+        {
+            "job_id": job_id,
+            "job_type": "sync-provider-data",
+            "user_id": user_id,
+            "provider": provider,
+        }
+    )
+    await _append_audit_log(user_id, provider, "sync_queued", detail=f"{provider} sync queued.", metadata={"job_id": job_id})
+    return job_id
+
+
+async def enqueue_import_job(
+    user_id: str,
+    provider: str,
+    *,
+    metrics: list[dict[str, Any]],
+    source_device: str = "",
+    batch_id: str | None = None,
+) -> str:
+    provider = _ensure_supported_provider(provider)
+    job_id = await _start_sync_job(user_id, provider, trigger="process-imported-health-data")
+    await enqueue_integration_job(
+        {
+            "job_id": job_id,
+            "job_type": "process-imported-health-data",
+            "user_id": user_id,
+            "provider": provider,
+            "metrics": metrics,
+            "source_device": source_device,
+            "batch_id": batch_id,
+        }
+    )
+    await _append_audit_log(user_id, provider, "import_queued", detail="Imported health payload queued.", metadata={"job_id": job_id})
+    return job_id
+
+
 async def mark_native_provider_connected(
     user_id: str,
     provider: str,
@@ -580,7 +650,7 @@ async def mark_native_provider_connected(
 ) -> dict:
     provider = _normalize_provider(provider)
     if provider not in {"apple-health", "health-connect"}:
-        raise HTTPException(status_code=400, detail="Native connected endpoint only supports Apple Health or Health Connect")
+        raise HTTPException(status_code=400, detail="Native connected endpoint only supports Apple Watch / Apple Health or Health Connect")
     merged_metadata = {
         "source": "native",
         "native_sync_enabled": True,
@@ -612,7 +682,8 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
         "source": source,
     }
     if provider in {"fitbit", "garmin"}:
-        metadata["demo_sync_enabled"] = True
+        metadata["oauth_required"] = True
+        last_sync_message = f"{PROVIDER_DISPLAY[provider]['name']} requires OAuth login through the connect endpoint."
     if provider == "apple-health":
         source = "native"
         metadata = {
@@ -621,7 +692,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
             "native_permission_required": True,
             "ecosystem": "Apple",
         }
-        last_sync_message = "Apple Health connected successfully. Press sync to import health data."
+        last_sync_message = "Apple Watch / Apple Health connected successfully. Press sync to import health data."
     if provider == "health-connect":
         source = "native"
         metadata = {
@@ -659,7 +730,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
 
 
 async def connect_demo_provider(user_id: str, provider: str) -> dict:
-    return await connect_local_provider(user_id, provider)
+    raise HTTPException(status_code=410, detail="demo_connect_removed")
 
 
 async def disconnect_provider(user_id: str, provider: str) -> None:
@@ -690,6 +761,8 @@ def _normalize_metric_document(
     fallback_source_device: str = "",
 ) -> dict[str, Any]:
     metric_type = str(metric.get("metric_type") or "").strip().lower()
+    if metric_type == "workout":
+        metric_type = "workouts"
     if metric_type not in SUPPORTED_METRIC_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported metric_type: {metric_type}")
     start_time = metric.get("start_time")
@@ -698,18 +771,26 @@ def _normalize_metric_document(
         raise HTTPException(status_code=400, detail="Each metric requires start_time and end_time")
 
     metadata = dict(metric.get("metadata") or {})
+    external_id = str(metric.get("external_id") or metadata.get("external_id") or "").strip()
+    canonical_type = "workout" if metric_type == "workouts" else metric_type
+    created_at = _utc_now()
     document = {
         "_id": ObjectId(),
         "user_id": user_id,
         "provider": provider,
+        "external_id": external_id,
+        "type": canonical_type,
         "metric_type": metric_type,
         "value": metric.get("value"),
         "unit": str(metric.get("unit") or ""),
+        "started_at": _as_utc(start_time),
+        "ended_at": _as_utc(end_time),
         "start_time": _as_utc(start_time),
         "end_time": _as_utc(end_time),
         "source_device": str(metric.get("source_device") or fallback_source_device or ""),
         "metadata": metadata,
-        "synced_at": _utc_now(),
+        "created_at": created_at,
+        "synced_at": created_at,
     }
     document["dedupe_key"] = _build_dedupe_key(document)
     return document
@@ -1248,13 +1329,16 @@ def _get_fitbit_settings() -> dict[str, Any]:
     client_secret = (getattr(settings, "fitbit_client_secret", "") or "").strip()
     redirect_uri = (getattr(settings, "fitbit_redirect_uri", "") or "").strip() or f"{settings.api_public_base_url}/integrations/fitbit/callback"
     if not client_id or not client_secret or not redirect_uri:
-        raise HTTPException(status_code=503, detail="Fitbit OAuth is not configured")
+        raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
     scopes = list(getattr(settings, "fitbit_scopes", []) or ["activity", "heartrate", "sleep", "profile"])
     return {
         "client_id": client_id,
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
         "scopes": scopes,
+        "authorize_url": (getattr(settings, "fitbit_auth_url", "") or FITBIT_AUTHORIZE_URL).strip(),
+        "token_url": (getattr(settings, "fitbit_token_url", "") or FITBIT_TOKEN_URL).strip(),
+        "api_base": (getattr(settings, "fitbit_api_base_url", "") or FITBIT_API_BASE).strip().rstrip("/"),
     }
 
 
@@ -1265,8 +1349,9 @@ def _get_garmin_settings() -> dict[str, Any]:
     authorize_url = (getattr(settings, "garmin_authorize_url", "") or "").strip()
     token_url = (getattr(settings, "garmin_token_url", "") or "").strip()
     api_base = (getattr(settings, "garmin_api_base_url", "") or "").strip()
-    if not client_id or not client_secret or not redirect_uri or not authorize_url or not token_url or not api_base:
-        raise HTTPException(status_code=503, detail="Garmin OAuth is not configured")
+    enabled = bool(getattr(settings, "garmin_enabled", False))
+    if not enabled or not client_id or not client_secret or not redirect_uri or not authorize_url or not token_url or not api_base:
+        raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
     scopes = list(getattr(settings, "garmin_scopes", []) or [])
     return {
         "client_id": client_id,
@@ -1284,7 +1369,7 @@ async def build_oauth_connect_url(user_id: str, provider: str) -> dict[str, Any]
     if provider == "fitbit":
         config = _get_fitbit_settings()
         scopes = config["scopes"]
-        base_url = FITBIT_AUTHORIZE_URL
+        base_url = str(config["authorize_url"] or FITBIT_AUTHORIZE_URL)
     elif provider == "garmin":
         config = _get_garmin_settings()
         scopes = config["scopes"]
@@ -1342,7 +1427,7 @@ async def exchange_fitbit_code(state: str, code: str) -> dict[str, Any]:
     config = _get_fitbit_settings()
     response = await _http_json_request(
         "POST",
-        FITBIT_TOKEN_URL,
+        _get_fitbit_settings()["token_url"],
         headers={"Authorization": _basic_auth_header(config["client_id"], config["client_secret"])},
         data={
             "client_id": config["client_id"],
@@ -1414,7 +1499,7 @@ async def _refresh_oauth_connection(connection: dict) -> dict:
         config = _get_fitbit_settings()
         response = await _http_json_request(
             "POST",
-            FITBIT_TOKEN_URL,
+            _get_fitbit_settings()["token_url"],
             headers={"Authorization": _basic_auth_header(config["client_id"], config["client_secret"])},
             data={"grant_type": "refresh_token", "refresh_token": refresh_token},
         )
@@ -1495,9 +1580,10 @@ def _fitbit_daily_record_to_metric(
 
 
 async def _fetch_fitbit_json(access_token: str, path: str) -> dict[str, Any]:
+    fitbit_api_base = str(_get_fitbit_settings()["api_base"] or FITBIT_API_BASE)
     return await _http_json_request(
         "GET",
-        f"{FITBIT_API_BASE}{path}",
+        f"{fitbit_api_base}{path}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
 
@@ -1761,10 +1847,7 @@ async def sync_connected_wearables_for_user(
     for connection in connections:
         provider = str(connection.get("provider") or "")
         try:
-            metadata = dict(connection.get("metadata") or {})
-            if bool(metadata.get("demo_sync_enabled")):
-                await _sync_demo_provider(connection)
-            elif provider == "fitbit":
+            if provider == "fitbit":
                 await _sync_fitbit_remote(connection, today, today)
             elif provider == "garmin":
                 await _sync_garmin_remote(connection, today, today)
