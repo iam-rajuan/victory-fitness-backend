@@ -1775,6 +1775,11 @@ async def get_challenge_detail(
         normalized_plan_days,
         membership.get("plan_progress") if membership and isinstance(membership.get("plan_progress"), dict) else {},
     )
+    current_day_number = _get_current_challenge_day_number(
+        membership or {},
+        normalized_plan_days,
+        max(int(challenge.get("duration_days") or 0), 1),
+    ) if membership and has_joined and challenge_status == "ACTIVE" else None
     viewer_points_earned = _calculate_challenge_points_earned(
         normalized_plan_days,
         {**(membership or {}), "challenge_points": challenge_points},
@@ -1823,6 +1828,8 @@ async def get_challenge_detail(
         can_start=can_start,
         can_post=can_post,
         has_joined=has_joined,
+        current_day_number=current_day_number,
+        can_complete_today=bool(has_joined and membership_status == "ACTIVE" and challenge_status == "ACTIVE" and current_day_number),
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
     )
 

@@ -555,6 +555,8 @@ class ChallengeDetailResponse(BaseModel):
     can_start: bool = False
     can_post: bool = False
     has_joined: bool = False
+    current_day_number: int | None = None
+    can_complete_today: bool = False
     messages: list["ChallengeChatMessageResponse"] = Field(default_factory=list)
 
 
