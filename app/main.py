@@ -2335,6 +2335,105 @@ async def complete_challenge_plan_day(
     )
 
 
+@app.post("/challenges/{challenge_id}/complete-today", response_model=ChallengePlanProgressResponse)
+async def complete_challenge_today(
+    challenge_id: str,
+    user: dict = Depends(_require_challenge_access_user),
+) -> ChallengePlanProgressResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
+    _ensure_challenge_write_access(membership, challenge)
+
+    plan_days = _get_normalized_plan_days(challenge)
+    duration_days = max(int(challenge.get("duration_days") or 0), 1)
+    day_number = _get_current_challenge_day_number(membership, plan_days, duration_days)
+
+    plan_day = next((day for day in plan_days if int(day.get("day_number") or 0) == day_number), None)
+    if plan_day:
+        existing_day_progress = _get_membership_day_progress(membership, day_number)
+        valid_section_ids, valid_exercise_ids = _get_plan_day_ids(plan_day)
+        completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
+            existing_day_progress,
+            valid_section_ids,
+            valid_exercise_ids,
+        )
+
+        if valid_exercise_ids and len(completed_exercise_ids) < len(valid_exercise_ids):
+            raise HTTPException(status_code=400, detail="Complete every exercise before marking the day done")
+        if not valid_exercise_ids and valid_section_ids and len(completed_section_ids) < len(valid_section_ids):
+            raise HTTPException(status_code=400, detail="Complete every section before marking the day done")
+
+        return await _store_membership_plan_progress(
+            challenge=challenge,
+            membership=membership,
+            user=user,
+            day_number=day_number,
+            completed_section_ids=completed_section_ids,
+            completed_exercise_ids=completed_exercise_ids,
+            completed=True,
+            emit_progress_message=True,
+        )
+
+    current_progress = _count_completed_plan_days_from_start(
+        plan_days,
+        membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {},
+    ) if plan_days else max(int(membership.get("progress_days_completed") or 0), 0)
+    next_progress = max(current_progress, min(day_number, duration_days))
+    next_status = "COMPLETED" if next_progress >= duration_days else "ACTIVE"
+    now = datetime.now(timezone.utc)
+
+    existing_plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    next_plan_progress = dict(existing_plan_progress)
+    next_plan_progress[str(day_number)] = {
+        "completed": True,
+        "completed_section_ids": [],
+        "completed_exercise_ids": [],
+        "updated_at": now.isoformat(),
+    }
+
+    update_doc = {
+        "plan_progress": next_plan_progress,
+        "progress_days_completed": next_progress,
+        "status": next_status,
+        "updated_at": now,
+    }
+    update_operations: dict[str, dict] = {"$set": update_doc}
+    if next_status == "COMPLETED":
+        update_doc["completed_at"] = now
+    elif membership.get("completed_at"):
+        update_operations["$unset"] = {"completed_at": ""}
+
+    await challenge_memberships_collection.update_one({"_id": membership["_id"]}, update_operations)
+
+    progress_payload = {
+        "completed_day": day_number,
+        "total_days": duration_days,
+        "membership_status": next_status,
+    }
+    message_document = {
+        "_id": ObjectId(),
+        "challenge_id": str(challenge["_id"]),
+        "author_id": str(user["_id"]),
+        "message_type": "progress_update",
+        "content": f"Completed day {day_number}.",
+        "image_url": "",
+        "reply_to_message_id": None,
+        "progress_payload": progress_payload,
+        "created_at": now,
+        "updated_at": now,
+    }
+    await challenge_chat_messages_collection.insert_one(message_document)
+    await _broadcast_challenge_chat_event("message_created", str(challenge["_id"]), message_document)
+
+    updated_membership = await challenge_memberships_collection.find_one({"_id": membership["_id"]})
+    if not updated_membership:
+        raise HTTPException(status_code=404, detail="Challenge membership not found")
+
+    membership_with_points = dict(updated_membership)
+    membership_with_points["challenge_points"] = max(int(challenge.get("points") or 0), 0)
+    return _serialize_challenge_plan_progress_response(str(challenge["_id"]), membership_with_points, plan_days)
+
+
 @app.post(
     "/challenges/{challenge_id}/plan/days/{day_number}/sections/{section_id}/complete",
     response_model=ChallengePlanProgressResponse,
