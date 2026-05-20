@@ -37,6 +37,8 @@ def is_provider_configured(provider: str) -> bool:
     normalized = (provider or "").strip().lower()
     if normalized == "fitbit":
         return bool(settings.fitbit_client_id and settings.fitbit_client_secret)
+    if normalized == "google-fit":
+        return bool(settings.google_client_id and settings.google_client_secret and settings.google_fit_api_base_url)
     if normalized == "garmin":
         return bool(
             settings.garmin_enabled
@@ -131,6 +133,47 @@ class GarminAdapter:
         connection = await wearable_connections_collection.find_one({"user_id": user_id, "provider": self.provider})
         if not connection:
             raise HTTPException(status_code=404, detail="Garmin is not connected for this user")
+        updated = await _refresh_oauth_connection(connection)
+        return {"provider": self.provider, "status": str(updated.get("status") or "connected")}
+
+    async def normalize(self, raw_data: Any) -> list[dict[str, Any]]:
+        return [dict(item) for item in list(raw_data or [])]
+
+
+@dataclass(slots=True)
+class GoogleFitAdapter:
+    provider: str = "google-fit"
+
+    async def connect(self, user_id: str) -> dict[str, Any]:
+        require_provider_configured(self.provider)
+        from .service import build_oauth_connect_url
+
+        return await build_oauth_connect_url(user_id, self.provider)
+
+    async def callback(self, params: dict[str, Any]) -> dict[str, Any]:
+        from .service import exchange_google_fit_code
+
+        return await exchange_google_fit_code(str(params.get("state") or ""), str(params.get("code") or ""))
+
+    async def sync(self, user_id: str) -> dict[str, Any]:
+        from .service import sync_google_fit
+
+        inserted, skipped = await sync_google_fit(user_id)
+        return {"provider": self.provider, "inserted": inserted, "skipped": skipped}
+
+    async def disconnect(self, user_id: str) -> dict[str, Any]:
+        from .service import disconnect_provider
+
+        await disconnect_provider(user_id, self.provider)
+        return {"provider": self.provider, "disconnected": True}
+
+    async def refresh_token(self, user_id: str) -> dict[str, Any]:
+        from ..database import wearable_connections_collection
+        from .service import _refresh_oauth_connection  # type: ignore[attr-defined]
+
+        connection = await wearable_connections_collection.find_one({"user_id": user_id, "provider": self.provider})
+        if not connection:
+            raise HTTPException(status_code=404, detail="Google Fit is not connected for this user")
         updated = await _refresh_oauth_connection(connection)
         return {"provider": self.provider, "status": str(updated.get("status") or "connected")}
 
@@ -234,6 +277,8 @@ def get_provider_adapter(provider: str) -> HealthProviderAdapter:
         return FitbitAdapter()
     if normalized == "garmin":
         return GarminAdapter()
+    if normalized == "google-fit":
+        return GoogleFitAdapter()
     if normalized == "apple-health":
         return AppleHealthAdapter()
     if normalized == "health-connect":

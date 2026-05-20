@@ -134,5 +134,21 @@ class Settings:
     garmin_scopes = _get_csv_list("GARMIN_SCOPES", "")
     garmin_webhook_secret = os.getenv("GARMIN_WEBHOOK_SECRET", "").strip()
 
+    google_client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+    google_project_id = os.getenv("GOOGLE_PROJECT_ID", "").strip()
+    google_auth_uri = os.getenv("GOOGLE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth").strip()
+    google_token_uri = os.getenv("GOOGLE_TOKEN_URI", "https://oauth2.googleapis.com/token").strip()
+    google_auth_provider_cert_url = os.getenv(
+        "GOOGLE_AUTH_PROVIDER_CERT_URL",
+        "https://www.googleapis.com/oauth2/v1/certs",
+    ).strip()
+    google_fit_redirect_uri = os.getenv("GOOGLE_FIT_REDIRECT_URI", "").strip()
+    google_fit_api_base_url = os.getenv("GOOGLE_FIT_API_BASE_URL", "https://www.googleapis.com/fitness/v1").strip()
+    google_fit_scopes = _get_csv_list(
+        "GOOGLE_FIT_SCOPES",
+        "https://www.googleapis.com/auth/fitness.activity.read,https://www.googleapis.com/auth/fitness.location.read,https://www.googleapis.com/auth/fitness.heart_rate.read",
+    )
+
 
 settings = Settings()

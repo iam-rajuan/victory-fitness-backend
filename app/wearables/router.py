@@ -44,6 +44,7 @@ from .service import (
     enqueue_import_job,
     enqueue_provider_sync_job,
     exchange_fitbit_code,
+    exchange_google_fit_code,
     exchange_garmin_code,
     handle_garmin_webhook,
     ingest_mobile_sync,
@@ -55,6 +56,7 @@ from .service import (
     summarize_health_metrics,
     sync_connected_wearables_for_user,
     sync_fitbit,
+    sync_google_fit as sync_google_fit_provider,
     sync_garmin,
     verify_garmin_webhook_signature,
 )
@@ -106,7 +108,7 @@ async def integration_connect(
     user: dict = Depends(require_longevity_access_user),
 ) -> IntegrationConnectStartResponse:
     normalized_provider = provider.strip().lower()
-    if normalized_provider in {"fitbit", "garmin"}:
+    if normalized_provider in {"fitbit", "google-fit", "garmin"}:
         if not is_provider_configured(normalized_provider):
             raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
         payload = await build_oauth_connect_url(str(user["_id"]), normalized_provider)
@@ -151,6 +153,8 @@ async def integration_callback(
     normalized_provider = provider.strip().lower()
     if normalized_provider == "fitbit":
         connection = await exchange_fitbit_code(state, code)
+    elif normalized_provider == "google-fit":
+        connection = await exchange_google_fit_code(state, code)
     elif normalized_provider == "garmin":
         connection = await exchange_garmin_code(state, code)
     else:
@@ -215,6 +219,11 @@ async def integration_sync(
     if normalized_provider == "fitbit":
         job_id = await enqueue_provider_sync_job(str(user["_id"]), "fitbit")
         return ProviderSyncResponse(provider="fitbit", user_id=str(user["_id"]), connection_status="syncing", message=f"Fitbit sync queued with job {job_id}.")
+    if normalized_provider == "google-fit":
+        if not is_provider_configured("google-fit"):
+            raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
+        job_id = await enqueue_provider_sync_job(str(user["_id"]), "google-fit")
+        return ProviderSyncResponse(provider="google-fit", user_id=str(user["_id"]), connection_status="syncing", message=f"Google Fit sync queued with job {job_id}.")
     if normalized_provider == "garmin":
         if not is_provider_configured("garmin"):
             raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
@@ -304,6 +313,22 @@ async def fitbit_webhook(
         "provider": "fitbit",
         "queued": False,
         "message": "Fitbit webhook received.",
+        "events": len(payload) if isinstance(payload, list) else 1,
+    }
+
+
+@router.post("/webhooks/google-fit")
+async def google_fit_webhook(
+    request: Request,
+) -> dict[str, object]:
+    if not is_provider_configured("google-fit"):
+        raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
+    payload = await request.json()
+    return {
+        "accepted": True,
+        "provider": "google-fit",
+        "queued": False,
+        "message": "Google Fit webhook received.",
         "events": len(payload) if isinstance(payload, list) else 1,
     }
 
@@ -484,6 +509,46 @@ async def garmin_connect(
 ) -> OAuthConnectResponse:
     payload = await build_oauth_connect_url(str(user["_id"]), "garmin")
     return OAuthConnectResponse(**payload)
+
+
+@router.get("/wearables/google-fit/connect", response_model=OAuthConnectResponse)
+async def google_fit_connect(
+    user: dict = Depends(require_longevity_access_user),
+) -> OAuthConnectResponse:
+    payload = await build_oauth_connect_url(str(user["_id"]), "google-fit")
+    return OAuthConnectResponse(**payload)
+
+
+@router.get("/wearables/google-fit/callback", response_model=WearableConnectionResponse)
+async def google_fit_callback(
+    code: str,
+    state: str,
+) -> WearableConnectionResponse:
+    connection = await exchange_google_fit_code(state, code)
+    return WearableConnectionResponse(**connection)
+
+
+@router.post("/wearables/google-fit/sync", response_model=ProviderSyncResponse)
+async def google_fit_sync_endpoint(
+    payload: ProviderSyncRequest,
+    user: dict = Depends(require_longevity_access_user),
+) -> ProviderSyncResponse:
+    inserted, skipped = await sync_google_fit_provider(
+        str(user["_id"]),
+        start_date=payload.start_date,
+        end_date=payload.end_date,
+        metrics=[item.model_dump() for item in payload.metrics],
+        source_device=payload.source_device,
+        pull_remote=payload.pull_remote,
+    )
+    return ProviderSyncResponse(
+        provider="google-fit",
+        user_id=str(user["_id"]),
+        synced_records=inserted,
+        skipped_duplicates=skipped,
+        last_synced_at=None,
+        message="Google Fit sync completed.",
+    )
 
 
 @router.get("/wearables/garmin/callback", response_model=WearableConnectionResponse)

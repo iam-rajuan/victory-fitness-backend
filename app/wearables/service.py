@@ -36,8 +36,8 @@ from .queue import enqueue_integration_job
 
 logger = logging.getLogger("victory_fitness.wearables")
 
-SUPPORTED_PROVIDERS = ("apple-health", "health-connect", "fitbit", "garmin", "this-phone", "qr-import")
-OAUTH_PROVIDERS = {"fitbit", "garmin"}
+SUPPORTED_PROVIDERS = ("apple-health", "health-connect", "fitbit", "google-fit", "garmin", "this-phone", "qr-import")
+OAUTH_PROVIDERS = {"fitbit", "google-fit", "garmin"}
 SUPPORTED_METRIC_TYPES = {
     "steps",
     "heart_rate",
@@ -57,12 +57,16 @@ PROVIDER_DISPLAY = {
         "image": "https://images.unsplash.com/photo-1434493789847-2f02dc6ca35d?w=600&q=80",
     },
     "health-connect": {
-        "name": "Google Fit",
+        "name": "Health Connect",
         "image": "https://images.unsplash.com/photo-1510017803434-a899398421b3?w=600&q=80",
     },
     "fitbit": {
         "name": "Fitbit",
         "image": "https://images.unsplash.com/photo-1575311373937-040b8e1fd5b2?w=600&q=80",
+    },
+    "google-fit": {
+        "name": "Google Fit",
+        "image": "https://images.unsplash.com/photo-1510017803434-a899398421b3?w=600&q=80",
     },
     "garmin": {
         "name": "Garmin",
@@ -81,6 +85,7 @@ PROVIDER_CONNECTION_TYPE = {
     "apple-health": "native",
     "health-connect": "native",
     "fitbit": "oauth",
+    "google-fit": "oauth",
     "garmin": "oauth",
     "this-phone": "native",
     "qr-import": "import",
@@ -89,6 +94,7 @@ DEMO_PROVIDER_SOURCE_DEVICE = {
     "apple-health": "Apple Watch Series 9",
     "health-connect": "Pixel Watch 3",
     "fitbit": "Fitbit Charge 6",
+    "google-fit": "Google Fit",
     "garmin": "Garmin Venu 3",
     "this-phone": "This Phone",
     "qr-import": "QR Scanner Import",
@@ -108,6 +114,11 @@ DEMO_PROVIDER_METADATA = {
         "source_app": "Fitbit Cloud",
         "ecosystem": "Fitbit",
         "sample_origin": "fitbit_demo_seed",
+    },
+    "google-fit": {
+        "source_app": "Google Fit",
+        "ecosystem": "Google",
+        "sample_origin": "google_fit_sync",
     },
     "garmin": {
         "source_app": "Garmin Connect",
@@ -200,6 +211,7 @@ LONGEVITY_MASTERCLASS_TEMPLATES = {
 FITBIT_AUTHORIZE_URL = "https://www.fitbit.com/oauth2/authorize"
 FITBIT_TOKEN_URL = "https://api.fitbit.com/oauth2/token"
 FITBIT_API_BASE = "https://api.fitbit.com"
+GOOGLE_FIT_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _scheduler_task: asyncio.Task | None = None
 _scheduler_stop = asyncio.Event()
 
@@ -681,7 +693,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
     metadata: dict[str, Any] = {
         "source": source,
     }
-    if provider in {"fitbit", "garmin"}:
+    if provider in {"fitbit", "google-fit", "garmin"}:
         metadata["oauth_required"] = True
         last_sync_message = f"{PROVIDER_DISPLAY[provider]['name']} requires OAuth login through the connect endpoint."
     if provider == "apple-health":
@@ -1364,12 +1376,37 @@ def _get_garmin_settings() -> dict[str, Any]:
     }
 
 
+def _get_google_fit_settings() -> dict[str, Any]:
+    client_id = (getattr(settings, "google_client_id", "") or "").strip()
+    client_secret = (getattr(settings, "google_client_secret", "") or "").strip()
+    redirect_uri = (getattr(settings, "google_fit_redirect_uri", "") or "").strip() or f"{settings.api_public_base_url}/integrations/google-fit/callback"
+    authorize_url = (getattr(settings, "google_auth_uri", "") or GOOGLE_FIT_AUTHORIZE_URL).strip() or GOOGLE_FIT_AUTHORIZE_URL
+    token_url = (getattr(settings, "google_token_uri", "") or "").strip()
+    api_base = (getattr(settings, "google_fit_api_base_url", "") or "").strip()
+    scopes = list(getattr(settings, "google_fit_scopes", []) or [])
+    if not client_id or not client_secret or not redirect_uri or not authorize_url or not token_url or not api_base:
+        raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
+    return {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "authorize_url": authorize_url,
+        "token_url": token_url,
+        "api_base": api_base.rstrip("/"),
+        "scopes": scopes,
+    }
+
+
 async def build_oauth_connect_url(user_id: str, provider: str) -> dict[str, Any]:
     provider = _ensure_supported_provider(provider)
     if provider == "fitbit":
         config = _get_fitbit_settings()
         scopes = config["scopes"]
         base_url = str(config["authorize_url"] or FITBIT_AUTHORIZE_URL)
+    elif provider == "google-fit":
+        config = _get_google_fit_settings()
+        scopes = config["scopes"]
+        base_url = str(config["authorize_url"] or GOOGLE_FIT_AUTHORIZE_URL)
     elif provider == "garmin":
         config = _get_garmin_settings()
         scopes = config["scopes"]
@@ -1396,6 +1433,10 @@ async def build_oauth_connect_url(user_id: str, provider: str) -> dict[str, Any]
         "scope": " ".join(scopes),
         "state": state,
     }
+    if provider == "google-fit":
+        query["access_type"] = "offline"
+        query["include_granted_scopes"] = "true"
+        query["prompt"] = "consent"
     authorization_url = f"{base_url}?{urllib.parse.urlencode(query)}"
     return {
         "provider": provider,
@@ -1489,6 +1530,39 @@ async def exchange_garmin_code(state: str, code: str) -> dict[str, Any]:
     return _serialize_connection(updated)
 
 
+async def exchange_google_fit_code(state: str, code: str) -> dict[str, Any]:
+    connection = await _get_connection_by_state("google-fit", state)
+    config = _get_google_fit_settings()
+    response = await _http_json_request(
+        "POST",
+        config["token_url"],
+        data={
+            "client_id": config["client_id"],
+            "client_secret": config["client_secret"],
+            "grant_type": "authorization_code",
+            "redirect_uri": config["redirect_uri"],
+            "code": code,
+        },
+    )
+    expires_at = _utc_now() + timedelta(seconds=int(response.get("expires_in") or 0))
+    updated = await upsert_wearable_connection(
+        str(connection["user_id"]),
+        "google-fit",
+        status_value="connected",
+        scopes=str(response.get("scope") or "").split(),
+        provider_user_id=str(response.get("id_token") or response.get("sub") or ""),
+        access_token=str(response.get("access_token") or ""),
+        refresh_token=str(response.get("refresh_token") or ""),
+        token_expires_at=expires_at,
+        oauth_state="",
+        connected_at=_utc_now(),
+        metadata={"oauth_scope": str(response.get("scope") or "")},
+        last_sync_status="idle",
+        last_sync_message="Google Fit connected successfully.",
+    )
+    return _serialize_connection(updated)
+
+
 async def _refresh_oauth_connection(connection: dict) -> dict:
     provider = str(connection.get("provider") or "")
     refresh_token = decrypt_token(str(connection.get("refresh_token_encrypted") or ""))
@@ -1510,6 +1584,18 @@ async def _refresh_oauth_connection(connection: dict) -> dict:
             config["token_url"],
             headers={"Authorization": _basic_auth_header(config["client_id"], config["client_secret"])},
             data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+        )
+    elif provider == "google-fit":
+        config = _get_google_fit_settings()
+        response = await _http_json_request(
+            "POST",
+            config["token_url"],
+            data={
+                "client_id": config["client_id"],
+                "client_secret": config["client_secret"],
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+            },
         )
     else:
         return connection
@@ -1693,6 +1779,31 @@ async def sync_fitbit(
     return await _sync_fitbit_remote(connection, start, end)
 
 
+async def sync_google_fit(
+    user_id: str,
+    *,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    metrics: list[dict[str, Any]] | None = None,
+    source_device: str = "",
+    pull_remote: bool = True,
+) -> tuple[int, int]:
+    if metrics:
+        result = await ingest_mobile_sync(user_id, "google-fit", metrics, source_device=source_device)
+        return int(result["inserted"]), int(result["skipped"])
+
+    connection = await wearable_connections_collection.find_one({"user_id": user_id, "provider": "google-fit"})
+    if not connection or str(connection.get("status") or "").lower() != "connected":
+        raise HTTPException(status_code=404, detail="Google Fit is not connected for this user")
+
+    if not pull_remote:
+        return 0, 0
+
+    end = end_date or _utc_now().date()
+    start = start_date or end
+    return await _sync_google_fit_remote(connection, start, end)
+
+
 async def _fetch_garmin_json(access_token: str, path: str) -> dict[str, Any]:
     config = _get_garmin_settings()
     return await _http_json_request(
@@ -1700,6 +1811,89 @@ async def _fetch_garmin_json(access_token: str, path: str) -> dict[str, Any]:
         f"{config['api_base']}{path}",
         headers={"Authorization": f"Bearer {access_token}"},
     )
+
+
+async def _fetch_google_fit_json(access_token: str, path: str, *, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
+    config = _get_google_fit_settings()
+    method = "POST" if json_body is not None else "GET"
+    return await _http_json_request(
+        method,
+        f"{config['api_base']}{path}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        json_body=json_body,
+    )
+
+
+def _google_bucket_metric_to_value(point: dict[str, Any]) -> float | int | None:
+    for item in point.get("value") or []:
+        if "intVal" in item:
+            return _coerce_number(item.get("intVal"))
+        if "fpVal" in item:
+            return _coerce_number(item.get("fpVal"))
+    return None
+
+
+async def _sync_google_fit_remote(connection: dict, start_date: date, end_date: date) -> tuple[int, int]:
+    connection, access_token = await _ensure_active_access_token(connection)
+    user_id = str(connection.get("user_id") or "")
+    start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
+    end_dt = datetime.combine(end_date, time.max, tzinfo=timezone.utc)
+    aggregate_specs = [
+        ("com.google.step_count.delta", "steps", "count"),
+        ("com.google.distance.delta", "distance", "m"),
+        ("com.google.calories.expended", "calories", "kcal"),
+        ("com.google.heart_rate.bpm", "heart_rate", "bpm"),
+    ]
+    payload = {
+        "startTimeMillis": int(start_dt.timestamp() * 1000),
+        "endTimeMillis": int(end_dt.timestamp() * 1000),
+        "aggregateBy": [{"dataTypeName": data_type_name} for data_type_name, _, _ in aggregate_specs],
+        "bucketByTime": {"durationMillis": 86400000},
+    }
+    response = await _fetch_google_fit_json(access_token, "/users/me/dataset:aggregate", json_body=payload)
+    metrics: list[dict[str, Any]] = []
+    for bucket in response.get("bucket") or []:
+        bucket_start_ms = int(bucket.get("startTimeMillis") or payload["startTimeMillis"])
+        bucket_end_ms = int(bucket.get("endTimeMillis") or payload["endTimeMillis"])
+        bucket_start = datetime.fromtimestamp(bucket_start_ms / 1000, tz=timezone.utc)
+        bucket_end = datetime.fromtimestamp(bucket_end_ms / 1000, tz=timezone.utc)
+        datasets = list(bucket.get("dataset") or [])
+        for index, dataset in enumerate(datasets):
+            if index >= len(aggregate_specs):
+                continue
+            _, metric_type, unit = aggregate_specs[index]
+            points = list(dataset.get("point") or [])
+            if not points:
+                continue
+            total_value = 0.0
+            for point in points:
+                value = _google_bucket_metric_to_value(point)
+                if value is None:
+                    continue
+                total_value += float(value)
+            if total_value <= 0:
+                continue
+            metrics.append(
+                {
+                    "metric_type": metric_type,
+                    "value": int(total_value) if metric_type == "steps" else round(total_value, 2),
+                    "unit": unit,
+                    "start_time": bucket_start,
+                    "end_time": bucket_end,
+                    "source_device": "Google Fit",
+                    "metadata": {"external_id": f"google-fit-{metric_type}-{bucket_start.date().isoformat()}"},
+                }
+            )
+    inserted, skipped = await store_normalized_metrics(user_id, "google-fit", metrics, source_device="Google Fit")
+    await upsert_wearable_connection(
+        user_id,
+        "google-fit",
+        status_value="connected",
+        last_synced_at=_utc_now(),
+        last_sync_status="success",
+        last_sync_message=f"Google Fit sync completed with {inserted} records.",
+    )
+    return inserted, skipped
 
 
 async def _sync_garmin_remote(connection: dict, start_date: date, end_date: date) -> tuple[int, int]:
@@ -1849,6 +2043,8 @@ async def sync_connected_wearables_for_user(
         try:
             if provider == "fitbit":
                 await _sync_fitbit_remote(connection, today, today)
+            elif provider == "google-fit":
+                await _sync_google_fit_remote(connection, today, today)
             elif provider == "garmin":
                 await _sync_garmin_remote(connection, today, today)
         except Exception as exc:
@@ -1926,7 +2122,7 @@ async def _run_scheduled_sync_cycle() -> None:
     end = _utc_now().date()
     start = end - timedelta(days=lookback_days - 1)
     connections = await wearable_connections_collection.find(
-        {"provider": {"$in": ["fitbit", "garmin"]}, "status": "connected"}
+        {"provider": {"$in": ["fitbit", "google-fit", "garmin"]}, "status": "connected"}
     ).to_list(length=None)
     for connection in connections:
         provider = str(connection.get("provider") or "")
@@ -1934,6 +2130,8 @@ async def _run_scheduled_sync_cycle() -> None:
         try:
             if provider == "fitbit":
                 await _sync_fitbit_remote(connection, start, end)
+            elif provider == "google-fit":
+                await _sync_google_fit_remote(connection, start, end)
             elif provider == "garmin":
                 await _sync_garmin_remote(connection, start, end)
         except Exception as exc:

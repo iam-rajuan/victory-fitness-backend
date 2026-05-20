@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-WearableProvider = Literal["apple-health", "health-connect", "fitbit", "garmin", "this-phone", "qr-import"]
+WearableProvider = Literal["apple-health", "health-connect", "fitbit", "google-fit", "garmin", "this-phone", "qr-import"]
 HealthMetricType = Literal[
     "steps",
     "heart_rate",

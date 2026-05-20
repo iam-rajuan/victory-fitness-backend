@@ -83,6 +83,18 @@ class IntegrationRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["provider"], "fitbit")
         exchange_fitbit_code.assert_awaited_once_with("state-1", "abc123")
 
+    def test_google_fit_callback_uses_oauth_exchange(self) -> None:
+        with patch.object(
+            wearables_router_module,
+            "exchange_google_fit_code",
+            AsyncMock(return_value=_connection_payload("google-fit")),
+        ) as exchange_google_fit_code:
+            response = self.client.get("/integrations/google-fit/callback?code=abc123&state=state-1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["provider"], "google-fit")
+        exchange_google_fit_code.assert_awaited_once_with("state-1", "abc123")
+
     def test_garmin_connect_returns_provider_not_configured(self) -> None:
         with patch.object(wearables_router_module, "is_provider_configured", return_value=False):
             response = self.client.get("/integrations/garmin/connect")
@@ -174,6 +186,13 @@ class IntegrationRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["connection_status"], "syncing")
         enqueue_provider_sync_job.assert_awaited_once_with("user-1", "fitbit")
+
+    def test_google_fit_connect_returns_provider_not_configured(self) -> None:
+        with patch.object(wearables_router_module, "is_provider_configured", side_effect=lambda provider: False if provider == "google-fit" else True):
+            response = self.client.get("/integrations/google-fit/connect")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "provider_not_configured")
 
 
 class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):

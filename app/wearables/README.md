@@ -4,6 +4,7 @@ Frontend and mobile clients should only call the backend gateway endpoints under
 
 ### OAuth providers
 - `Fitbit`: browser OAuth connect, backend callback, backend token storage, queued sync.
+- `Google Fit`: browser Google OAuth connect, backend callback, backend token storage, queued sync.
 - `Garmin`: browser/provider flow only when Garmin partner credentials are configured. If not configured, the API returns `provider_not_configured`.
 
 ### Native mobile providers
