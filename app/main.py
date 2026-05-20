@@ -1788,6 +1788,7 @@ async def get_challenge_detail(
     unread_count = 0
     if membership and has_joined:
         unread_count = await _count_unread_challenge_messages(challenge_id, str(user["_id"]), membership)
+    completed_today = _has_completed_challenge_day_today(membership or {}) if membership and has_joined else False
 
     can_start = False
     if challenge_status == "ACTIVE" and membership_status not in {"ACTIVE", "COMPLETED"}:
@@ -1829,7 +1830,8 @@ async def get_challenge_detail(
         can_post=can_post,
         has_joined=has_joined,
         current_day_number=current_day_number,
-        can_complete_today=bool(has_joined and membership_status == "ACTIVE" and challenge_status == "ACTIVE" and current_day_number),
+        can_complete_today=bool(has_joined and membership_status == "ACTIVE" and challenge_status == "ACTIVE" and current_day_number and not completed_today),
+        completed_today=completed_today,
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
     )
 
@@ -2343,6 +2345,8 @@ async def complete_challenge_today(
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
     _ensure_challenge_write_access(membership, challenge)
+    if _has_completed_challenge_day_today(membership):
+        raise HTTPException(status_code=409, detail="You can only complete one challenge day per day")
 
     plan_days = _get_normalized_plan_days(challenge)
     duration_days = max(int(challenge.get("duration_days") or 0), 1)
@@ -5696,6 +5700,28 @@ def _count_completed_plan_days_from_start(plan_days: list[dict], plan_progress: 
     return completed_days
 
 
+def _has_completed_challenge_day_today(membership: dict) -> bool:
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    today = datetime.now(timezone.utc).date()
+    for entry in raw_progress.values():
+        if not (isinstance(entry, dict) and bool(entry.get("completed"))):
+            continue
+        updated_at_raw = entry.get("updated_at")
+        if not updated_at_raw:
+            continue
+        try:
+            updated_at = datetime.fromisoformat(str(updated_at_raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        else:
+            updated_at = updated_at.astimezone(timezone.utc)
+        if updated_at.date() == today:
+            return True
+    return False
+
+
 def _build_challenge_completion_units(plan_days: list[dict]) -> list[dict[str, str | int]]:
     units: list[dict[str, str | int]] = []
     for day in plan_days:
@@ -5762,6 +5788,13 @@ def _calculate_challenge_completion_counts(plan_days: list[dict], membership: di
 def _calculate_challenge_completion_fraction(plan_days: list[dict], membership: dict) -> float:
     completed_unit_count, total_unit_count = _calculate_challenge_completion_counts(plan_days, membership)
     if total_unit_count <= 0:
+        duration_days = max(_extract_plan_day_numbers(plan_days), default=max(int(membership.get("duration_days") or 0), 0))
+        if duration_days > 0:
+            progress_days_completed = _count_completed_plan_days_from_start(
+                plan_days,
+                membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {},
+            ) if plan_days else max(int(membership.get("progress_days_completed") or 0), 0)
+            return min(max(progress_days_completed / duration_days, 0.0), 1.0)
         return 0.0
     return min(max(completed_unit_count / total_unit_count, 0.0), 1.0)
 
