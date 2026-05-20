@@ -508,6 +508,26 @@ async def _require_challenge_access_user(user: dict = Depends(_require_access_us
     return user
 
 
+async def _require_workout_plan_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "workoutplan", "Your current plan does not include workout plan access")
+    return user
+
+
+async def _require_meal_plan_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "mealPlan", "Your current plan does not include meal plan access")
+    return user
+
+
+async def _require_nutrition_tracker_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "nutrition_tracker", "Your current plan does not include nutrition tracker access")
+    return user
+
+
+async def _require_meal_analysis_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "meal_analysis", "Your current plan does not include meal analysis access")
+    return user
+
+
 async def _require_longevity_access_user(user: dict = Depends(_require_access_user)) -> dict:
     _ensure_subscription_feature_access(user, "longevity", "Your current plan does not include Longevity OS access")
     return user
@@ -520,6 +540,11 @@ async def _require_community_access_user(user: dict = Depends(_require_access_us
 
 async def _require_coach_victor_access_user(user: dict = Depends(_require_access_user)) -> dict:
     _ensure_subscription_feature_access(user, "coach_victor", "Your current plan does not include Coach Victor access")
+    return user
+
+
+async def _require_application_access_user(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(user, "application", "Your current plan does not include application access")
     return user
 
 
@@ -607,7 +632,7 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
 @app.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
 async def workout_strength_plan(
     payload: StrengthWorkoutPlanRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_workout_plan_access_user),
 ) -> StrengthWorkoutPlanResponse:
     plan_data = generate_strength_workout_plan(
         StrengthWorkoutPlanInput(
@@ -643,7 +668,7 @@ async def workout_strength_plan(
 
 @app.get("/ai/workout-plan/strength/latest", response_model=StrengthWorkoutPlanResponse)
 async def workout_strength_plan_latest(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_workout_plan_access_user),
 ) -> StrengthWorkoutPlanResponse:
     record = await strength_workout_plans_collection.find_one(
         {"user_id": str(user["_id"])},
@@ -660,7 +685,7 @@ async def workout_strength_plan_latest(
 
 @app.delete("/ai/workout-plan/strength/latest")
 async def workout_strength_plan_delete_latest(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_workout_plan_access_user),
 ) -> dict[str, str]:
     record = await strength_workout_plans_collection.find_one(
         {"user_id": str(user["_id"])},
@@ -676,7 +701,7 @@ async def workout_strength_plan_delete_latest(
 @app.post("/ai/workout-plan/video", response_model=VideoWorkoutPlanResponse)
 async def workout_video_plan(
     payload: VideoWorkoutPlanRequest,
-    _: dict = Depends(_require_access_user),
+    _: dict = Depends(_require_workout_plan_access_user),
 ) -> VideoWorkoutPlanResponse:
     records = await workouts_collection.find(
         {"visibility": "Published"},
@@ -1322,7 +1347,7 @@ async def admin_update_about_us(
 @app.post("/applications", response_model=CoachingApplicationResponse, status_code=status.HTTP_201_CREATED)
 async def create_coaching_application(
     payload: CoachingApplicationCreateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_application_access_user),
 ) -> CoachingApplicationResponse:
     if not payload.agreement_accepted:
         raise HTTPException(status_code=400, detail="You must accept the agreement before submitting")
@@ -3249,7 +3274,7 @@ async def analyze_journal_entry(
 @app.post("/ai/meal-analysis", response_model=MealImageAnalysisResponse)
 async def analyze_meal_image(
     payload: MealImageAnalysisRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_analysis_access_user),
 ) -> MealImageAnalysisResponse:
     user_id = str(user["_id"])
     logger.info("meal_image_analyze_attempt user_id=%s file_name=%s", user_id, payload.file_name or "")
@@ -3279,7 +3304,7 @@ async def analyze_meal_image(
 
 @app.get("/ai/meal-analysis", response_model=MealImageAnalysisListResponse)
 async def list_meal_analyses(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_analysis_access_user),
 ) -> MealImageAnalysisListResponse:
     user_id = str(user["_id"])
     records = await meal_analysis_entries_collection.find(
@@ -3404,7 +3429,7 @@ async def coach_victor_history(
 async def nutrition_plan(
     payload: NutritionPlanRequest,
     background_tasks: BackgroundTasks,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanSaveResponse:
     logger.info("nutrition_plan_attempt user_id=%s", str(user["_id"]))
     payload_data = payload.model_dump()
@@ -3452,7 +3477,7 @@ async def nutrition_plan(
 @app.post("/ai/nutrition/plan/jobs", response_model=NutritionPlanJobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def nutrition_plan_job(
     payload: NutritionPlanRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanJobResponse:
     logger.info("nutrition_plan_job_attempt user_id=%s", str(user["_id"]))
     payload_data = payload.model_dump()
@@ -3511,7 +3536,7 @@ async def nutrition_plan_job(
 @app.get("/ai/nutrition/plan/jobs/{job_id}", response_model=NutritionPlanJobResponse)
 async def nutrition_plan_job_status(
     job_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanJobResponse:
     logger.info("nutrition_plan_job_status_attempt user_id=%s job_id=%s", str(user["_id"]), job_id)
     record = await nutrition_plan_jobs_collection.find_one(
@@ -3528,7 +3553,7 @@ async def nutrition_plan_job_status(
 
 @app.get("/ai/nutrition/plan/latest", response_model=NutritionPlanResponse)
 async def nutrition_latest_plan(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanResponse:
     logger.info("nutrition_latest_attempt user_id=%s", str(user["_id"]))
     record = await nutrition_plans_collection.find_one(
@@ -3547,7 +3572,7 @@ async def nutrition_latest_plan(
 @app.patch("/ai/nutrition/plan/latest/completions", response_model=NutritionPlanResponse)
 async def nutrition_latest_plan_completion(
     payload: NutritionMealCompletionUpdateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanResponse:
     logger.info(
         "nutrition_plan_completion_update_attempt user_id=%s day=%s meal_key=%s completed=%s",
@@ -3592,7 +3617,7 @@ async def nutrition_latest_plan_completion(
 @app.post("/ai/nutrition/advice", response_model=NutritionAdviceResponse)
 async def nutrition_advice(
     payload: NutritionAdviceRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_nutrition_tracker_access_user),
 ) -> NutritionAdviceResponse:
     logger.info("nutrition_advice_attempt user_id=%s", str(user["_id"]))
     try:
@@ -3726,7 +3751,7 @@ async def _persist_nutrition_plan_record(user_id: str, profile_hash: str, plan_d
 @app.post("/ai/nutrition/plan/progressive/jobs", response_model=NutritionPlanJobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def progressive_nutrition_plan_job(
     payload: NutritionPlanRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanJobResponse:
     logger.info("progressive_nutrition_plan_job_attempt user_id=%s", str(user["_id"]))
     payload_data = payload.model_dump()
@@ -3788,7 +3813,7 @@ async def progressive_nutrition_plan_job(
 @app.get("/ai/nutrition/plan/progressive/jobs/{job_id}", response_model=NutritionPlanJobResponse)
 async def progressive_nutrition_plan_job_status(
     job_id: str,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanJobResponse:
     record = await nutrition_progressive_plan_jobs_collection.find_one(
         {
@@ -3805,7 +3830,7 @@ async def progressive_nutrition_plan_job_status(
 
 @app.get("/ai/nutrition/plan/progressive/latest", response_model=NutritionPlanResponse)
 async def progressive_nutrition_latest_plan(
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanResponse:
     record = await nutrition_progressive_plans_collection.find_one(
         {
@@ -3825,7 +3850,7 @@ async def progressive_nutrition_latest_plan(
 @app.patch("/ai/nutrition/plan/progressive/latest/completions", response_model=NutritionPlanResponse)
 async def progressive_nutrition_latest_plan_completion(
     payload: NutritionMealCompletionUpdateRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(_require_meal_plan_access_user),
 ) -> NutritionPlanResponse:
     record = await nutrition_progressive_plans_collection.find_one(
         {

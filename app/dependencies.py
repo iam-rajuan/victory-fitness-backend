@@ -7,6 +7,38 @@ from .security import decode_token
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+SUBSCRIPTION_ACCESS = {
+    "NONE": [],
+    "SILVER": ["home", "workout", "challenge", "community", "profile"],
+    "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
+    "PLATINUM": [
+        "home",
+        "workout",
+        "challenge",
+        "community",
+        "mealPlan",
+        "nutrition_tracker",
+        "meal_analysis",
+        "profile",
+        "workoutplan",
+        "longevity",
+    ],
+    "INNER_CIRCLE": [
+        "home",
+        "workout",
+        "challenge",
+        "mealPlan",
+        "nutrition_tracker",
+        "meal_analysis",
+        "profile",
+        "workoutplan",
+        "longevity",
+        "application",
+        "community",
+        "coach_victor",
+        "longevity_plan",
+    ],
+}
 
 
 async def get_verified_user(authorization: str | None) -> dict:
@@ -49,3 +81,24 @@ async def require_admin_user(user: dict = Security(require_access_user)) -> dict
     if not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+def normalize_subscription_tier(value: object) -> str:
+    tier = str(value or "").strip().upper().replace(" ", "_")
+    return tier if tier in SUBSCRIPTION_ACCESS else "NONE"
+
+
+def resolve_subscription_access(tier: object) -> list[str]:
+    return list(SUBSCRIPTION_ACCESS.get(normalize_subscription_tier(tier), []))
+
+
+def user_has_subscription_access(user: dict, feature: str) -> bool:
+    if bool(user.get("is_admin")):
+        return True
+    tier = user.get("subscription_tier") or user.get("subscription_role") or user.get("tier")
+    return feature in resolve_subscription_access(tier)
+
+
+def ensure_subscription_feature_access(user: dict, feature: str, detail: str) -> None:
+    if not user_has_subscription_access(user, feature):
+        raise HTTPException(status_code=403, detail=detail)

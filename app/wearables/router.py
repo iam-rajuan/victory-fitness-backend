@@ -4,7 +4,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from ..dependencies import require_access_user
+from ..dependencies import ensure_subscription_feature_access, require_access_user
 from ..models import LongevityWearablesResponse
 from .schemas import (
     GarminWebhookRequest,
@@ -44,6 +44,17 @@ from .service import (
 router = APIRouter()
 
 
+async def require_longevity_access_user(
+    user: dict = Depends(require_access_user),
+) -> dict:
+    ensure_subscription_feature_access(
+        user,
+        "longevity",
+        "Your current plan does not include Longevity OS access",
+    )
+    return user
+
+
 def _metric_response(item: dict) -> HealthMetricResponse:
     return HealthMetricResponse(
         id=str(item.get("_id") or ""),
@@ -62,7 +73,7 @@ def _metric_response(item: dict) -> HealthMetricResponse:
 
 @router.get("/wearables/connections", response_model=WearableConnectionsResponse)
 async def wearable_connections(
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> WearableConnectionsResponse:
     records = await list_user_connections(str(user["_id"]))
     return WearableConnectionsResponse(
@@ -73,7 +84,7 @@ async def wearable_connections(
 @router.delete("/wearables/{provider}/connection", response_model=ProviderDisconnectResponse)
 async def wearable_disconnect(
     provider: str,
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> ProviderDisconnectResponse:
     await disconnect_provider(str(user["_id"]), provider)
     return ProviderDisconnectResponse(provider=provider)
@@ -82,7 +93,7 @@ async def wearable_disconnect(
 @router.post("/wearables/{provider}/demo-connect", response_model=WearableConnectionResponse)
 async def wearable_demo_connect(
     provider: str,
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> WearableConnectionResponse:
     connection = await connect_demo_provider(str(user["_id"]), provider)
     return WearableConnectionResponse(**connection)
@@ -91,7 +102,7 @@ async def wearable_demo_connect(
 @router.post("/wearables/apple-health/sync", response_model=ProviderSyncResponse)
 async def apple_health_sync(
     payload: MobileHealthSyncRequest,
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> ProviderSyncResponse:
     result = await ingest_mobile_sync(
         str(user["_id"]),
@@ -114,7 +125,7 @@ async def apple_health_sync(
 @router.post("/wearables/health-connect/sync", response_model=ProviderSyncResponse)
 async def health_connect_sync(
     payload: MobileHealthSyncRequest,
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> ProviderSyncResponse:
     result = await ingest_mobile_sync(
         str(user["_id"]),
@@ -136,7 +147,7 @@ async def health_connect_sync(
 
 @router.get("/wearables/fitbit/connect", response_model=OAuthConnectResponse)
 async def fitbit_connect(
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> OAuthConnectResponse:
     payload = await build_oauth_connect_url(str(user["_id"]), "fitbit")
     return OAuthConnectResponse(**payload)
@@ -154,7 +165,7 @@ async def fitbit_callback(
 @router.post("/wearables/fitbit/sync", response_model=ProviderSyncResponse)
 async def fitbit_sync(
     payload: ProviderSyncRequest,
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> ProviderSyncResponse:
     inserted, skipped = await sync_fitbit(
         str(user["_id"]),
@@ -176,7 +187,7 @@ async def fitbit_sync(
 
 @router.get("/wearables/garmin/connect", response_model=OAuthConnectResponse)
 async def garmin_connect(
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> OAuthConnectResponse:
     payload = await build_oauth_connect_url(str(user["_id"]), "garmin")
     return OAuthConnectResponse(**payload)
@@ -194,7 +205,7 @@ async def garmin_callback(
 @router.post("/wearables/garmin/sync", response_model=ProviderSyncResponse)
 async def garmin_sync(
     payload: ProviderSyncRequest,
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> ProviderSyncResponse:
     inserted, skipped = await sync_garmin(
         str(user["_id"]),
@@ -238,7 +249,7 @@ async def health_data_me(
     start_date: date | None = None,
     end_date: date | None = None,
     user_id: str | None = Query(default=None, description="Admin-only cross-user query override."),
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> HealthMetricListResponse:
     target_user_id = resolve_target_user_id(user, user_id)
     records = await query_health_metrics(
@@ -261,7 +272,7 @@ async def health_data_me_summary(
     start_date: date | None = None,
     end_date: date | None = None,
     user_id: str | None = Query(default=None, description="Admin-only cross-user query override."),
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> HealthMetricSummaryResponse:
     target_user_id = resolve_target_user_id(user, user_id)
     summary_items = await summarize_health_metrics(
@@ -286,7 +297,7 @@ async def health_data_by_metric_type(
     start_date: date | None = None,
     end_date: date | None = None,
     user_id: str | None = Query(default=None, description="Admin-only cross-user query override."),
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ) -> HealthMetricListResponse:
     target_user_id = resolve_target_user_id(user, user_id)
     records = await query_health_metrics(
@@ -304,7 +315,7 @@ async def health_data_by_metric_type(
 
 @router.get("/longevity-os/wearables", response_model=LongevityWearablesResponse)
 async def longevity_os_wearables(
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ):
     return await build_longevity_wearables_response(str(user["_id"]))
 
@@ -312,7 +323,7 @@ async def longevity_os_wearables(
 @router.post("/longevity-os/wearables/sync", response_model=LongevityWearablesResponse)
 async def longevity_os_sync_wearables(
     payload: LongevityWearableSyncRequest | None = None,
-    user: dict = Depends(require_access_user),
+    user: dict = Depends(require_longevity_access_user),
 ):
     selected_provider = payload.provider if payload else None
     return await sync_connected_wearables_for_user(str(user["_id"]), providers=[selected_provider] if selected_provider else None)
