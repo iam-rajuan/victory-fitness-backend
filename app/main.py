@@ -65,6 +65,7 @@ from .models import (
     ChallengeChatMessageCreateRequest,
     ChallengeChatMessageUpdateRequest,
     ChallengeChatMessageResponse,
+    ChallengeDetailResponse,
     ChallengeParticipantResponse,
     ChallengeChatEventResponse,
     ChallengePlanCompletionRequest,
@@ -1746,6 +1747,86 @@ async def get_challenge_overview(
     return await _build_challenge_overview_response(user)
 
 
+@app.get("/challenges/{challenge_id}", response_model=ChallengeDetailResponse)
+async def get_challenge_detail(
+    challenge_id: str,
+    user: dict = Depends(_require_challenge_access_user),
+) -> ChallengeDetailResponse:
+    challenge = await _get_challenge_or_404(challenge_id)
+    membership = await challenge_memberships_collection.find_one(
+        {"challenge_id": challenge_id, "user_id": str(user["_id"])}
+    )
+    challenge_status = str(challenge.get("status") or "ACTIVE").upper()
+    membership_status = str((membership or {}).get("status") or "NOT_JOINED").upper()
+
+    normalized_plan_days = _normalize_challenge_plan_days(
+        challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []
+    )
+    challenge_points = max(int(challenge.get("points") or 0), 0)
+    participants = await _load_challenge_participants(challenge_id)
+    participant_count = await challenge_memberships_collection.count_documents(
+        {"challenge_id": challenge_id, "status": {"$in": ["ACTIVE", "COMPLETED"]}}
+    )
+    messages = await _load_challenge_chat_messages(challenge_id, str(user["_id"]), limit=50)
+
+    has_joined = membership_status in {"ACTIVE", "COMPLETED"}
+    viewer_plan_progress = _build_viewer_plan_progress(normalized_plan_days, membership or {}) if membership else []
+    viewer_progress_days_completed = _count_completed_plan_days_from_start(
+        normalized_plan_days,
+        membership.get("plan_progress") if membership and isinstance(membership.get("plan_progress"), dict) else {},
+    )
+    viewer_points_earned = _calculate_challenge_points_earned(
+        normalized_plan_days,
+        {**(membership or {}), "challenge_points": challenge_points},
+        challenge_points,
+    ) if membership else 0
+    unread_count = 0
+    if membership and has_joined:
+        unread_count = await _count_unread_challenge_messages(challenge_id, str(user["_id"]), membership)
+
+    can_start = False
+    if challenge_status == "ACTIVE" and membership_status not in {"ACTIVE", "COMPLETED"}:
+        active_challenge_limit = _get_user_active_challenge_limit(user)
+        if active_challenge_limit is None:
+            can_start = True
+        else:
+            active_membership_count = await challenge_memberships_collection.count_documents(
+                {
+                    "user_id": str(user["_id"]),
+                    "status": "ACTIVE",
+                    **({"challenge_id": {"$ne": challenge_id}} if membership_status == "LEFT" else {}),
+                }
+            )
+            can_start = active_membership_count < active_challenge_limit
+
+    can_post = has_joined and challenge_status == "ACTIVE"
+
+    return ChallengeDetailResponse(
+        challenge_id=challenge_id,
+        title=str(challenge.get("title") or ""),
+        description=str(challenge.get("description") or ""),
+        plan_text=str(challenge.get("plan_text") or ""),
+        plan_days=[ChallengePlanDay(**day) for day in normalized_plan_days],
+        category=str(challenge.get("category") or "Challenge"),
+        duration_days=max(int(challenge.get("duration_days") or 0), 0),
+        points=challenge_points,
+        difficulty=str(challenge.get("difficulty") or "BEGINNER"),
+        status=str(challenge.get("status") or "ACTIVE"),
+        thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+        participant_count=participant_count,
+        participants=participants,
+        viewer_membership_status=membership_status,
+        viewer_progress_days_completed=viewer_progress_days_completed,
+        viewer_points_earned=viewer_points_earned,
+        viewer_plan_progress=viewer_plan_progress,
+        unread_count=unread_count,
+        can_start=can_start,
+        can_post=can_post,
+        has_joined=has_joined,
+        messages=[ChallengeChatMessageResponse(**message) for message in messages],
+    )
+
+
 @app.get("/challenges/{challenge_id}/chat", response_model=ChallengeChatThreadResponse)
 async def get_challenge_chat_thread(
     challenge_id: str,
@@ -1770,12 +1851,18 @@ async def get_challenge_chat_thread(
     challenge_points = max(int(challenge.get("points") or 0), 0)
     membership_with_points = dict(membership)
     membership_with_points["challenge_points"] = challenge_points
+    normalized_plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
+    viewer_plan_progress = _build_viewer_plan_progress(normalized_plan_days, membership)
+    viewer_progress_days_completed = _count_completed_plan_days_from_start(
+        normalized_plan_days,
+        membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {},
+    )
     return ChallengeChatThreadResponse(
         challenge_id=challenge_id,
         title=str(challenge.get("title") or ""),
         description=str(challenge.get("description") or ""),
         plan_text=str(challenge.get("plan_text") or ""),
-        plan_days=[ChallengePlanDay(**day) for day in _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])],
+        plan_days=[ChallengePlanDay(**day) for day in normalized_plan_days],
         category=str(challenge.get("category") or "Challenge"),
         duration_days=max(int(challenge.get("duration_days") or 0), 0),
         points=challenge_points,
@@ -1785,16 +1872,13 @@ async def get_challenge_chat_thread(
         participant_count=participant_count,
         participants=participants,
         viewer_membership_status=str(membership.get("status") or "ACTIVE"),
-        viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
+        viewer_progress_days_completed=viewer_progress_days_completed,
         viewer_points_earned=_calculate_challenge_points_earned(
-            _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []),
+            normalized_plan_days,
             membership_with_points,
             challenge_points,
         ),
-        viewer_plan_progress=_build_viewer_plan_progress(
-            _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []),
-            membership,
-        ),
+        viewer_plan_progress=viewer_plan_progress,
         unread_count=unread_count,
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
     )
@@ -2053,7 +2137,7 @@ async def _store_membership_plan_progress(
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    progress_days_completed = _count_completed_plan_days(next_plan_progress)
+    progress_days_completed = _count_completed_plan_days_from_start(plan_days, next_plan_progress)
     duration_days = max(int(challenge.get("duration_days") or 0), 1)
     next_status = "COMPLETED" if progress_days_completed >= duration_days else "ACTIVE"
     now = datetime.now(timezone.utc)
@@ -2412,9 +2496,6 @@ async def post_challenge_progress_update(
 
     total_days = max(int(challenge.get("duration_days") or 0), 1)
     completed_day = min(payload.completed_day, total_days)
-    current_progress = max(int(membership.get("progress_days_completed") or 0), 0)
-    next_progress = max(current_progress, completed_day)
-    next_status = "COMPLETED" if next_progress >= total_days else "ACTIVE"
     plan_days = _normalize_challenge_plan_days(challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [])
     existing_plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
     next_plan_progress = dict(existing_plan_progress)
@@ -2430,6 +2511,9 @@ async def post_challenge_progress_update(
             "completed_section_ids": completed_section_ids,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+
+    next_progress = _count_completed_plan_days_from_start(plan_days, next_plan_progress)
+    next_status = "COMPLETED" if next_progress >= total_days else "ACTIVE"
 
     image_url = ""
     if payload.image_base64:
@@ -5493,6 +5577,19 @@ def _count_completed_plan_days(plan_progress: dict) -> int:
     return total
 
 
+def _count_completed_plan_days_from_start(plan_days: list[dict], plan_progress: dict) -> int:
+    completed_days = 0
+    for day in plan_days:
+        day_number = max(int(day.get("day_number") or 0), 0)
+        if day_number <= 0:
+            continue
+        entry = plan_progress.get(str(day_number), {}) if isinstance(plan_progress, dict) else {}
+        if not (isinstance(entry, dict) and bool(entry.get("completed"))):
+            break
+        completed_days += 1
+    return completed_days
+
+
 def _build_challenge_completion_units(plan_days: list[dict]) -> list[dict[str, str | int]]:
     units: list[dict[str, str | int]] = []
     for day in plan_days:
@@ -5606,10 +5703,11 @@ def _build_viewer_plan_progress(plan_days: list[dict], membership: dict) -> list
 def _serialize_challenge_plan_progress_response(challenge_id: str, membership: dict, plan_days: list[dict]) -> ChallengePlanProgressResponse:
     viewer_plan_progress = _build_viewer_plan_progress(plan_days, membership)
     challenge_points = max(int((membership.get("challenge_points") or membership.get("points") or 0)), 0)
+    progress_days_completed = _count_completed_plan_days_from_start(plan_days, membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {})
     return ChallengePlanProgressResponse(
         challenge_id=challenge_id,
         viewer_membership_status=str(membership.get("status") or "ACTIVE"),
-        viewer_progress_days_completed=max(int(membership.get("progress_days_completed") or 0), 0),
+        viewer_progress_days_completed=progress_days_completed,
         viewer_points_earned=_calculate_challenge_points_earned(plan_days, membership, challenge_points),
         viewer_plan_progress=viewer_plan_progress,
     )
@@ -6268,11 +6366,17 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
         if not challenge:
             continue
         total_days = max(int(challenge.get("duration_days") or 0), 1)
-        progress_days = min(max(int(membership.get("progress_days_completed") or 0), 0), total_days)
-        days_left = max(total_days - progress_days, 0)
         plan_days = _normalize_challenge_plan_days(
             challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []
         )
+        progress_days = min(
+            _count_completed_plan_days_from_start(
+                plan_days,
+                membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {},
+            ),
+            total_days,
+        )
+        days_left = max(total_days - progress_days, 0)
         progress_fraction = _calculate_challenge_completion_fraction(plan_days, membership)
         active_challenge_ids.append(challenge_id)
         active_challenges.append(

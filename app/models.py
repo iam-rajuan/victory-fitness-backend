@@ -533,6 +533,31 @@ class StartChallengeResponse(BaseModel):
     membership_id: str
 
 
+class ChallengeDetailResponse(BaseModel):
+    challenge_id: str
+    title: str
+    description: str
+    plan_text: str = ""
+    plan_days: list[ChallengePlanDay] = Field(default_factory=list)
+    category: str
+    duration_days: int
+    points: int = 0
+    difficulty: str
+    status: str
+    thumbnail: str = ""
+    participant_count: int = 0
+    participants: list[ChallengeParticipantResponse] = Field(default_factory=list)
+    viewer_membership_status: str = "NOT_JOINED"
+    viewer_progress_days_completed: int = 0
+    viewer_points_earned: int = 0
+    viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
+    unread_count: int = 0
+    can_start: bool = False
+    can_post: bool = False
+    has_joined: bool = False
+    messages: list["ChallengeChatMessageResponse"] = Field(default_factory=list)
+
+
 class ChallengeChatMessageResponse(BaseModel):
     id: str
     challenge_id: str
