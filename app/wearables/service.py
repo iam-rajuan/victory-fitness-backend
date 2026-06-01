@@ -979,6 +979,7 @@ async def summarize_health_metrics(
                 "numeric_values": [],
                 "unit_counts": {},
                 "latest_end_time": None,
+                "latest_value": None,
             },
         )
         bucket["records"] += 1
@@ -992,7 +993,9 @@ async def summarize_health_metrics(
         end_time = record.get("end_time")
         if isinstance(end_time, datetime):
             current_latest = bucket.get("latest_end_time")
-            bucket["latest_end_time"] = end_time if current_latest is None or end_time > current_latest else current_latest
+            if current_latest is None or end_time > current_latest:
+                bucket["latest_end_time"] = end_time
+                bucket["latest_value"] = float(value)
 
     items: list[dict[str, Any]] = []
     for bucket in groups.values():
@@ -1011,6 +1014,7 @@ async def summarize_health_metrics(
                 "average_value": average_value,
                 "min_value": min(numeric_values) if numeric_values else None,
                 "max_value": max(numeric_values) if numeric_values else None,
+                "latest_value": bucket.get("latest_value"),
             }
         )
     items.sort(key=lambda item: (item["metric_type"], item["provider"]))

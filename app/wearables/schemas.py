@@ -187,6 +187,7 @@ class HealthMetricSummaryItem(BaseModel):
     max_value: float | None = None
     unit: str = ""
     latest_end_time: datetime | None = None
+    latest_value: float | None = None
 
 
 class HealthMetricSummaryResponse(BaseModel):
