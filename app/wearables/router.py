@@ -53,6 +53,7 @@ from .service import (
     mark_native_provider_connected,
     query_health_metrics,
     resolve_target_user_id,
+    _serialize_connection,
     summarize_health_metrics,
     sync_connected_wearables_for_user,
     sync_fitbit,
@@ -141,7 +142,7 @@ async def integration_connect_local(
     user: dict = Depends(require_longevity_access_user),
 ) -> WearableConnectionResponse:
     connection = await connect_local_provider(str(user["_id"]), provider)
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.get("/integrations/{provider}/callback", response_model=WearableConnectionResponse)
@@ -159,7 +160,7 @@ async def integration_callback(
         connection = await exchange_garmin_code(state, code)
     else:
         raise HTTPException(status_code=400, detail="Callback is only supported for OAuth providers")
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.post("/integrations/native/connected", response_model=WearableConnectionResponse)
@@ -175,7 +176,7 @@ async def integrations_native_connected(
         permission_granted=payload.permission_granted,
         metadata=payload.metadata,
     )
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.post("/integrations/native/samples", response_model=ProviderSyncResponse)
@@ -248,8 +249,8 @@ async def integration_disconnect(
     provider: str,
     user: dict = Depends(require_longevity_access_user),
 ) -> ProviderDisconnectResponse:
-    await disconnect_provider(str(user["_id"]), provider)
-    return ProviderDisconnectResponse(provider=provider)
+    result = await disconnect_provider(str(user["_id"]), provider)
+    return ProviderDisconnectResponse(**result)
 
 
 @router.post("/integrations/import/qr", response_model=ProviderSyncResponse)
@@ -339,7 +340,7 @@ async def wearable_connections(
 ) -> WearableConnectionsResponse:
     records = await list_user_connections(str(user["_id"]))
     return WearableConnectionsResponse(
-        connections=[WearableConnectionResponse(**record) for record in records]
+        connections=[WearableConnectionResponse(**_serialize_connection(record)) for record in records]
     )
 
 
@@ -348,8 +349,8 @@ async def wearable_disconnect(
     provider: str,
     user: dict = Depends(require_longevity_access_user),
 ) -> ProviderDisconnectResponse:
-    await disconnect_provider(str(user["_id"]), provider)
-    return ProviderDisconnectResponse(provider=provider)
+    result = await disconnect_provider(str(user["_id"]), provider)
+    return ProviderDisconnectResponse(**result)
 
 
 @router.post("/wearables/{provider}/demo-connect", response_model=WearableConnectionResponse)
@@ -358,7 +359,7 @@ async def wearable_demo_connect(
     user: dict = Depends(require_longevity_access_user),
 ) -> WearableConnectionResponse:
     connection = await connect_demo_provider(str(user["_id"]), provider)
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.post("/wearables/{provider}/connect-local", response_model=WearableConnectionResponse)
@@ -367,7 +368,7 @@ async def wearable_local_connect(
     user: dict = Depends(require_longevity_access_user),
 ) -> WearableConnectionResponse:
     connection = await connect_local_provider(str(user["_id"]), provider)
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.post("/wearables/apple-health/sync", response_model=ProviderSyncResponse)
@@ -477,7 +478,7 @@ async def fitbit_callback(
     state: str,
 ) -> WearableConnectionResponse:
     connection = await exchange_fitbit_code(state, code)
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.post("/wearables/fitbit/sync", response_model=ProviderSyncResponse)
@@ -525,7 +526,7 @@ async def google_fit_callback(
     state: str,
 ) -> WearableConnectionResponse:
     connection = await exchange_google_fit_code(state, code)
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.post("/wearables/google-fit/sync", response_model=ProviderSyncResponse)
@@ -557,7 +558,7 @@ async def garmin_callback(
     state: str,
 ) -> WearableConnectionResponse:
     connection = await exchange_garmin_code(state, code)
-    return WearableConnectionResponse(**connection)
+    return WearableConnectionResponse(**_serialize_connection(connection))
 
 
 @router.post("/wearables/garmin/sync", response_model=ProviderSyncResponse)

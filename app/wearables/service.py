@@ -768,8 +768,11 @@ async def connect_demo_provider(user_id: str, provider: str) -> dict:
     raise HTTPException(status_code=410, detail="demo_connect_removed")
 
 
-async def disconnect_provider(user_id: str, provider: str) -> None:
+async def disconnect_provider(user_id: str, provider: str) -> dict[str, Any]:
     provider = _ensure_supported_provider(provider)
+    existing = await wearable_connections_collection.find_one({"user_id": user_id, "provider": provider}) or {}
+    source_device = str(existing.get("source_device") or (existing.get("metadata") or {}).get("source_device") or "")
+    platform = str(existing.get("platform") or (existing.get("metadata") or {}).get("platform") or "")
     await wearable_connections_collection.update_one(
         {"user_id": user_id, "provider": provider},
         {
@@ -787,6 +790,14 @@ async def disconnect_provider(user_id: str, provider: str) -> None:
     )
     await provider_tokens_collection.delete_one({"user_id": user_id, "provider": provider})
     await _append_audit_log(user_id, provider, "disconnect", detail="Provider disconnected by user.")
+    return {
+        "provider": provider,
+        "disconnected": True,
+        "status": "disconnected",
+        "source_device": source_device,
+        "platform": platform,
+        "message": "Provider disconnected by user.",
+    }
 
 
 def _normalize_metric_document(
@@ -953,7 +964,12 @@ async def summarize_health_metrics(
     )
     groups: dict[tuple[str, str], dict[str, Any]] = {}
     for record in records:
-        key = (str(record.get("metric_type") or ""), str(record.get("provider") or ""))
+        metric_type = str(record.get("metric_type") or "").strip().lower()
+        if metric_type == "workout":
+            metric_type = "workouts"
+        if metric_type not in SUPPORTED_METRIC_TYPES:
+            continue
+        key = (metric_type, str(record.get("provider") or ""))
         bucket = groups.setdefault(
             key,
             {
@@ -961,10 +977,15 @@ async def summarize_health_metrics(
                 "provider": key[1],
                 "records": 0,
                 "numeric_values": [],
+                "unit_counts": {},
                 "latest_end_time": None,
             },
         )
         bucket["records"] += 1
+        unit = str(record.get("unit") or "").strip()
+        if unit:
+            unit_counts = bucket.setdefault("unit_counts", {})
+            unit_counts[unit] = int(unit_counts.get(unit) or 0) + 1
         value = record.get("value")
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             bucket["numeric_values"].append(float(value))
@@ -976,11 +997,16 @@ async def summarize_health_metrics(
     items: list[dict[str, Any]] = []
     for bucket in groups.values():
         numeric_values = bucket.pop("numeric_values")
+        unit_counts = bucket.pop("unit_counts")
+        unit = ""
+        if unit_counts:
+            unit = max(unit_counts.items(), key=lambda item: item[1])[0]
         total_value = float(sum(numeric_values)) if numeric_values else 0.0
         average_value = float(total_value / len(numeric_values)) if numeric_values else 0.0
         items.append(
             {
                 **bucket,
+                "unit": unit,
                 "total_value": total_value,
                 "average_value": average_value,
                 "min_value": min(numeric_values) if numeric_values else None,

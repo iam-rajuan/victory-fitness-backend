@@ -133,6 +133,10 @@ class LongevityWearableSyncRequest(BaseModel):
 class ProviderDisconnectResponse(BaseModel):
     provider: WearableProvider
     disconnected: bool = True
+    status: str = "disconnected"
+    source_device: str = ""
+    platform: str = ""
+    message: str = ""
 
 
 class ProviderSyncResponse(BaseModel):
@@ -172,6 +176,7 @@ class HealthMetricSummaryItem(BaseModel):
     average_value: float = 0
     min_value: float | None = None
     max_value: float | None = None
+    unit: str = ""
     latest_end_time: datetime | None = None
 
 
