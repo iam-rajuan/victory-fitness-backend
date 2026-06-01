@@ -361,6 +361,8 @@ def _serialize_connection(record: dict) -> dict[str, Any]:
         "last_synced_at": record.get("last_synced_at"),
         "last_sync_status": str(record.get("last_sync_status") or "idle"),
         "last_sync_message": str(record.get("last_sync_message") or ""),
+        "source_device": str(record.get("source_device") or (record.get("metadata") or {}).get("source_device") or ""),
+        "platform": str(record.get("platform") or (record.get("metadata") or {}).get("platform") or ""),
         "metadata": dict(record.get("metadata") or {}),
         "created_at": record.get("created_at") or _utc_now(),
         "updated_at": record.get("updated_at") or _utc_now(),
@@ -377,6 +379,8 @@ def _serialize_integration(record: dict | None, provider: str) -> dict[str, Any]
     last_sync_message = ""
     connected_at = None
     last_synced_at = None
+    source_device = ""
+    platform = ""
     provider_configured = is_provider_configured(provider)
 
     if not provider_configured:
@@ -386,6 +390,8 @@ def _serialize_integration(record: dict | None, provider: str) -> dict[str, Any]
         connected = str(record.get("status") or "").lower() == "connected"
         connected_at = record.get("connected_at")
         last_synced_at = record.get("last_synced_at")
+        source_device = str(record.get("source_device") or (record.get("metadata") or {}).get("source_device") or "")
+        platform = str(record.get("platform") or (record.get("metadata") or {}).get("platform") or "")
         last_sync_status = str(record.get("last_sync_status") or "idle").lower()
         last_sync_message = str(record.get("last_sync_message") or "")
         metadata = dict(record.get("metadata") or {})
@@ -414,6 +420,9 @@ def _serialize_integration(record: dict | None, provider: str) -> dict[str, Any]
         "last_synced_at": last_synced_at,
         "last_error": last_error,
         "last_sync_message": last_sync_message,
+        "source_device": source_device,
+        "platform": platform,
+        "metadata": dict(record.get("metadata") or {}) if record else {},
     }
 
 
@@ -519,6 +528,8 @@ async def upsert_wearable_connection(
     provider: str,
     *,
     status_value: str,
+    source_device: str = "",
+    platform: str = "",
     metadata: dict[str, Any] | None = None,
     scopes: list[str] | None = None,
     provider_user_id: str | None = None,
@@ -537,6 +548,10 @@ async def upsert_wearable_connection(
         "status": status_value,
         "updated_at": now,
     }
+    if source_device:
+        update_fields["source_device"] = source_device
+    if platform:
+        update_fields["platform"] = platform
     if metadata is not None:
         update_fields["metadata"] = metadata
     if scopes is not None:
@@ -676,6 +691,8 @@ async def mark_native_provider_connected(
         user_id,
         provider,
         status_value="connected" if permission_granted else "pending",
+        source_device=source_device,
+        platform=platform,
         metadata=merged_metadata,
         connected_at=_utc_now() if permission_granted else None,
         last_sync_status="idle",
@@ -689,6 +706,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
     provider = _ensure_supported_provider(provider)
     now = _utc_now()
     source = "local"
+    source_device = ""
     last_sync_message = "Provider connected. Press sync to import health data."
     metadata: dict[str, Any] = {
         "source": source,
@@ -698,6 +716,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
         last_sync_message = f"{PROVIDER_DISPLAY[provider]['name']} requires OAuth login through the connect endpoint."
     if provider == "apple-health":
         source = "native"
+        source_device = "Apple Health"
         metadata = {
             "source": source,
             "native_sync_enabled": True,
@@ -707,6 +726,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
         last_sync_message = "Apple Watch / Apple Health connected successfully. Press sync to import health data."
     if provider == "health-connect":
         source = "native"
+        source_device = "Health Connect"
         metadata = {
             "source": source,
             "native_sync_enabled": True,
@@ -716,6 +736,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
         last_sync_message = "Health Connect connected successfully. Press sync to import health data."
     if provider == "this-phone":
         source = "mobile"
+        source_device = "This Phone"
         metadata = {
             "source": source,
             "manual_sync_enabled": True,
@@ -723,6 +744,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
         last_sync_message = "This phone is ready. Import health data from the phone to save it in Longevity OS."
     if provider == "qr-import":
         source = "qr"
+        source_device = "QR Import"
         metadata = {
             "source": source,
             "manual_qr_enabled": True,
@@ -732,6 +754,7 @@ async def connect_local_provider(user_id: str, provider: str) -> dict:
         user_id,
         provider,
         status_value="connected",
+        source_device=source_device,
         metadata=metadata,
         connected_at=now,
         last_sync_status="idle",
@@ -857,6 +880,7 @@ async def ingest_mobile_sync(
             user_id,
             provider,
             status_value="connected",
+            source_device=source_device,
             metadata=metadata,
             connected_at=now,
             last_synced_at=now,
@@ -1051,6 +1075,7 @@ async def _sync_demo_provider(connection: dict) -> tuple[int, int]:
         user_id,
         provider,
         status_value="connected",
+        source_device=DEMO_PROVIDER_SOURCE_DEVICE.get(provider, "Demo Wearable"),
         metadata={
             **dict(connection.get("metadata") or {}),
             "demo_sync_enabled": True,
@@ -1482,6 +1507,7 @@ async def exchange_fitbit_code(state: str, code: str) -> dict[str, Any]:
         str(connection["user_id"]),
         "fitbit",
         status_value="connected",
+        source_device="Fitbit",
         scopes=str(response.get("scope") or "").split(),
         provider_user_id=str(response.get("user_id") or ""),
         access_token=str(response.get("access_token") or ""),
@@ -1516,6 +1542,7 @@ async def exchange_garmin_code(state: str, code: str) -> dict[str, Any]:
         str(connection["user_id"]),
         "garmin",
         status_value="connected",
+        source_device="Garmin",
         scopes=str(response.get("scope") or "").split(),
         provider_user_id=str(response.get("user_id") or response.get("sub") or ""),
         access_token=str(response.get("access_token") or ""),
@@ -1549,6 +1576,7 @@ async def exchange_google_fit_code(state: str, code: str) -> dict[str, Any]:
         str(connection["user_id"]),
         "google-fit",
         status_value="connected",
+        source_device="Google Fit",
         scopes=str(response.get("scope") or "").split(),
         provider_user_id=str(response.get("id_token") or response.get("sub") or ""),
         access_token=str(response.get("access_token") or ""),
@@ -1605,6 +1633,7 @@ async def _refresh_oauth_connection(connection: dict) -> dict:
         str(connection["user_id"]),
         provider,
         status_value="connected",
+        source_device=str(connection.get("source_device") or provider.title()),
         access_token=str(response.get("access_token") or ""),
         refresh_token=str(response.get("refresh_token") or refresh_token),
         token_expires_at=expires_at,
@@ -1747,6 +1776,7 @@ async def _sync_fitbit_remote(connection: dict, start_date: date, end_date: date
         user_id,
         "fitbit",
         status_value="connected",
+        source_device=str(connection.get("source_device") or "Fitbit"),
         last_synced_at=_utc_now(),
         last_sync_status="success",
         last_sync_message=f"Fitbit sync completed with {inserted} records.",
@@ -1889,6 +1919,7 @@ async def _sync_google_fit_remote(connection: dict, start_date: date, end_date: 
         user_id,
         "google-fit",
         status_value="connected",
+        source_device=str(connection.get("source_device") or "Google Fit"),
         last_synced_at=_utc_now(),
         last_sync_status="success",
         last_sync_message=f"Google Fit sync completed with {inserted} records.",
@@ -1934,6 +1965,7 @@ async def _sync_garmin_remote(connection: dict, start_date: date, end_date: date
         user_id,
         "garmin",
         status_value="connected",
+        source_device=str(connection.get("source_device") or "Garmin"),
         metadata={"api_base": config["api_base"]},
         last_synced_at=_utc_now(),
         last_sync_status="success",
@@ -1989,6 +2021,8 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
                 status=status_value,
                 active=is_active,
                 image=display["image"],
+                source_device=str(connection.get("source_device") or (connection.get("metadata") or {}).get("source_device") or ""),
+                platform=str(connection.get("platform") or (connection.get("metadata") or {}).get("platform") or ""),
             )
         )
 
@@ -2052,6 +2086,7 @@ async def sync_connected_wearables_for_user(
                 str(connection.get("user_id") or ""),
                 provider,
                 status_value="connected",
+                source_device=str(connection.get("source_device") or (connection.get("metadata") or {}).get("source_device") or ""),
                 last_sync_status="failed",
                 last_sync_message=str(exc),
             )

@@ -154,6 +154,8 @@ class LongevityWearableDeviceResponse(BaseModel):
     status: str = "CONNECT"
     active: bool = False
     image: str = ""
+    source_device: str = ""
+    platform: str = ""
 
 
 class LongevityWearablesResponse(BaseModel):
@@ -174,6 +176,9 @@ class IntegrationConnectionResponse(BaseModel):
     last_synced_at: datetime | None = None
     last_error: str = ""
     last_sync_message: str = ""
+    source_device: str = ""
+    platform: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class IntegrationListResponse(BaseModel):

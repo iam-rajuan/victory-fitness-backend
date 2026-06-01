@@ -30,6 +30,8 @@ def _connection_payload(provider: str) -> dict:
         "last_synced_at": now,
         "last_sync_status": "success",
         "last_sync_message": f"{provider} connected",
+        "source_device": "Apple Watch" if provider == "apple-health" else "Android Phone",
+        "platform": "ios" if provider == "apple-health" else "android",
         "metadata": {},
         "created_at": now,
         "updated_at": now,
@@ -121,6 +123,8 @@ class IntegrationRouterTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["provider"], "apple-health")
+        self.assertEqual(response.json()["source_device"], "Apple Watch")
+        self.assertEqual(response.json()["platform"], "ios")
         mark_connected.assert_awaited_once()
 
     def test_native_samples_maps_this_phone_to_ios_provider(self) -> None:
