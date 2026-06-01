@@ -154,6 +154,7 @@ class LongevityWearableDeviceResponse(BaseModel):
     status: str = "CONNECT"
     active: bool = False
     image: str = ""
+    device_name: str = ""
     source_device: str = ""
     platform: str = ""
 
@@ -173,9 +174,12 @@ class IntegrationConnectionResponse(BaseModel):
     connected: bool = False
     needs_permission: bool = False
     connected_at: datetime | None = None
+    disconnected_at: datetime | None = None
     last_synced_at: datetime | None = None
     last_error: str = ""
     last_sync_message: str = ""
+    permission_granted: bool = False
+    device_name: str = ""
     source_device: str = ""
     platform: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -186,6 +190,14 @@ class IntegrationConnectionResponse(BaseModel):
         if isinstance(value, dict) and "id" not in value and "_id" in value:
             mapped = dict(value)
             mapped["id"] = str(mapped.get("_id") or "")
+            value = mapped
+        if isinstance(value, dict):
+            mapped = dict(value)
+            metadata = dict(mapped.get("metadata") or {})
+            device_name = str(mapped.get("device_name") or mapped.get("source_device") or metadata.get("device_name") or metadata.get("source_device") or "")
+            mapped["device_name"] = device_name
+            mapped["source_device"] = str(mapped.get("source_device") or device_name)
+            mapped["permission_granted"] = bool(mapped.get("permission_granted") or metadata.get("permission_granted") or False)
             return mapped
         return value
 

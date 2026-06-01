@@ -24,12 +24,15 @@ def _connection_payload(provider: str) -> dict:
         "user_id": "user-1",
         "provider": provider,
         "status": "connected",
+        "device_name": "Apple Watch" if provider == "apple-health" else "Android Phone",
         "scopes": [],
         "provider_user_id": None,
         "connected_at": now,
+        "disconnected_at": None,
         "last_synced_at": now,
         "last_sync_status": "success",
         "last_sync_message": f"{provider} connected",
+        "permission_granted": True,
         "source_device": "Apple Watch" if provider == "apple-health" else "Android Phone",
         "platform": "ios" if provider == "apple-health" else "android",
         "metadata": {},
@@ -171,7 +174,19 @@ class IntegrationRouterTests(unittest.TestCase):
         with patch.object(
             wearables_router_module,
             "disconnect_provider",
-            AsyncMock(return_value=None),
+            AsyncMock(
+                return_value={
+                    "provider": "garmin",
+                    "disconnected": True,
+                    "status": "disconnected",
+                    "device_name": "Garmin",
+                    "source_device": "Garmin",
+                    "platform": "android",
+                    "disconnected_at": _utc_now(),
+                    "permission_granted": False,
+                    "message": "Provider disconnected by user.",
+                }
+            ),
         ) as disconnect_provider:
             response = self.client.delete("/integrations/garmin")
 

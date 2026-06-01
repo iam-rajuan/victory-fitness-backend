@@ -102,12 +102,17 @@ class WearableConnectionResponse(BaseModel):
     user_id: str
     provider: WearableProvider
     status: str
+    device_name: str = ""
     scopes: list[str] = Field(default_factory=list)
     provider_user_id: str | None = None
     connected_at: datetime | None = None
+    disconnected_at: datetime | None = None
     last_synced_at: datetime | None = None
     last_sync_status: str = "idle"
     last_sync_message: str = ""
+    permission_granted: bool = False
+    source_device: str = ""
+    platform: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
@@ -118,6 +123,14 @@ class WearableConnectionResponse(BaseModel):
         if isinstance(value, dict) and "id" not in value and "_id" in value:
             mapped = dict(value)
             mapped["id"] = str(mapped.get("_id") or "")
+            value = mapped
+        if isinstance(value, dict):
+            mapped = dict(value)
+            metadata = dict(mapped.get("metadata") or {})
+            device_name = str(mapped.get("device_name") or mapped.get("source_device") or metadata.get("device_name") or metadata.get("source_device") or "")
+            mapped["device_name"] = device_name
+            mapped["source_device"] = str(mapped.get("source_device") or device_name)
+            mapped["permission_granted"] = bool(mapped.get("permission_granted") or metadata.get("permission_granted") or False)
             return mapped
         return value
 
@@ -143,8 +156,11 @@ class ProviderDisconnectResponse(BaseModel):
     provider: WearableProvider
     disconnected: bool = True
     status: str = "disconnected"
+    device_name: str = ""
     source_device: str = ""
     platform: str = ""
+    disconnected_at: datetime | None = None
+    permission_granted: bool = False
     message: str = ""
 
 

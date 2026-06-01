@@ -105,11 +105,16 @@ async def ensure_indexes() -> None:
     await community_reactions_collection.create_index([("post_id", 1), ("user_id", 1)], unique=True)
     await user_provider_connections_collection.create_index([("user_id", 1), ("provider", 1)], unique=True)
     await user_provider_connections_collection.create_index([("provider", 1), ("status", 1), ("updated_at", -1)])
+    await user_provider_connections_collection.create_index([("user_id", 1), ("status", 1), ("updated_at", -1)])
+    await user_provider_connections_collection.create_index([("user_id", 1), ("platform", 1), ("status", 1)])
+    await user_provider_connections_collection.create_index([("user_id", 1), ("source_device", 1)])
     await user_provider_connections_collection.create_index([("provider", 1), ("provider_user_id", 1)])
     await user_provider_connections_collection.create_index([("provider", 1), ("oauth_state", 1)])
     await provider_tokens_collection.create_index([("user_id", 1), ("provider", 1)], unique=True)
     await health_samples_collection.create_index([("user_id", 1), ("start_time", -1)])
     await health_samples_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("start_time", -1)])
+    await health_samples_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("end_time", -1)])
+    await health_samples_collection.create_index([("user_id", 1), ("metric_type", 1), ("end_time", -1)])
     await health_samples_collection.create_index("dedupe_key", unique=True)
     await health_samples_collection.create_index(
         [("user_id", 1), ("provider", 1), ("external_id", 1), ("type", 1), ("started_at", 1)],
