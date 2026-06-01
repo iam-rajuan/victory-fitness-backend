@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 WearableProvider = Literal["apple-health", "health-connect", "fitbit", "google-fit", "garmin", "this-phone", "qr-import"]
@@ -111,6 +111,15 @@ class WearableConnectionResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def _map_mongo_id(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "id" not in value and "_id" in value:
+            mapped = dict(value)
+            mapped["id"] = str(mapped.get("_id") or "")
+            return mapped
+        return value
 
 
 class WearableConnectionsResponse(BaseModel):

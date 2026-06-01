@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 
 
 class RegisterRequest(BaseModel):
@@ -179,6 +179,15 @@ class IntegrationConnectionResponse(BaseModel):
     source_device: str = ""
     platform: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _map_mongo_id(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "id" not in value and "_id" in value:
+            mapped = dict(value)
+            mapped["id"] = str(mapped.get("_id") or "")
+            return mapped
+        return value
 
 
 class IntegrationListResponse(BaseModel):
