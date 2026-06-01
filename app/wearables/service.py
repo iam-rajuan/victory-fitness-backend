@@ -2007,6 +2007,7 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
     for provider in SUPPORTED_PROVIDERS:
         connection = connections_by_provider.get(provider)
         display = PROVIDER_DISPLAY[provider]
+        connection_metadata = dict((connection or {}).get("metadata") or {})
         is_active = bool(connection and str(connection.get("status") or "").lower() == "connected")
         status_value = "CONNECTED" if is_active else "CONNECT"
         if connection and str(connection.get("last_sync_status") or "").lower() == "failed":
@@ -2021,8 +2022,8 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
                 status=status_value,
                 active=is_active,
                 image=display["image"],
-                source_device=str(connection.get("source_device") or (connection.get("metadata") or {}).get("source_device") or ""),
-                platform=str(connection.get("platform") or (connection.get("metadata") or {}).get("platform") or ""),
+                source_device=str((connection or {}).get("source_device") or connection_metadata.get("source_device") or ""),
+                platform=str((connection or {}).get("platform") or connection_metadata.get("platform") or ""),
             )
         )
 
