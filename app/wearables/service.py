@@ -144,6 +144,7 @@ LONGEVITY_HABIT_TEMPLATES = [
     {"id": "sleep-7h", "title": "7h+ Sleep", "subtitle": "Daily protocol for longevity", "icon": "moon-outline"},
     {"id": "zone-2", "title": "Zone 2 Cardio", "subtitle": "Aerobic base for recovery and heart health", "icon": "heart-outline"},
     {"id": "breathwork", "title": "Breathwork", "subtitle": "Reduce stress and support recovery", "icon": "reorder-two-outline"},
+    {"id": "steps-8k", "title": "8k Steps", "subtitle": "Keep daily movement consistent", "icon": "walk-outline"},
 ]
 
 LONGEVITY_HEAL_CATEGORY_TEMPLATES = [
@@ -1438,6 +1439,7 @@ async def refresh_longevity_profile_cache(user_id: str) -> dict[str, Any]:
         "sleep-7h": sleep_hours >= 7,
         "zone-2": workouts >= 1 or steps >= 9000,
         "breathwork": stress_score <= 35,
+        "steps-8k": steps >= 8000,
     }
 
     habits: list[dict[str, Any]] = []

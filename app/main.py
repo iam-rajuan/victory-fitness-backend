@@ -380,10 +380,38 @@ DEFAULT_LONGEVITY_WEARABLES = [
     {"id": "garmin", "name": "Garmin", "status": "CONNECT", "active": False, "image": "https://images.unsplash.com/photo-1557438159-8664b4c7301c?w=600&q=80"},
 ]
 DEFAULT_LONGEVITY_HABITS = [
-    {"id": "hydration", "title": "Hydration", "subtitle": "Daily protocol for longevity", "icon": "water-outline", "done": True},
-    {"id": "sleep-7h", "title": "7h+ Sleep", "subtitle": "Daily protocol for longevity", "icon": "moon-outline", "done": True},
-    {"id": "cold-plunge", "title": "Cold Plunge", "subtitle": "Daily protocol for longevity", "icon": "flash-outline", "done": True},
-    {"id": "breathwork", "title": "Breathwork", "subtitle": "Daily protocol for longevity", "icon": "reorder-two-outline", "done": False},
+    {"id": "hydration", "title": "Hydration", "subtitle": "Support energy and recovery", "icon": "water-outline", "done": True},
+    {"id": "sleep-7h", "title": "7h+ Sleep", "subtitle": "Protect repair and recovery", "icon": "moon-outline", "done": True},
+    {"id": "zone-2", "title": "Zone 2 Cardio", "subtitle": "Aerobic base for heart health", "icon": "heart-outline", "done": False},
+    {"id": "breathwork", "title": "Breathwork", "subtitle": "Downshift stress response", "icon": "reorder-two-outline", "done": False},
+    {"id": "steps-8k", "title": "8k Steps", "subtitle": "Maintain a steady movement baseline", "icon": "walk-outline", "done": False},
+]
+
+DEFAULT_LONGEVITY_MASTERCLASSES = [
+    {
+        "id": "mc-heart-zone2",
+        "title": "Zone 2 For Heart Health",
+        "description": "Build aerobic capacity, improve recovery, and support long-term cardiovascular resilience.",
+        "thumbnail": "https://images.unsplash.com/photo-1530026405186-ed1f139313f8?w=600&q=80",
+    },
+    {
+        "id": "mc-recovery-blueprint",
+        "title": "Post Workout Recovery Blueprint",
+        "description": "Use sleep, hydration, and recovery windows to turn training stress into adaptation.",
+        "thumbnail": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80",
+    },
+    {
+        "id": "mc-mental-reset",
+        "title": "Mental Reset Protocol",
+        "description": "Calm stress, sharpen focus, and create a repeatable reset routine for anxious days.",
+        "thumbnail": "https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&q=80",
+    },
+    {
+        "id": "mc-immunity-stack",
+        "title": "Immunity Support Stack",
+        "description": "Layer sleep, movement, nutrition, and recovery into a sustainable immune-support routine.",
+        "thumbnail": "https://images.unsplash.com/photo-1584362917165-526a968579e8?w=600&q=80",
+    },
 ]
 
 
@@ -1110,7 +1138,7 @@ def _build_default_longevity_profile(user: dict) -> dict:
         "habits": [dict(item) for item in DEFAULT_LONGEVITY_HABITS],
         "heal_categories": [dict(item) for item in DEFAULT_LONGEVITY_HEAL_CATEGORIES],
         "weekly_plan": None,
-        "masterclasses": [],
+        "masterclasses": [dict(item) for item in DEFAULT_LONGEVITY_MASTERCLASSES],
         "circles": [],
         "created_at": now,
         "updated_at": now,
