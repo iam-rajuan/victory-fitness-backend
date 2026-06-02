@@ -16,6 +16,10 @@ from ..models import (
     LongevityWearablesResponse,
     NativeIntegrationConnectedRequest,
     NativeIntegrationSamplesRequest,
+    VitalCreateUserResponse,
+    VitalLinkTokenRequest,
+    VitalLinkTokenResponse,
+    VitalWebhookResponse,
 )
 from .adapters import PROVIDER_NOT_CONFIGURED, is_provider_configured
 from .schemas import (
@@ -47,7 +51,10 @@ from .service import (
     exchange_google_fit_code,
     exchange_garmin_code,
     handle_garmin_webhook,
+    create_vital_link_token,
+    ensure_vital_user,
     ingest_mobile_sync,
+    ingest_vital_webhook,
     refresh_longevity_profile_cache,
     list_integrations,
     list_user_connections,
@@ -60,6 +67,7 @@ from .service import (
     sync_fitbit,
     sync_google_fit as sync_google_fit_provider,
     sync_garmin,
+    verify_junction_webhook_signature,
     verify_garmin_webhook_signature,
 )
 
@@ -213,6 +221,34 @@ async def integrations_native_samples(
     )
 
 
+@router.post("/junction/create-user", response_model=VitalCreateUserResponse)
+@router.post("/vital/create-user", response_model=VitalCreateUserResponse)
+async def vital_create_user(
+    user: dict = Depends(require_longevity_access_user),
+) -> VitalCreateUserResponse:
+    payload = await ensure_vital_user(str(user["_id"]))
+    return VitalCreateUserResponse(**payload)
+
+
+@router.post("/junction/link-token", response_model=VitalLinkTokenResponse)
+@router.post("/vital/link-token", response_model=VitalLinkTokenResponse)
+async def vital_link_token(
+    payload: VitalLinkTokenRequest | None = None,
+    user: dict = Depends(require_longevity_access_user),
+) -> VitalLinkTokenResponse:
+    request_payload = payload or VitalLinkTokenRequest()
+    response = await create_vital_link_token(
+        str(user["_id"]),
+        provider=request_payload.provider,
+    )
+    return VitalLinkTokenResponse(
+        vital_user_id=str(response.get("vital_user_id") or ""),
+        link_token=str(response.get("link_token") or ""),
+        link_web_url=str(response.get("link_web_url") or ""),
+        message=str(response.get("message") or "Junction link token ready."),
+    )
+
+
 @router.post("/integrations/{provider}/sync", response_model=ProviderSyncResponse)
 async def integration_sync(
     provider: str,
@@ -318,6 +354,21 @@ async def fitbit_webhook(
         "message": "Fitbit webhook received.",
         "events": len(payload) if isinstance(payload, list) else 1,
     }
+
+
+@router.post("/webhooks/junction", response_model=VitalWebhookResponse)
+@router.post("/webhooks/vital", response_model=VitalWebhookResponse)
+async def vital_webhook(
+    request: Request,
+) -> VitalWebhookResponse:
+    await verify_junction_webhook_signature(request)
+    raw_body = await request.body()
+    try:
+        payload = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Junction webhook payload") from exc
+    result = await ingest_vital_webhook(payload if isinstance(payload, dict) else {"data": payload})
+    return VitalWebhookResponse(**result)
 
 
 @router.post("/webhooks/google-fit")

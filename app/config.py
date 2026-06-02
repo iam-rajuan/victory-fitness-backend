@@ -150,5 +150,15 @@ class Settings:
         "https://www.googleapis.com/auth/fitness.activity.read,https://www.googleapis.com/auth/fitness.location.read,https://www.googleapis.com/auth/fitness.heart_rate.read",
     )
 
+    junction_api_key = os.getenv("JUNCTION_API_KEY", os.getenv("VITAL_API_KEY", "")).strip()
+    junction_api_base_url = os.getenv("JUNCTION_API_BASE_URL", os.getenv("VITAL_API_BASE_URL", "https://api.tryvital.io")).strip().rstrip("/")
+    junction_link_base_url = os.getenv("JUNCTION_LINK_BASE_URL", os.getenv("VITAL_LINK_BASE_URL", "https://link.tryvital.io")).strip().rstrip("/")
+    junction_webhook_secret = os.getenv("JUNCTION_WEBHOOK_SECRET", os.getenv("VITAL_WEBHOOK_SECRET", "")).strip()
+
+    vital_api_key = junction_api_key
+    vital_api_base_url = junction_api_base_url
+    vital_link_base_url = junction_link_base_url
+    vital_webhook_secret = junction_webhook_secret
+
 
 settings = Settings()

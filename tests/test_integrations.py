@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import importlib
+import hmac
+import json
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -10,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 wearables_router_module = importlib.import_module("app.wearables.router")
+wearables_service_module = importlib.import_module("app.wearables.service")
 from app.wearables.service import store_normalized_metrics
 
 
@@ -38,6 +43,22 @@ def _connection_payload(provider: str) -> dict:
         "metadata": {},
         "created_at": now,
         "updated_at": now,
+    }
+
+
+def _junction_webhook_headers(payload: dict, message_id: str = "msg_test_123", timestamp: int | None = None) -> dict[str, str]:
+    secret = "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw"
+    if timestamp is None:
+        timestamp = int(_utc_now().timestamp())
+    secret_bytes = base64.b64decode(secret.removeprefix("whsec_"))
+    body = json.dumps(payload).encode("utf-8")
+    signed_content = b".".join((message_id.encode("utf-8"), str(timestamp).encode("utf-8"), body))
+    signature = base64.b64encode(hmac.new(secret_bytes, signed_content, hashlib.sha256).digest()).decode("utf-8")
+    return {
+        "svix-id": message_id,
+        "svix-timestamp": str(timestamp),
+        "svix-signature": f"v1,{signature}",
+        "content-type": "application/json",
     }
 
 
@@ -169,6 +190,80 @@ class IntegrationRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["provider"], "apple-health")
         ingest_mobile_sync.assert_awaited_once()
         self.assertEqual(ingest_mobile_sync.await_args.args[1], "apple-health")
+
+    def test_vital_create_user_uses_service_helper(self) -> None:
+        with patch.object(
+            wearables_router_module,
+            "ensure_vital_user",
+            AsyncMock(return_value={
+                "vital_user_id": "vital-user-1",
+                "client_user_id": "user-1",
+                "created": True,
+                "message": "Junction user ready.",
+            }),
+        ) as ensure_vital_user:
+            response = self.client.post("/vital/create-user")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["vital_user_id"], "vital-user-1")
+        ensure_vital_user.assert_awaited_once_with("user-1")
+
+    def test_vital_link_token_returns_link_url(self) -> None:
+        with patch.object(
+            wearables_router_module,
+            "create_vital_link_token",
+            AsyncMock(return_value={
+                "vital_user_id": "vital-user-1",
+                "link_token": "token-123",
+                "link_web_url": "https://link.tryvital.io/?token=token-123",
+                "message": "Junction link token ready.",
+            }),
+        ) as create_vital_link_token:
+            response = self.client.post("/vital/link-token", json={})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["link_token"], "token-123")
+        create_vital_link_token.assert_awaited_once()
+
+    def test_vital_webhook_uses_ingestion_helper(self) -> None:
+        payload = {"user_id": "vital-user-1", "provider": "fitbit", "metrics": []}
+        headers = _junction_webhook_headers(payload)
+        body = json.dumps(payload)
+        with (
+            patch.object(
+                wearables_service_module.settings,
+                "junction_webhook_secret",
+                "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw",
+            ),
+            patch.object(
+                wearables_router_module,
+                "ingest_vital_webhook",
+                AsyncMock(return_value={
+                    "accepted": True,
+                    "user_id": "user-1",
+                    "vital_user_id": "vital-user-1",
+                    "provider": "fitbit",
+                    "stored_records": 2,
+                    "message": "Junction webhook processed.",
+                }),
+            ) as ingest_vital_webhook,
+        ):
+            response = self.client.post("/webhooks/vital", content=body.encode("utf-8"), headers=headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["stored_records"], 2)
+        ingest_vital_webhook.assert_awaited_once()
+
+    def test_junction_webhook_rejects_missing_signature(self) -> None:
+        with patch.object(
+            wearables_service_module.settings,
+            "junction_webhook_secret",
+            "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw",
+        ):
+            response = self.client.post("/webhooks/junction", json={"user_id": "vital-user-1"})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"], "Missing Junction webhook id")
 
     def test_disconnect_provider_endpoint(self) -> None:
         with patch.object(

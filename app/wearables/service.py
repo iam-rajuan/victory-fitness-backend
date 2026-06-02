@@ -9,6 +9,7 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+from urllib.parse import quote
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -137,6 +138,310 @@ DEMO_PROVIDER_METADATA = {
         "sample_origin": "qr_import_sync",
     },
 }
+
+
+def _vital_request_headers() -> dict[str, str]:
+    api_key = (getattr(settings, "vital_api_key", "") or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Junction API key is not configured")
+    return {
+        "x-vital-api-key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _vital_request_sync(method: str, path: str, *, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    base_url = (getattr(settings, "vital_api_base_url", "") or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=503, detail="Junction API base URL is not configured")
+    url = f"{base_url}/{path.lstrip('/')}"
+    data = json.dumps(body or {}).encode("utf-8") if body is not None else None
+    request = urllib.request.Request(url, data=data, headers=_vital_request_headers(), method=method.upper())
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read().decode("utf-8") or "{}"
+            return json.loads(raw) if raw.strip() else {}
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+        try:
+            detail = json.loads(raw) if raw else {"error": exc.reason}
+        except json.JSONDecodeError:
+            detail = raw or exc.reason
+        raise HTTPException(status_code=exc.code, detail=detail)
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=503, detail=f"Junction API request failed: {exc.reason}") from exc
+
+
+async def _vital_request(method: str, path: str, *, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    return await asyncio.to_thread(_vital_request_sync, method, path, body=body)
+
+
+def _resolve_user_filter(user_id: str) -> dict[str, Any]:
+    if ObjectId.is_valid(user_id):
+        return {"_id": ObjectId(user_id)}
+    return {"_id": user_id}
+
+
+async def ensure_vital_user(user_id: str) -> dict[str, Any]:
+    user_filter = _resolve_user_filter(user_id)
+    user = await users_collection.find_one(user_filter, {"name": 1, "email": 1, "vital_user_id": 1, "vital_client_user_id": 1})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    client_user_id = str(user.get("vital_client_user_id") or user_id)
+    vital_user_id = str(user.get("vital_user_id") or "").strip()
+    created = False
+
+    if not vital_user_id:
+        resolved: dict[str, Any] | None = None
+        try:
+            resolved = await _vital_request("GET", f"/v2/user/resolve/{quote(client_user_id, safe='')}")
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        vital_user_id = str((resolved or {}).get("user_id") or "").strip()
+        if not vital_user_id:
+            created_response = await _vital_request("POST", "/v2/user", body={"client_user_id": client_user_id})
+            vital_user_id = str(created_response.get("user_id") or "").strip()
+            created = True
+
+    if not vital_user_id:
+        raise HTTPException(status_code=502, detail="Junction user could not be created")
+
+    now = _utc_now()
+    await users_collection.update_one(
+        user_filter,
+        {
+            "$set": {
+                "vital_user_id": vital_user_id,
+                "vital_client_user_id": client_user_id,
+                "vital_connected_at": now,
+                "updated_at": now,
+            }
+        },
+    )
+    return {
+        "vital_user_id": vital_user_id,
+        "client_user_id": client_user_id,
+        "created": created,
+        "message": "Junction user ready.",
+    }
+
+
+async def create_vital_link_token(user_id: str, *, provider: str | None = None) -> dict[str, Any]:
+    vital_user = await ensure_vital_user(user_id)
+    body: dict[str, Any] = {"user_id": vital_user["vital_user_id"]}
+    normalized_provider = str(provider or "").strip().lower()
+    if normalized_provider:
+        body["provider"] = normalized_provider
+
+    response = await _vital_request("POST", "/v2/link/token", body=body)
+    link_token = str(response.get("link_token") or "").strip()
+    if not link_token:
+        raise HTTPException(status_code=502, detail="Junction link token was not returned")
+
+    link_web_url = str(response.get("link_web_url") or "").strip()
+    if not link_web_url:
+        env_value = "production" if str(getattr(settings, "environment", "")).lower() == "production" else "sandbox"
+        region = "us"
+        link_web_url = f"{getattr(settings, 'vital_link_base_url', 'https://link.tryvital.io').rstrip('/')}/?token={quote(link_token)}&env={quote(env_value)}&region={quote(region)}"
+        if not link_web_url.startswith("http"):
+            link_web_url = f"https://link.tryvital.io/?token={quote(link_token)}&env={quote(env_value)}&region={quote(region)}"
+
+    return {
+        "vital_user_id": vital_user["vital_user_id"],
+        "client_user_id": vital_user["client_user_id"],
+        "created": bool(vital_user["created"]),
+        "link_token": link_token,
+        "link_web_url": link_web_url,
+        "message": "Junction link token ready.",
+    }
+
+
+def _extract_vital_user_id(payload: dict[str, Any]) -> str:
+    for key in ("user_id", "client_user_id", "clientUserId", "client_userid", "clientUserID"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    nested_user = payload.get("user")
+    if isinstance(nested_user, dict):
+        nested_id = str(nested_user.get("user_id") or nested_user.get("client_user_id") or "").strip()
+        if nested_id:
+            return nested_id
+    return ""
+
+
+def _normalize_vital_provider(provider: str, source_hint: str = "") -> str:
+    normalized = str(provider or source_hint or "").strip().lower()
+    if normalized in {"apple_health", "apple-health", "apple_health_kit"}:
+        return "apple-health"
+    if normalized in {"health_connect", "health-connect", "android", "samsung_health", "samsung-health"}:
+        return "health-connect"
+    if normalized in {"fitbit"}:
+        return "fitbit"
+    if normalized in {"google_fit", "google-fit"}:
+        return "google-fit"
+    if normalized in {"garmin"}:
+        return "garmin"
+    if normalized in {"this_phone", "this-phone"}:
+        return "this-phone"
+    if normalized in {"qr_import", "qr-import"}:
+        return "qr-import"
+    if normalized in {"runmefit"}:
+        return "health-connect"
+    return "health-connect"
+
+
+def _coerce_metric_type(value: Any) -> str:
+    normalized = str(value or "").strip().lower().replace(" ", "_")
+    aliases = {
+        "steps_count": "steps",
+        "step_count": "steps",
+        "heart_rate_bpm": "heart_rate",
+        "hr": "heart_rate",
+        "hrv_ms": "hrv",
+        "oxygen_saturation": "spo2",
+        "bodybattery": "body_battery",
+        "sleep_duration": "sleep",
+        "sleep_seconds": "sleep",
+        "calories_burned": "calories",
+        "distance_meters": "distance",
+    }
+    return aliases.get(normalized, normalized)
+
+
+def _coerce_metric_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in ("value", "amount", "count", "total", "meters", "seconds", "milliseconds", "bpm", "percentage", "duration"):
+            nested = value.get(key)
+            if nested is not None:
+                return nested
+    return value
+
+
+def _vital_metric_timestamp(payload: dict[str, Any], *keys: str) -> datetime:
+    for key in keys:
+        raw = payload.get(key)
+        if isinstance(raw, str) and raw.strip():
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+    return _utc_now()
+
+
+def _normalize_vital_metric_record(record: dict[str, Any], provider: str, source_device: str) -> dict[str, Any] | None:
+    metric_type = _coerce_metric_type(
+        record.get("metric_type")
+        or record.get("type")
+        or record.get("kind")
+        or record.get("name")
+        or record.get("data_type")
+    )
+    if not metric_type:
+        return None
+
+    value = _coerce_metric_value(record.get("value", record.get("amount", record.get("count"))))
+    unit = str(record.get("unit") or record.get("units") or record.get("measurement_unit") or "").strip()
+    start_time = _vital_metric_timestamp(record, "start_time", "startTime", "start", "timestamp", "time", "date")
+    end_time = _vital_metric_timestamp(record, "end_time", "endTime", "end", "timestamp", "time", "date")
+    metadata = {
+        key: value
+        for key, value in record.items()
+        if key not in {"metric_type", "type", "kind", "name", "data_type", "value", "amount", "count", "unit", "units", "measurement_unit", "start_time", "startTime", "start", "end_time", "endTime", "end", "timestamp", "time", "date"}
+    }
+    return {
+        "metric_type": metric_type,
+        "value": value,
+        "unit": unit,
+        "start_time": start_time,
+        "end_time": end_time,
+        "source_device": str(record.get("source_device") or source_device or record.get("source") or "Junction Link"),
+        "metadata": {
+            **metadata,
+            "vital_provider": provider,
+        },
+    }
+
+
+async def ingest_vital_webhook(payload: dict[str, Any]) -> dict[str, Any]:
+    source_user_id = _extract_vital_user_id(payload)
+    if not source_user_id:
+        raise HTTPException(status_code=400, detail="Junction webhook payload missing user identifier")
+
+    user_filter = {
+        "$or": [
+            {"vital_user_id": source_user_id},
+            {"vital_client_user_id": source_user_id},
+        ]
+    }
+    if ObjectId.is_valid(source_user_id):
+        user_filter["$or"].append({"_id": ObjectId(source_user_id)})
+    user = await users_collection.find_one(user_filter)
+    if not user:
+        raise HTTPException(status_code=404, detail="Junction user could not be resolved")
+
+    provider = _normalize_vital_provider(
+        str(payload.get("provider") or payload.get("source") or payload.get("integration") or ""),
+        str(payload.get("source_device") or payload.get("device") or ""),
+    )
+    source_device = str(payload.get("source_device") or payload.get("device") or payload.get("provider_name") or "Junction Link")
+
+    raw_metrics: list[dict[str, Any]] = []
+    for key in ("metrics", "records", "measurements", "items"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            raw_metrics.extend([dict(item) for item in value if isinstance(item, dict)])
+        elif isinstance(value, dict):
+            for nested_key in ("metrics", "records", "measurements", "items"):
+                nested_value = value.get(nested_key)
+                if isinstance(nested_value, list):
+                    raw_metrics.extend([dict(item) for item in nested_value if isinstance(item, dict)])
+
+    if not raw_metrics and isinstance(payload.get("data"), dict):
+        metric = _normalize_vital_metric_record(payload["data"], provider, source_device)
+        if metric:
+            raw_metrics.append(metric)
+
+    normalized_metrics = []
+    for record in raw_metrics:
+        metric = _normalize_vital_metric_record(record, provider, source_device)
+        if metric:
+            normalized_metrics.append(metric)
+
+    inserted = skipped = 0
+    if normalized_metrics:
+        inserted, skipped = await store_normalized_metrics(str(user["_id"]), provider, normalized_metrics, source_device=source_device)
+        now = _utc_now()
+        await upsert_wearable_connection(
+            str(user["_id"]),
+            provider,
+            status_value="connected",
+            source_device=source_device,
+            metadata={
+                "source": "vital",
+                "vital_user_id": source_user_id,
+                "vital_provider": provider,
+            },
+            connected_at=now,
+            last_synced_at=now,
+            last_sync_status="success",
+            last_sync_message=f"Junction webhook stored {inserted} records.",
+        )
+        await refresh_longevity_profile_cache(str(user["_id"]))
+
+    return {
+        "accepted": True,
+        "user_id": str(user["_id"]),
+        "vital_user_id": source_user_id,
+        "provider": provider,
+        "stored_records": inserted,
+        "skipped_records": skipped,
+        "message": "Junction webhook processed.",
+    }
+
+
 LONGEVITY_HABIT_TEMPLATES = [
     {"id": "hydration", "title": "Hydration", "subtitle": "Daily protocol for longevity", "icon": "water-outline"},
     {"id": "sleep-7h", "title": "7h+ Sleep", "subtitle": "Daily protocol for longevity", "icon": "moon-outline"},
@@ -2236,6 +2541,58 @@ async def verify_garmin_webhook_signature(request: Request) -> None:
     provided = signature.split("=")[-1]
     if not hmac.compare_digest(expected, provided):
         raise HTTPException(status_code=401, detail="Invalid Garmin webhook signature")
+
+
+def _decode_svix_signing_secret(secret: str) -> bytes:
+    normalized = (secret or "").strip()
+    if normalized.startswith("whsec_"):
+        normalized = normalized[len("whsec_") :]
+    try:
+        return base64.b64decode(normalized, validate=True)
+    except Exception:
+        return normalized.encode("utf-8")
+
+
+async def verify_junction_webhook_signature(request: Request) -> None:
+    secret = (getattr(settings, "junction_webhook_secret", "") or "").strip()
+    if not secret:
+        raise HTTPException(status_code=500, detail="Junction webhook secret is not configured")
+
+    message_id = (request.headers.get("svix-id") or request.headers.get("webhook-id") or "").strip()
+    timestamp = (request.headers.get("svix-timestamp") or request.headers.get("webhook-timestamp") or "").strip()
+    signature_header = (request.headers.get("svix-signature") or request.headers.get("webhook-signature") or "").strip()
+
+    if not message_id:
+        raise HTTPException(status_code=401, detail="Missing Junction webhook id")
+    if not timestamp:
+        raise HTTPException(status_code=401, detail="Missing Junction webhook timestamp")
+    if not signature_header:
+        raise HTTPException(status_code=401, detail="Missing Junction webhook signature")
+
+    try:
+        timestamp_value = int(timestamp)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid Junction webhook timestamp") from exc
+
+    import time as _time
+
+    if abs(int(_time.time()) - timestamp_value) > 300:
+        raise HTTPException(status_code=401, detail="Stale Junction webhook timestamp")
+
+    payload = await request.body()
+    signed_content = b".".join((message_id.encode("utf-8"), timestamp.encode("utf-8"), payload))
+    secret_bytes = _decode_svix_signing_secret(secret)
+    expected_signature = base64.b64encode(hmac.new(secret_bytes, signed_content, hashlib.sha256).digest()).decode("utf-8")
+
+    provided_signatures = [part.strip() for part in signature_header.split() if part.strip()]
+    for candidate in provided_signatures:
+        _, _, signature_value = candidate.partition(",")
+        if not signature_value:
+            signature_value = candidate
+        if hmac.compare_digest(expected_signature, signature_value):
+            return
+
+    raise HTTPException(status_code=401, detail="Invalid Junction webhook signature")
 
 
 async def handle_garmin_webhook(payload: dict[str, Any]) -> tuple[bool, int]:
