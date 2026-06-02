@@ -144,6 +144,7 @@ class LongevityOverviewResponse(BaseModel):
 class LongevityQuickActionResponse(BaseModel):
     id: str
     label: str
+    subtitle: str = ""
     image: str = ""
     color: str = ""
 

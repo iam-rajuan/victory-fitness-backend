@@ -30,6 +30,7 @@ from ..database import (
     wearable_connections_collection,
 )
 from ..models import LongevityWearableDeviceResponse, LongevityWearablesResponse
+from ..longevity_ai import generate_longevity_quick_actions
 from .adapters import PROVIDER_NOT_CONFIGURED, get_provider_adapter, is_provider_configured
 from .queue import enqueue_integration_job
 
@@ -1354,25 +1355,7 @@ async def refresh_longevity_profile_cache(user_id: str) -> dict[str, Any]:
     else:
         heal_categories.sort(key=lambda item: 0 if item["id"] == "heart" else 1)
 
-    quick_actions: list[dict[str, Any]] = []
-    if recovery_score < 75:
-        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["recovery"]))
-    if sleep_hours < 7:
-        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["sleep"]))
-    if stress_score > 38:
-        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["stress"]))
-    if steps < 9000:
-        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["movement"]))
-    if len(quick_actions) < 4:
-        quick_actions.append(dict(LONGEVITY_QUICK_ACTION_TEMPLATES["breath"]))
-    deduped_quick_actions: list[dict[str, Any]] = []
-    seen_quick_action_ids: set[str] = set()
-    for item in quick_actions:
-        item_id = str(item.get("id") or "")
-        if item_id and item_id not in seen_quick_action_ids:
-            seen_quick_action_ids.add(item_id)
-            deduped_quick_actions.append(item)
-    quick_actions = deduped_quick_actions[:5]
+    quick_actions = generate_longevity_quick_actions(insights)
 
     prioritized_category_ids = [str(item.get("id") or "") for item in heal_categories[:4]]
     masterclass_key_map = {

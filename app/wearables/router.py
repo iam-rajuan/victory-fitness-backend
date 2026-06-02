@@ -48,6 +48,7 @@ from .service import (
     exchange_garmin_code,
     handle_garmin_webhook,
     ingest_mobile_sync,
+    refresh_longevity_profile_cache,
     list_integrations,
     list_user_connections,
     mark_native_provider_connected,
@@ -200,6 +201,7 @@ async def integrations_native_samples(
         batch_id=mobile_payload.batch_id,
         trigger="native_samples",
     )
+    await refresh_longevity_profile_cache(str(user["_id"]))
     return ProviderSyncResponse(
         provider=provider,
         user_id=str(user["_id"]),
