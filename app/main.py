@@ -1191,6 +1191,7 @@ async def longevity_generate_weekly_plan(
             "overview": metric_insights.get("overview") or {},
             "summary": metric_insights.get("summary") or {},
             "focus_areas": metric_insights.get("focus_areas") or [],
+            "history": metric_insights.get("history") or {},
             "heal_categories": heal_categories,
             "completed_habits": habit_titles,
         }

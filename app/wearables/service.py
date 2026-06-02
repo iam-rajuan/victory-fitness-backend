@@ -338,6 +338,59 @@ def _coerce_float(value: Any) -> float | None:
         return None
 
 
+def _parse_datetime_value(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return _as_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _summarize_metric_window(records: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics_by_type: dict[str, list[float]] = {}
+    active_dates: set[str] = set()
+    workouts_total = 0.0
+
+    for record in records:
+        record_time = _parse_datetime_value(record.get("end_time") or record.get("start_time") or record.get("synced_at"))
+        if record_time:
+            active_dates.add(record_time.date().isoformat())
+
+        metric_type = str(record.get("metric_type") or "").strip().lower()
+        value = _coerce_float(record.get("value"))
+        if value is None:
+            continue
+        metrics_by_type.setdefault(metric_type, []).append(value)
+        if metric_type == "workouts":
+            workouts_total += value
+
+    def average(metric_type: str) -> float:
+        values = metrics_by_type.get(metric_type) or []
+        if not values:
+            return 0.0
+        return round(sum(values) / len(values), 2)
+
+    return {
+        "record_count": len(records),
+        "active_days": len(active_dates),
+        "sleep_hours": round(average("sleep"), 1),
+        "hrv_ms": int(round(average("hrv"))),
+        "heart_rate_bpm": int(round(average("heart_rate"))),
+        "stress_score": int(round(average("stress"))),
+        "body_battery": int(round(average("body_battery"))),
+        "steps": int(round(average("steps"))),
+        "spo2_percent": int(round(average("spo2"))),
+        "workouts": int(round(workouts_total)),
+        "distance_meters": round(average("distance"), 2),
+    }
+
+
 def _date_to_bounds(value: date | None, is_end: bool = False) -> datetime | None:
     if value is None:
         return None
@@ -1203,6 +1256,11 @@ async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
     if not records:
         return {"has_metrics": False}
 
+    existing_profile = await longevity_os_profiles_collection.find_one(
+        {"user_id": user_id},
+        {"habits": 1, "weekly_plan": 1, "updated_at": 1},
+    ) or {}
+
     metrics_by_type: dict[str, list[float]] = {}
     for record in records:
         metric_type = str(record.get("metric_type") or "")
@@ -1268,6 +1326,60 @@ async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
     if not focus_areas:
         focus_areas.append("maintain your current recovery momentum")
 
+    latest_time = max(
+        (
+            _parse_datetime_value(record.get("end_time") or record.get("start_time") or record.get("synced_at"))
+            for record in records
+        ),
+        default=None,
+    )
+    if latest_time is None:
+        latest_time = _utc_now()
+
+    recent_window_start = latest_time - timedelta(days=7)
+    previous_window_start = latest_time - timedelta(days=14)
+    recent_records = [
+        record
+        for record in records
+        if (record_time := _parse_datetime_value(record.get("end_time") or record.get("start_time") or record.get("synced_at")))
+        and record_time >= recent_window_start
+    ]
+    previous_records = [
+        record
+        for record in records
+        if (record_time := _parse_datetime_value(record.get("end_time") or record.get("start_time") or record.get("synced_at")))
+        and previous_window_start <= record_time < recent_window_start
+    ]
+    recent_summary = _summarize_metric_window(recent_records)
+    previous_summary = _summarize_metric_window(previous_records)
+
+    habits = [dict(item) for item in existing_profile.get("habits") or []]
+    completed_habits = [
+        str(item.get("title") or "").strip()
+        for item in habits
+        if str(item.get("title") or "").strip() and bool(item.get("done"))
+    ]
+    pending_habits = [
+        str(item.get("title") or "").strip()
+        for item in habits
+        if str(item.get("title") or "").strip() and not bool(item.get("done"))
+    ]
+    habit_completion_rate = round((len(completed_habits) / max(len(habits), 1)) * 100, 1) if habits else 0.0
+
+    weekly_plan = existing_profile.get("weekly_plan") or {}
+    prior_plan = None
+    if isinstance(weekly_plan, dict) and weekly_plan:
+        section_titles = [
+            str(item.get("title") or "").strip()
+            for item in weekly_plan.get("plan_sections") or []
+            if str(item.get("title") or "").strip()
+        ]
+        prior_plan = {
+            "generated_at": weekly_plan.get("generated_at"),
+            "message": weekly_plan.get("message"),
+            "section_titles": section_titles,
+        }
+
     return {
         "has_metrics": True,
         "overview": {
@@ -1289,6 +1401,15 @@ async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
             "workouts": workouts_total,
         },
         "focus_areas": focus_areas[:3],
+        "history": {
+            "record_count": len(records),
+            "recent_7d": recent_summary,
+            "previous_7d": previous_summary,
+            "habit_completion_rate": habit_completion_rate,
+            "completed_habits": completed_habits[:8],
+            "pending_habits": pending_habits[:8],
+            "prior_weekly_plan": prior_plan,
+        },
     }
 
 

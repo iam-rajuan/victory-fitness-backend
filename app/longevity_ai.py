@@ -194,6 +194,12 @@ def _build_prompt(payload: dict) -> str:
     focus_areas = [str(item).strip() for item in payload.get("focus_areas") or [] if str(item).strip()]
     habits = [str(item).strip() for item in payload.get("completed_habits") or [] if str(item).strip()]
     categories = [str(item).strip() for item in payload.get("heal_categories") or [] if str(item).strip()]
+    history = payload.get("history") or {}
+    recent = history.get("recent_7d") or {}
+    previous = history.get("previous_7d") or {}
+    prior_plan = history.get("prior_weekly_plan") or {}
+    completed_habits = [str(item).strip() for item in history.get("completed_habits") or [] if str(item).strip()]
+    pending_habits = [str(item).strip() for item in history.get("pending_habits") or [] if str(item).strip()]
 
     return (
         "Create a 7-day longevity weekly plan.\n"
@@ -208,6 +214,13 @@ def _build_prompt(payload: dict) -> str:
         f"Average blood oxygen: {summary.get('spo2_percent', 0)}%\n"
         f"Average stress score: {summary.get('stress_score', 0)}\n"
         f"Workout sessions logged: {summary.get('workouts', 0)}\n"
+        f"Recent 7-day summary: sleep {recent.get('sleep_hours', 0)} hours, hrv {recent.get('hrv_ms', 0)} ms, steps {recent.get('steps', 0)}, stress {recent.get('stress_score', 0)}, spo2 {recent.get('spo2_percent', 0)}%, workouts {recent.get('workouts', 0)}.\n"
+        f"Previous 7-day summary: sleep {previous.get('sleep_hours', 0)} hours, hrv {previous.get('hrv_ms', 0)} ms, steps {previous.get('steps', 0)}, stress {previous.get('stress_score', 0)}, spo2 {previous.get('spo2_percent', 0)}%, workouts {previous.get('workouts', 0)}.\n"
+        f"Habit completion rate: {history.get('habit_completion_rate', 0)}%.\n"
+        f"Completed habits from history: {', '.join(completed_habits) or 'none yet'}.\n"
+        f"Pending habits from history: {', '.join(pending_habits) or 'none'}.\n"
+        f"Prior weekly plan summary: {str(prior_plan.get('message') or 'none')}\n"
+        f"Prior weekly plan sections: {', '.join([str(item) for item in prior_plan.get('section_titles') or [] if str(item).strip()]) or 'none'}\n"
         f"Priority focus areas: {', '.join(focus_areas) or 'heart health, recovery, mental resilience, immunity'}\n"
         f"Completed habits: {', '.join(habits) or 'none yet'}\n"
         f"Current heal categories: {', '.join(categories) or 'heart health, post workout recovery, mental health and anxiety, immunity and infection'}\n"
@@ -314,36 +327,47 @@ def _openai_longevity_quick_actions(prompt: str) -> list[dict[str, str]]:
 def _fallback_longevity_weekly_plan(payload: dict) -> LongevityWeeklyPlanResult:
     overview = payload.get("overview") or {}
     summary = payload.get("summary") or {}
+    history = payload.get("history") or {}
+    recent = history.get("recent_7d") or {}
+    previous = history.get("previous_7d") or {}
+    habit_completion_rate = float(history.get("habit_completion_rate") or 0)
+    completed_habits = [str(item).strip() for item in history.get("completed_habits") or [] if str(item).strip()]
+    pending_habits = [str(item).strip() for item in history.get("pending_habits") or [] if str(item).strip()]
     recovery_score = int(overview.get("recovery_score") or 0)
     sleep_hours = float(summary.get("sleep_hours") or 0)
     hrv_ms = int(summary.get("hrv_ms") or overview.get("hrv_ms") or 0)
     steps = int(summary.get("steps") or 0)
     stress_score = int(summary.get("stress_score") or 0)
     spo2 = int(summary.get("spo2_percent") or 0)
+    step_trend = steps - int(previous.get("steps") or 0)
+    sleep_trend = round(sleep_hours - float(previous.get("sleep_hours") or 0), 1)
+    hrv_trend = hrv_ms - int(previous.get("hrv_ms") or 0)
+    stress_trend = stress_score - int(previous.get("stress_score") or 0)
+    completion_note = "strong" if habit_completion_rate >= 75 else "mixed" if habit_completion_rate >= 40 else "light"
 
     sections = [
         LongevityWeeklyPlanSection(
             id="heart_health",
             title="Heart Health",
             summary=(
-                f"Use your current activity baseline of about {steps} steps per day and HRV around {hrv_ms} ms "
-                "to build steadier cardiovascular output this week without spiking fatigue."
+                f"Your recent movement trend is {step_trend:+} steps versus the previous period and HRV is {hrv_trend:+} ms, "
+                f"so this week should keep cardio steady and sustainable while respecting the current {completion_note} adherence pattern."
             ),
             actions=[
-                "Complete 3 moderate cardio sessions of 25 to 35 minutes at conversational pace.",
-                "Add one 10-minute brisk walk after your two largest meals to improve circulation and glucose handling.",
-                "Keep one full lower-intensity day after your hardest training session to support heart-rate recovery.",
+                "Complete 3 moderate cardio sessions of 25 to 35 minutes at conversational pace and track how you recover the next day.",
+                "Add one 10-minute brisk walk after your two largest meals to support circulation and help reinforce the current routine.",
+                "Keep one full lower-intensity day after your hardest training session so the plan stays aligned with your recent recovery history.",
             ],
         ),
         LongevityWeeklyPlanSection(
             id="post_workout_recovery",
             title="Post Workout Recovery",
             summary=(
-                f"Your recovery score is {recovery_score}% with average sleep near {sleep_hours:.1f} hours, "
-                "so this week should prioritize sleep quality, tissue recovery, and workout spacing."
+                f"Your recovery score is {recovery_score}% and sleep moved {sleep_trend:+.1f} hours compared with the prior week, "
+                "so this week should protect recovery and keep training volume matched to how you actually respond."
             ),
             actions=[
-                "Finish each workout with 5 to 8 minutes of easy cooldown walking and nasal breathing.",
+                "Finish each workout with 5 to 8 minutes of easy cooldown walking and nasal breathing to reinforce the recovery habit.",
                 "Aim for a consistent sleep window and protect the first 90 minutes before bed from hard training and screens.",
                 "Use one active recovery session with mobility, light cycling, or walking instead of another intense workout.",
             ],
@@ -352,12 +376,12 @@ def _fallback_longevity_weekly_plan(payload: dict) -> LongevityWeeklyPlanResult:
             id="mental_health_and_anxiety",
             title="Mental Health and Anxiety",
             summary=(
-                f"Your recent stress score is around {stress_score}, so this plan uses lower-friction routines "
-                "to calm the nervous system and improve mental steadiness."
+                f"Your recent stress score is around {stress_score} and changed {stress_trend:+} from the prior period, "
+                "so this plan uses lower-friction routines to calm the nervous system and keep momentum realistic."
             ),
             actions=[
                 "Do 5 minutes of slow breathing or box breathing after waking and again after your workday.",
-                "Schedule one phone-free 20-minute walk outside on at least 4 days this week.",
+                "Schedule one phone-free 20-minute walk outside on at least 4 days this week to keep the plan grounded in real behavior.",
                 "Reduce late caffeine and create a short shutdown routine at night to lower background anxiety load.",
             ],
         ),
@@ -365,12 +389,12 @@ def _fallback_longevity_weekly_plan(payload: dict) -> LongevityWeeklyPlanResult:
             id="immunity_and_infection",
             title="Immunity and Infection",
             summary=(
-                f"With sleep at {sleep_hours:.1f} hours and oxygen around {spo2}%, your immunity focus this week "
-                "should be built around recovery consistency, hydration, and avoiding excessive training strain."
+                f"With sleep near {sleep_hours:.1f} hours, oxygen around {spo2}%, and recent recovery history still being rebuilt, "
+                "your immunity focus should stay centered on consistency, hydration, and avoiding overload."
             ),
             actions=[
                 "Keep hydration steady across the day and increase fluids around training sessions.",
-                "Prioritize protein, colorful produce, and regular meal timing for the next 7 days.",
+                "Prioritize protein, colorful produce, and regular meal timing for the next 7 days so the nutrition plan stays easier to follow.",
                 "If sleep drops or fatigue rises, swap one hard session for mobility and extra recovery instead of pushing through.",
             ],
         ),
