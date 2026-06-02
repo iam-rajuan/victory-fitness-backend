@@ -216,34 +216,6 @@ class IntegrationConnectStartResponse(BaseModel):
     message: str = ""
 
 
-class VitalCreateUserResponse(BaseModel):
-    vital_user_id: str
-    client_user_id: str
-    created: bool = False
-    message: str = ""
-
-
-class VitalLinkTokenRequest(BaseModel):
-    provider: str | None = Field(default=None, max_length=80)
-    filter_on_providers: list[str] = Field(default_factory=list)
-
-
-class VitalLinkTokenResponse(BaseModel):
-    vital_user_id: str
-    link_token: str
-    link_web_url: str
-    message: str = ""
-
-
-class VitalWebhookResponse(BaseModel):
-    accepted: bool = True
-    user_id: str = ""
-    vital_user_id: str = ""
-    provider: str = ""
-    stored_records: int = 0
-    message: str = ""
-
-
 class NativeIntegrationConnectedRequest(BaseModel):
     provider: str
     source_device: str = ""
