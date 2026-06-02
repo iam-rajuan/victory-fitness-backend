@@ -1006,15 +1006,12 @@ async def query_health_metrics(
             raise HTTPException(status_code=400, detail="Unsupported metric_type filter")
         filter_doc["metric_type"] = normalized_metric
 
-    time_filter: dict[str, Any] = {}
     start_dt = _date_to_bounds(start_date)
     end_dt = _date_to_bounds(end_date, is_end=True)
     if start_dt is not None:
-        time_filter["$gte"] = start_dt
+        filter_doc["end_time"] = {"$gte": start_dt}
     if end_dt is not None:
-        time_filter["$lte"] = end_dt
-    if time_filter:
-        filter_doc["start_time"] = time_filter
+        filter_doc["start_time"] = {"$lte": end_dt}
 
     return await health_metrics_collection.find(
         filter_doc,
