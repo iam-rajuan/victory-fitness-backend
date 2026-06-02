@@ -1018,7 +1018,7 @@ async def query_health_metrics(
 
     return await health_metrics_collection.find(
         filter_doc,
-        sort=[("start_time", -1), ("_id", -1)],
+        sort=[("synced_at", -1), ("end_time", -1), ("_id", -1)],
     ).to_list(length=5000)
 
 
