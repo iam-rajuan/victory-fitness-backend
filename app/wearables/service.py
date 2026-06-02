@@ -640,9 +640,6 @@ async def upsert_wearable_connection(
             "$setOnInsert": {
                 "user_id": user_id,
                 "provider": provider,
-                "device_name": normalized_device_name,
-                "source_device": normalized_device_name,
-                "permission_granted": bool(permission_granted) if permission_granted is not None else False,
                 "created_at": now,
             },
         },
