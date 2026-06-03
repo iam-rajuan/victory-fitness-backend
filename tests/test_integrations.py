@@ -214,20 +214,54 @@ class IntegrationRouterTests(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["detail"], "provider_not_configured")
 
+    def test_admin_backfill_current_health_metrics(self) -> None:
+        app = FastAPI()
+        app.include_router(wearables_router_module.router)
+        app.dependency_overrides[wearables_router_module.require_admin_user] = lambda: {
+            "_id": "admin-1",
+            "is_admin": True,
+            "is_verified": True,
+        }
+        client = TestClient(app)
+
+        with patch.object(
+            wearables_router_module,
+            "backfill_current_health_metrics_from_history",
+            AsyncMock(return_value=12),
+        ) as backfill_current_health_metrics_from_history:
+            response = client.post("/admin/wearables/backfill-current-health-metrics?force=true")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["processed"], 12)
+        self.assertTrue(response.json()["force"])
+        backfill_current_health_metrics_from_history.assert_awaited_once_with(force=True)
+
 
 class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_metrics_are_skipped_idempotently(self) -> None:
+        seen_current_keys: set[str] = set()
         seen_dedupe_keys: set[str] = set()
 
         class FakeCollection:
             async def bulk_write(self, operations, ordered=False):  # noqa: ARG002
                 inserted = 0
+                modified = 0
                 for operation in operations:
-                    dedupe_key = operation["filter"]["dedupe_key"]
-                    if dedupe_key not in seen_dedupe_keys:
-                        seen_dedupe_keys.add(dedupe_key)
-                        inserted += 1
-                return SimpleNamespace(upserted_count=inserted)
+                    filter_doc = operation["filter"]
+                    key = filter_doc.get("current_key") or filter_doc.get("dedupe_key")
+                    if "current_key" in filter_doc:
+                        if key not in seen_current_keys:
+                            seen_current_keys.add(key)
+                            inserted += 1
+                    elif "dedupe_key" in filter_doc:
+                        if key not in seen_dedupe_keys:
+                            seen_dedupe_keys.add(key)
+                            inserted += 1
+                    else:
+                        if key not in seen_dedupe_keys:
+                            seen_dedupe_keys.add(str(key))
+                            inserted += 1
+                return SimpleNamespace(upserted_count=inserted, modified_count=modified)
 
         def fake_update_one(filter_doc, update_doc, upsert=False):  # noqa: ARG001
             return {
@@ -246,7 +280,9 @@ class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):
             "metadata": {"external_id": "steps-4321"},
         }
 
-        with patch("app.wearables.service.health_metrics_collection", FakeCollection()), patch(
+        with patch("app.wearables.service.health_samples_collection", FakeCollection()), patch(
+            "app.wearables.service.health_metrics_collection", FakeCollection()
+        ), patch(
             "app.wearables.service.UpdateOne",
             side_effect=fake_update_one,
         ):

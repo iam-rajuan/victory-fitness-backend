@@ -222,6 +222,7 @@ from .security import (
     verify_password,
 )
 from .wearables import (
+    backfill_current_health_metrics_from_history,
     build_longevity_metric_insights,
     build_longevity_wearables_response,
     router as wearables_router,
@@ -590,6 +591,7 @@ async def startup() -> None:
     if settings.using_default_jwt_secret:
         logger.warning("security_warning using default JWT secret; set JWT_SECRET_KEY before production deployment")
     await ensure_indexes()
+    await backfill_current_health_metrics_from_history()
     await _seed_admin_user()
     await start_integration_queue()
     await start_wearables_scheduler()

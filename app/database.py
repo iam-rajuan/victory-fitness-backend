@@ -48,12 +48,14 @@ community_comments_collection = db["community_comments"]
 community_reactions_collection = db["community_reactions"]
 user_provider_connections_collection = db["user_provider_connections"]
 provider_tokens_collection = db["provider_tokens"]
+health_metric_current_collection = db["health_metric_current"]
 health_samples_collection = db["health_samples"]
 sync_jobs_collection = db["sync_jobs"]
 sync_errors_collection = db["sync_errors"]
 integration_audit_logs_collection = db["integration_audit_logs"]
 wearable_connections_collection = user_provider_connections_collection
-health_metrics_collection = health_samples_collection
+health_metric_history_collection = health_samples_collection
+health_metrics_collection = health_metric_current_collection
 
 
 async def ensure_indexes() -> None:
@@ -111,6 +113,11 @@ async def ensure_indexes() -> None:
     await user_provider_connections_collection.create_index([("provider", 1), ("provider_user_id", 1)])
     await user_provider_connections_collection.create_index([("provider", 1), ("oauth_state", 1)])
     await provider_tokens_collection.create_index([("user_id", 1), ("provider", 1)], unique=True)
+    await health_metric_current_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("day", -1)])
+    await health_metric_current_collection.create_index([("user_id", 1), ("provider", 1), ("source_device", 1), ("metric_type", 1), ("day", -1)])
+    await health_metric_current_collection.create_index([("user_id", 1), ("metric_type", 1), ("end_time", -1)])
+    await health_metric_current_collection.create_index([("user_id", 1), ("updated_at", -1)])
+    await health_metric_current_collection.create_index("current_key", unique=True)
     await health_samples_collection.create_index([("user_id", 1), ("start_time", -1)])
     await health_samples_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("start_time", -1)])
     await health_samples_collection.create_index([("user_id", 1), ("provider", 1), ("metric_type", 1), ("end_time", -1)])

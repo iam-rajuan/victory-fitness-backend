@@ -4,7 +4,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from ..dependencies import ensure_subscription_feature_access, require_access_user
+from ..dependencies import ensure_subscription_feature_access, require_access_user, require_admin_user
 from ..models import (
     IntegrationConnectStartResponse,
     IntegrationConnectionResponse,
@@ -33,6 +33,7 @@ from .schemas import (
     WearableConnectionsResponse,
 )
 from .service import (
+    backfill_current_health_metrics_from_history,
     build_longevity_wearables_response,
     build_oauth_connect_url,
     connect_local_provider,
@@ -74,6 +75,20 @@ async def require_longevity_access_user(
         "Your current plan does not include Longevity OS access",
     )
     return user
+
+
+@router.post("/admin/wearables/backfill-current-health-metrics")
+async def admin_backfill_current_health_metrics(
+    force: bool = Query(default=False, description="Rebuild the current snapshot collection from raw history."),
+    _: dict = Depends(require_admin_user),
+) -> dict[str, object]:
+    processed = await backfill_current_health_metrics_from_history(force=force)
+    return {
+        "status": "success",
+        "processed": processed,
+        "force": force,
+        "message": "Current health metrics backfill completed.",
+    }
 
 
 def _metric_response(item: dict) -> HealthMetricResponse:

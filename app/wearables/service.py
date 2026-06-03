@@ -20,6 +20,7 @@ from pymongo import UpdateOne
 
 from ..config import settings
 from ..database import (
+    health_samples_collection,
     health_metrics_collection,
     integration_audit_logs_collection,
     longevity_os_profiles_collection,
@@ -588,6 +589,48 @@ def _build_dedupe_key(document: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
+def _metric_day_from_document(document: dict[str, Any]) -> str:
+    end_time = document.get("end_time")
+    start_time = document.get("start_time")
+    candidate = end_time if isinstance(end_time, datetime) else start_time if isinstance(start_time, datetime) else None
+    if candidate is None:
+        return _utc_now().date().isoformat()
+    return _as_utc(candidate).date().isoformat()
+
+
+def _build_current_key(document: dict[str, Any]) -> str:
+    source_device = str(document.get("source_device") or "").strip().lower()
+    return "|".join([
+        str(document.get("user_id") or "").strip(),
+        str(document.get("provider") or "").strip().lower(),
+        str(document.get("metric_type") or "").strip().lower(),
+        _metric_day_from_document(document),
+        source_device,
+    ])
+
+
+def _normalize_metric_documents(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    latest_by_key: dict[str, dict[str, Any]] = {}
+    for document in documents:
+        current_key = str(document.get("current_key") or "").strip()
+        if not current_key:
+            continue
+        current = latest_by_key.get(current_key)
+        current_end_time = current.get("end_time") if current else None
+        candidate_end_time = document.get("end_time")
+        current_score = _as_utc(current_end_time) if isinstance(current_end_time, datetime) else None
+        candidate_score = _as_utc(candidate_end_time) if isinstance(candidate_end_time, datetime) else None
+        if current is None:
+            latest_by_key[current_key] = document
+            continue
+        if candidate_score is None and current_score is None:
+            latest_by_key[current_key] = document
+            continue
+        if current_score is None or (candidate_score is not None and candidate_score >= current_score):
+            latest_by_key[current_key] = document
+    return list(latest_by_key.values())
+
+
 def decode_qr_health_payload(qr_payload: str) -> dict[str, Any]:
     raw_payload = str(qr_payload or "").strip()
     if not raw_payload:
@@ -971,6 +1014,8 @@ def _normalize_metric_document(
         "synced_at": created_at,
     }
     document["dedupe_key"] = _build_dedupe_key(document)
+    document["day"] = _metric_day_from_document(document)
+    document["current_key"] = _build_current_key(document)
     return document
 
 
@@ -986,7 +1031,7 @@ async def store_normalized_metrics(
     if not documents:
         return 0, 0
 
-    operations = [
+    history_operations = [
         UpdateOne(
             {"dedupe_key": document["dedupe_key"]},
             {"$setOnInsert": document},
@@ -994,10 +1039,128 @@ async def store_normalized_metrics(
         )
         for document in documents
     ]
-    result = await health_metrics_collection.bulk_write(operations, ordered=False)
-    inserted = int((result.upserted_count or 0))
+    await health_samples_collection.bulk_write(history_operations, ordered=False)
+
+    current_documents = _normalize_metric_documents(documents)
+    current_operations = [
+        UpdateOne(
+            {"current_key": document["current_key"]},
+            {
+                "$set": {
+                    "user_id": document["user_id"],
+                    "provider": document["provider"],
+                    "external_id": document["external_id"],
+                    "type": document["type"],
+                    "metric_type": document["metric_type"],
+                    "value": document["value"],
+                    "unit": document["unit"],
+                    "started_at": document["started_at"],
+                    "ended_at": document["ended_at"],
+                    "start_time": document["start_time"],
+                    "end_time": document["end_time"],
+                    "source_device": document["source_device"],
+                    "metadata": document["metadata"],
+                    "day": document["day"],
+                    "current_key": document["current_key"],
+                    "dedupe_key": document["dedupe_key"],
+                    "synced_at": document["synced_at"],
+                    "updated_at": document["synced_at"],
+                },
+                "$setOnInsert": {
+                    "_id": document["_id"],
+                    "created_at": document["created_at"],
+                    "first_seen_at": document["created_at"],
+                },
+            },
+            upsert=True,
+        )
+        for document in current_documents
+    ]
+    result = await health_metrics_collection.bulk_write(current_operations, ordered=False)
+    inserted = int((result.upserted_count or 0) + (result.modified_count or 0))
     skipped = max(len(documents) - inserted, 0)
     return inserted, skipped
+
+
+async def backfill_current_health_metrics_from_history(limit: int | None = None, *, force: bool = False) -> int:
+    if force:
+        await health_metrics_collection.delete_many({})
+    elif await health_metrics_collection.count_documents({}) > 0:
+        return 0
+
+    find_kwargs: dict[str, Any] = {
+        "sort": [("end_time", -1), ("synced_at", -1), ("_id", -1)],
+    }
+    if isinstance(limit, int) and limit > 0:
+        find_kwargs["limit"] = limit
+
+    cursor = health_samples_collection.find({}, **find_kwargs)
+    seen_keys: set[str] = set()
+    current_documents: list[dict[str, Any]] = []
+    async for record in cursor:
+        metric_input = {
+            "metric_type": record.get("metric_type") or record.get("type") or "",
+            "value": record.get("value"),
+            "unit": record.get("unit"),
+            "start_time": record.get("start_time") or record.get("started_at"),
+            "end_time": record.get("end_time") or record.get("ended_at"),
+            "source_device": record.get("source_device") or "",
+            "metadata": dict(record.get("metadata") or {}),
+        }
+        try:
+            normalized = _normalize_metric_document(
+                str(record.get("user_id") or ""),
+                str(record.get("provider") or ""),
+                metric_input,
+                str(record.get("source_device") or ""),
+            )
+        except HTTPException:
+            continue
+        current_key = normalized["current_key"]
+        if current_key in seen_keys:
+            continue
+        seen_keys.add(current_key)
+        current_documents.append(normalized)
+
+    if not current_documents:
+        return 0
+
+    operations = [
+        UpdateOne(
+            {"current_key": document["current_key"]},
+            {
+                "$set": {
+                    "user_id": document["user_id"],
+                    "provider": document["provider"],
+                    "external_id": document["external_id"],
+                    "type": document["type"],
+                    "metric_type": document["metric_type"],
+                    "value": document["value"],
+                    "unit": document["unit"],
+                    "started_at": document["started_at"],
+                    "ended_at": document["ended_at"],
+                    "start_time": document["start_time"],
+                    "end_time": document["end_time"],
+                    "source_device": document["source_device"],
+                    "metadata": document["metadata"],
+                    "day": document["day"],
+                    "current_key": document["current_key"],
+                    "dedupe_key": document["dedupe_key"],
+                    "synced_at": document["synced_at"],
+                    "updated_at": document["synced_at"],
+                },
+                "$setOnInsert": {
+                    "_id": document["_id"],
+                    "created_at": document["created_at"],
+                    "first_seen_at": document["created_at"],
+                },
+            },
+            upsert=True,
+        )
+        for document in current_documents
+    ]
+    await health_metrics_collection.bulk_write(operations, ordered=False)
+    return len(current_documents)
 
 
 async def ingest_mobile_sync(
@@ -1072,7 +1235,7 @@ async def query_health_metrics(
 
     return await health_metrics_collection.find(
         filter_doc,
-        sort=[("synced_at", -1), ("end_time", -1), ("_id", -1)],
+        sort=[("updated_at", -1), ("end_time", -1), ("_id", -1)],
     ).to_list(length=5000)
 
 
