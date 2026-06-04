@@ -16,8 +16,6 @@ from uuid import uuid4
 from bson import ObjectId
 from cryptography.fernet import Fernet
 from fastapi import HTTPException, Request
-from pymongo import UpdateOne
-
 from ..config import settings
 from ..database import (
     health_samples_collection,
@@ -1019,6 +1017,118 @@ def _normalize_metric_document(
     return document
 
 
+def _extract_health_record_items(document: dict[str, Any]) -> list[dict[str, Any]]:
+    records = document.get("records")
+    if isinstance(records, list):
+        return [record for record in records if isinstance(record, dict)]
+    return [document]
+
+
+def _health_record_sort_value(record: dict[str, Any]) -> datetime:
+    for field in ("synced_at", "end_time", "start_time", "created_at", "updated_at"):
+        value = _parse_datetime_value(record.get(field))
+        if value is not None:
+            return value
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _health_record_identity_key(record: dict[str, Any]) -> str:
+    for field in ("dedupe_key", "current_key", "external_id", "_id", "id"):
+        value = record.get(field)
+        if value not in (None, ""):
+            return str(value)
+    return ""
+
+
+def _merge_health_record_items(existing_items: list[dict[str, Any]], new_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    ordered_items: list[dict[str, Any]] = []
+
+    for record in [*existing_items, *new_items]:
+        key = _health_record_identity_key(record) or f"{len(ordered_items)}:{uuid4().hex}"
+        current = merged.get(key)
+        if current is None or _health_record_sort_value(record) >= _health_record_sort_value(current):
+            merged[key] = record
+
+    ordered_items.extend(merged.values())
+    ordered_items.sort(key=_health_record_sort_value, reverse=True)
+    return ordered_items
+
+
+async def _load_current_health_record_items(user_id: str) -> list[dict[str, Any]]:
+    documents = await health_metrics_collection.find(
+        {"user_id": user_id},
+        sort=[("updated_at", -1), ("end_time", -1), ("_id", -1)],
+    ).to_list(length=5000)
+
+    items: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for document in documents:
+        for record in _extract_health_record_items(document):
+            key = _health_record_identity_key(record)
+            if key and key in seen_keys:
+                continue
+            if key:
+                seen_keys.add(key)
+            items.append(record)
+
+    items.sort(key=_health_record_sort_value, reverse=True)
+    return items
+
+
+async def _replace_health_snapshot(
+    collection: Any,
+    user_id: str,
+    records: list[dict[str, Any]],
+) -> int:
+    now = _utc_now()
+    existing_documents = await collection.find({"user_id": user_id}).to_list(length=5000)
+    existing_snapshot = existing_documents[0] if existing_documents else {}
+    existing_records: list[dict[str, Any]] = []
+    for document in existing_documents:
+        existing_records.extend(_extract_health_record_items(document))
+    existing_keys = {
+        key
+        for key in (_health_record_identity_key(record) for record in existing_records)
+        if key
+    }
+    inserted_keys: set[str] = set()
+    inserted_count = 0
+    for record in records:
+        key = _health_record_identity_key(record) or f"record:{uuid4().hex}"
+        if key in existing_keys or key in inserted_keys:
+            continue
+        inserted_keys.add(key)
+        inserted_count += 1
+
+    merged_records = _merge_health_record_items(existing_records, records)
+    snapshot_id = existing_snapshot.get("_id") or ObjectId()
+    snapshot = {
+        "_id": snapshot_id,
+        "user_id": user_id,
+        "records": merged_records,
+        "record_count": len(merged_records),
+        "latest_synced_at": merged_records[0].get("synced_at") if merged_records else None,
+        "latest_end_time": merged_records[0].get("end_time") if merged_records else None,
+        "created_at": existing_snapshot.get("created_at") or now,
+        "updated_at": now,
+    }
+    if merged_records:
+        snapshot["provider"] = merged_records[0].get("provider") or ""
+        snapshot["metric_type"] = merged_records[0].get("metric_type") or ""
+        snapshot["source_device"] = merged_records[0].get("source_device") or ""
+    await collection.replace_one({"user_id": user_id}, snapshot, upsert=True)
+    await collection.delete_many({"user_id": user_id, "_id": {"$ne": snapshot_id}})
+    return inserted_count
+
+
+async def _replace_current_health_snapshot(
+    user_id: str,
+    records: list[dict[str, Any]],
+) -> int:
+    return await _replace_health_snapshot(health_metrics_collection, user_id, records)
+
+
 async def store_normalized_metrics(
     user_id: str,
     provider: str,
@@ -1031,53 +1141,8 @@ async def store_normalized_metrics(
     if not documents:
         return 0, 0
 
-    history_operations = [
-        UpdateOne(
-            {"dedupe_key": document["dedupe_key"]},
-            {"$setOnInsert": document},
-            upsert=True,
-        )
-        for document in documents
-    ]
-    await health_samples_collection.bulk_write(history_operations, ordered=False)
-
-    current_documents = _normalize_metric_documents(documents)
-    current_operations = [
-        UpdateOne(
-            {"current_key": document["current_key"]},
-            {
-                "$set": {
-                    "user_id": document["user_id"],
-                    "provider": document["provider"],
-                    "external_id": document["external_id"],
-                    "type": document["type"],
-                    "metric_type": document["metric_type"],
-                    "value": document["value"],
-                    "unit": document["unit"],
-                    "started_at": document["started_at"],
-                    "ended_at": document["ended_at"],
-                    "start_time": document["start_time"],
-                    "end_time": document["end_time"],
-                    "source_device": document["source_device"],
-                    "metadata": document["metadata"],
-                    "day": document["day"],
-                    "current_key": document["current_key"],
-                    "dedupe_key": document["dedupe_key"],
-                    "synced_at": document["synced_at"],
-                    "updated_at": document["synced_at"],
-                },
-                "$setOnInsert": {
-                    "_id": document["_id"],
-                    "created_at": document["created_at"],
-                    "first_seen_at": document["created_at"],
-                },
-            },
-            upsert=True,
-        )
-        for document in current_documents
-    ]
-    result = await health_metrics_collection.bulk_write(current_operations, ordered=False)
-    inserted = int((result.upserted_count or 0) + (result.modified_count or 0))
+    await _replace_health_snapshot(health_samples_collection, user_id, documents)
+    inserted = await _replace_current_health_snapshot(user_id, documents)
     skipped = max(len(documents) - inserted, 0)
     return inserted, skipped
 
@@ -1089,14 +1154,13 @@ async def backfill_current_health_metrics_from_history(limit: int | None = None,
         return 0
 
     find_kwargs: dict[str, Any] = {
-        "sort": [("end_time", -1), ("synced_at", -1), ("_id", -1)],
+        "sort": [("updated_at", -1), ("_id", -1)],
     }
     if isinstance(limit, int) and limit > 0:
         find_kwargs["limit"] = limit
 
     cursor = health_samples_collection.find({}, **find_kwargs)
-    seen_keys: set[str] = set()
-    current_documents: list[dict[str, Any]] = []
+    records_by_user: dict[str, list[dict[str, Any]]] = {}
     async for record in cursor:
         metric_input = {
             "metric_type": record.get("metric_type") or record.get("type") or "",
@@ -1116,51 +1180,19 @@ async def backfill_current_health_metrics_from_history(limit: int | None = None,
             )
         except HTTPException:
             continue
-        current_key = normalized["current_key"]
-        if current_key in seen_keys:
+        user_key = str(normalized.get("user_id") or "")
+        if not user_key:
             continue
-        seen_keys.add(current_key)
-        current_documents.append(normalized)
+        records_by_user.setdefault(user_key, []).append(normalized)
 
-    if not current_documents:
+    if not records_by_user:
         return 0
 
-    operations = [
-        UpdateOne(
-            {"current_key": document["current_key"]},
-            {
-                "$set": {
-                    "user_id": document["user_id"],
-                    "provider": document["provider"],
-                    "external_id": document["external_id"],
-                    "type": document["type"],
-                    "metric_type": document["metric_type"],
-                    "value": document["value"],
-                    "unit": document["unit"],
-                    "started_at": document["started_at"],
-                    "ended_at": document["ended_at"],
-                    "start_time": document["start_time"],
-                    "end_time": document["end_time"],
-                    "source_device": document["source_device"],
-                    "metadata": document["metadata"],
-                    "day": document["day"],
-                    "current_key": document["current_key"],
-                    "dedupe_key": document["dedupe_key"],
-                    "synced_at": document["synced_at"],
-                    "updated_at": document["synced_at"],
-                },
-                "$setOnInsert": {
-                    "_id": document["_id"],
-                    "created_at": document["created_at"],
-                    "first_seen_at": document["created_at"],
-                },
-            },
-            upsert=True,
-        )
-        for document in current_documents
-    ]
-    await health_metrics_collection.bulk_write(operations, ordered=False)
-    return len(current_documents)
+    processed_users = 0
+    for user_key, records in records_by_user.items():
+        await _replace_current_health_snapshot(user_key, records)
+        processed_users += 1
+    return processed_users
 
 
 async def ingest_mobile_sync(
@@ -1217,26 +1249,33 @@ async def query_health_metrics(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> list[dict]:
-    filter_doc: dict[str, Any] = {"user_id": user_id}
-    if provider:
-        filter_doc["provider"] = _ensure_supported_provider(provider)
-    if metric_type:
-        normalized_metric = metric_type.strip().lower()
-        if normalized_metric not in SUPPORTED_METRIC_TYPES:
-            raise HTTPException(status_code=400, detail="Unsupported metric_type filter")
-        filter_doc["metric_type"] = normalized_metric
+    normalized_provider = _ensure_supported_provider(provider) if provider else None
+    normalized_metric = metric_type.strip().lower() if metric_type else None
+    if normalized_metric and normalized_metric not in SUPPORTED_METRIC_TYPES:
+        raise HTTPException(status_code=400, detail="Unsupported metric_type filter")
 
     start_dt = _date_to_bounds(start_date)
     end_dt = _date_to_bounds(end_date, is_end=True)
-    if start_dt is not None:
-        filter_doc["end_time"] = {"$gte": start_dt}
-    if end_dt is not None:
-        filter_doc["start_time"] = {"$lte": end_dt}
+    records = await _load_current_health_record_items(user_id)
 
-    return await health_metrics_collection.find(
-        filter_doc,
-        sort=[("updated_at", -1), ("end_time", -1), ("_id", -1)],
-    ).to_list(length=5000)
+    filtered_records: list[dict[str, Any]] = []
+    for record in records:
+        record_provider = str(record.get("provider") or "").strip()
+        record_metric_type = str(record.get("metric_type") or "").strip().lower()
+        if normalized_provider and record_provider != normalized_provider:
+            continue
+        if normalized_metric and record_metric_type != normalized_metric:
+            continue
+
+        record_start_time = _parse_datetime_value(record.get("start_time") or record.get("started_at"))
+        record_end_time = _parse_datetime_value(record.get("end_time") or record.get("ended_at"))
+        if start_dt is not None and (record_end_time is None or record_end_time < start_dt):
+            continue
+        if end_dt is not None and (record_start_time is None or record_start_time > end_dt):
+            continue
+        filtered_records.append(record)
+
+    return filtered_records
 
 
 async def summarize_health_metrics(
@@ -1413,10 +1452,7 @@ async def _sync_demo_provider(connection: dict) -> tuple[int, int]:
 
 
 async def build_longevity_metric_insights(user_id: str) -> dict[str, Any]:
-    records = await health_metrics_collection.find(
-        {"user_id": user_id},
-        sort=[("start_time", -1), ("_id", -1)],
-    ).to_list(length=500)
+    records = await query_health_metrics(user_id)
     if not records:
         return {"has_metrics": False}
 
@@ -2433,7 +2469,7 @@ async def build_longevity_wearables_response(user_id: str) -> LongevityWearables
             )
         )
 
-    total_records = await health_metrics_collection.count_documents({"user_id": user_id})
+    total_records = len(await _load_current_health_record_items(user_id))
     profile = await longevity_os_profiles_collection.find_one({"user_id": user_id}, {"wearables.sync_message": 1})
     cached_sync_message = str((((profile or {}).get("wearables") or {}).get("sync_message") or "")).strip()
     sync_message = (

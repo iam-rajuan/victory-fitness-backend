@@ -239,36 +239,36 @@ class IntegrationRouterTests(unittest.TestCase):
 
 class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_metrics_are_skipped_idempotently(self) -> None:
-        seen_current_keys: set[str] = set()
-        seen_dedupe_keys: set[str] = set()
+        class SnapshotCursor:
+            def __init__(self, documents):
+                self.documents = documents
 
-        class FakeCollection:
-            async def bulk_write(self, operations, ordered=False):  # noqa: ARG002
-                inserted = 0
-                modified = 0
-                for operation in operations:
-                    filter_doc = operation["filter"]
-                    key = filter_doc.get("current_key") or filter_doc.get("dedupe_key")
-                    if "current_key" in filter_doc:
-                        if key not in seen_current_keys:
-                            seen_current_keys.add(key)
-                            inserted += 1
-                    elif "dedupe_key" in filter_doc:
-                        if key not in seen_dedupe_keys:
-                            seen_dedupe_keys.add(key)
-                            inserted += 1
-                    else:
-                        if key not in seen_dedupe_keys:
-                            seen_dedupe_keys.add(str(key))
-                            inserted += 1
-                return SimpleNamespace(upserted_count=inserted, modified_count=modified)
+            async def to_list(self, length=None):  # noqa: ARG002
+                return list(self.documents)
 
-        def fake_update_one(filter_doc, update_doc, upsert=False):  # noqa: ARG001
-            return {
-                "filter": filter_doc,
-                "update": update_doc,
-                "upsert": upsert,
-            }
+        class SnapshotCollection:
+            def __init__(self) -> None:
+                self.documents: list[dict[str, object]] = []
+
+            def find(self, filter_doc, **kwargs):  # noqa: ARG002
+                user_id = filter_doc.get("user_id")
+                return SnapshotCursor([document for document in self.documents if document.get("user_id") == user_id])
+
+            async def find_one(self, filter_doc):
+                user_id = filter_doc.get("user_id")
+                for document in self.documents:
+                    if document.get("user_id") == user_id:
+                        return document
+                return None
+
+            async def replace_one(self, filter_doc, replacement, upsert=False):  # noqa: ARG002
+                user_id = filter_doc.get("user_id")
+                self.documents = [document for document in self.documents if document.get("user_id") != user_id]
+                self.documents.append(replacement)
+                return SimpleNamespace(modified_count=1, upserted_id=replacement.get("_id"))
+
+            async def delete_many(self, filter_doc):  # noqa: ARG002
+                return SimpleNamespace(deleted_count=0)
 
         metric = {
             "metric_type": "steps",
@@ -280,11 +280,8 @@ class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):
             "metadata": {"external_id": "steps-4321"},
         }
 
-        with patch("app.wearables.service.health_samples_collection", FakeCollection()), patch(
-            "app.wearables.service.health_metrics_collection", FakeCollection()
-        ), patch(
-            "app.wearables.service.UpdateOne",
-            side_effect=fake_update_one,
+        with patch("app.wearables.service.health_samples_collection", SnapshotCollection()), patch(
+            "app.wearables.service.health_metrics_collection", SnapshotCollection()
         ):
             inserted_first, skipped_first = await store_normalized_metrics("user-1", "apple-health", [metric])
             inserted_second, skipped_second = await store_normalized_metrics("user-1", "apple-health", [metric])
