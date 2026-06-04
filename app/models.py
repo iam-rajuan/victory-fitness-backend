@@ -1002,7 +1002,15 @@ class AdminUserListItem(BaseModel):
 
 
 class AdminUserDetailResponse(AdminUserListItem):
-    pass
+    subscription_tier: str = "NONE"
+    subscription_role: str = "NONE"
+    subscription_status: str = "NONE"
+    subscription_started_at: datetime | None = None
+    subscription_confirmed_at: datetime | None = None
+    subscription_billing_cycle: str = "yearly"
+    subscription_is_purchased: bool = False
+    subscription_purchase_source: str = ""
+    subscription_access: list[str] = Field(default_factory=list)
 
 
 class AdminUserListResponse(BaseModel):

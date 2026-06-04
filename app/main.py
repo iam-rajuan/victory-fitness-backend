@@ -5610,6 +5610,7 @@ def _serialize_admin_user_record(record: dict) -> dict:
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
     updated_at = _as_utc(record.get("updated_at") or created_at)
     role = str(record.get("role") or ("admin" if record.get("is_admin") else "user"))
+    subscription_summary = _build_subscription_summary(record)
 
     return {
         "id": str(record["_id"]),
@@ -5623,6 +5624,15 @@ def _serialize_admin_user_record(record: dict) -> dict:
         "createdAt": created_at,
         "updatedAt": updated_at,
         "profileImage": str(record.get("profile_image") or ""),
+        "subscription_tier": subscription_summary["tier"],
+        "subscription_role": subscription_summary["role"],
+        "subscription_status": subscription_summary["status"],
+        "subscription_started_at": subscription_summary["started_at"],
+        "subscription_confirmed_at": subscription_summary["confirmed_at"],
+        "subscription_billing_cycle": subscription_summary["billing_cycle"],
+        "subscription_is_purchased": subscription_summary["is_purchased"],
+        "subscription_purchase_source": subscription_summary["purchase_source"],
+        "subscription_access": subscription_summary["access"],
     }
 
 
