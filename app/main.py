@@ -5368,20 +5368,42 @@ def _require_pillow() -> None:
 
 
 def _build_subscription_summary(record: dict) -> dict:
-    tier = _normalize_subscription_tier(record.get("subscription_tier") or record.get("tier"))
-    status = _normalize_subscription_status(record.get("subscription_status") or record.get("subscription_state"), tier)
-    is_purchased = bool(record.get("subscription_is_purchased")) and tier != "NONE" and status == "ACTIVE"
-    purchase_source = str(record.get("subscription_purchase_source") or "").strip()
+    subscription = record.get("subscription") if isinstance(record.get("subscription"), dict) else {}
+    tier = _normalize_subscription_tier(
+        record.get("subscription_tier")
+        or record.get("subscription_role")
+        or record.get("tier")
+        or subscription.get("tier")
+        or subscription.get("role")
+    )
+    status = _normalize_subscription_status(
+        record.get("subscription_status")
+        or record.get("subscription_state")
+        or subscription.get("status"),
+        tier,
+    )
+    is_purchased = bool(
+        record.get("subscription_is_purchased")
+        if record.get("subscription_is_purchased") is not None
+        else subscription.get("is_purchased")
+    ) and tier != "NONE" and status == "ACTIVE"
+    purchase_source = str(
+        record.get("subscription_purchase_source")
+        or subscription.get("purchase_source")
+        or ""
+    ).strip()
     return {
         "tier": tier,
         "role": tier,
         "status": status,
-        "started_at": record.get("subscription_started_at"),
-        "confirmed_at": record.get("subscription_confirmed_at"),
-        "billing_cycle": _normalize_billing_cycle(record.get("subscription_billing_cycle")),
+        "started_at": record.get("subscription_started_at") or subscription.get("started_at"),
+        "confirmed_at": record.get("subscription_confirmed_at") or subscription.get("confirmed_at"),
+        "billing_cycle": _normalize_billing_cycle(
+            record.get("subscription_billing_cycle") or subscription.get("billing_cycle")
+        ),
         "is_purchased": is_purchased,
         "purchase_source": purchase_source,
-        "access": _resolve_subscription_access(tier),
+        "access": subscription.get("access") if isinstance(subscription.get("access"), list) and subscription.get("access") else _resolve_subscription_access(tier),
     }
 
 
