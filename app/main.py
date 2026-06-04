@@ -1,9 +1,11 @@
 import asyncio
 import base64
+import json
 from io import BytesIO
 import logging
 import os
 import re
+from functools import lru_cache
 from typing import Any
 from uuid import uuid4
 from calendar import month_abbr
@@ -11,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import unquote, urlparse
+from urllib.request import urlopen
 
 from bson import ObjectId
 from dotenv import dotenv_values
@@ -20,6 +23,8 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from pydantic import BaseModel, Field
+from jose import jwt
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ModuleNotFoundError:
@@ -585,6 +590,114 @@ async def _require_longevity_plan_access_user(user: dict = Depends(_require_acce
     return user
 
 
+class FirebaseAuthRequest(BaseModel):
+    id_token: str = Field(min_length=20)
+
+
+@lru_cache(maxsize=1)
+def _get_firebase_certificates() -> dict[str, str]:
+    cert_url = (getattr(settings, "firebase_auth_provider_cert_url", "") or "").strip()
+    if not cert_url:
+        raise HTTPException(status_code=500, detail="Firebase auth is not configured")
+
+    with urlopen(cert_url, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="Unable to load Firebase certificates")
+
+    return {str(k): str(v) for k, v in payload.items() if str(k).strip() and str(v).strip()}
+
+
+def _verify_firebase_id_token(id_token: str) -> dict[str, Any]:
+    project_id = (getattr(settings, "firebase_project_id", "") or getattr(settings, "google_project_id", "") or "").strip()
+    if not project_id:
+        raise HTTPException(status_code=500, detail="Firebase auth is not configured")
+
+    try:
+        header = jwt.get_unverified_header(id_token)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Firebase token") from exc
+
+    kid = str(header.get("kid") or "").strip()
+    certificate = _get_firebase_certificates().get(kid)
+    if not certificate:
+        raise HTTPException(status_code=401, detail="Invalid Firebase token")
+
+    issuer = f"https://securetoken.google.com/{project_id}"
+    try:
+        payload = jwt.decode(
+            id_token,
+            certificate,
+            algorithms=["RS256"],
+            audience=project_id,
+            issuer=issuer,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Firebase token") from exc
+
+    return payload
+
+
+async def _upsert_firebase_user(profile: dict[str, Any]) -> dict:
+    email = str(profile.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=401, detail="Firebase account is missing an email")
+
+    display_name = str(profile.get("name") or profile.get("displayName") or email.split("@")[0]).strip()
+    photo_url = str(profile.get("picture") or profile.get("photoUrl") or "").strip()
+    firebase_uid = str(profile.get("sub") or profile.get("user_id") or profile.get("localId") or "").strip()
+    now = datetime.now(timezone.utc)
+
+    existing_user = await users_collection.find_one({"email": email})
+    if not existing_user:
+        user_doc = {
+            "name": display_name,
+            "email": email,
+            "is_verified": True,
+            "role": "user",
+            "is_admin": False,
+            "subscription_tier": "NONE",
+            "subscription_role": "NONE",
+            "subscription_status": "NONE",
+            "subscription_billing_cycle": "yearly",
+            "subscription_is_purchased": False,
+            "subscription_purchase_source": "",
+            "password_hash": "",
+            "auth_provider": "firebase",
+            "firebase_uid": firebase_uid,
+            "profileImage": photo_url,
+            "created_at": now,
+            "updated_at": now,
+        }
+        inserted = await users_collection.insert_one(user_doc)
+        return await users_collection.find_one({"_id": inserted.inserted_id}) or user_doc
+
+    update_doc: dict[str, Any] = {
+        "is_verified": True,
+        "auth_provider": "firebase",
+        "updated_at": now,
+    }
+    if display_name and not str(existing_user.get("name") or "").strip():
+        update_doc["name"] = display_name
+    if photo_url:
+        update_doc["profileImage"] = photo_url
+    if firebase_uid:
+        update_doc["firebase_uid"] = firebase_uid
+
+    await users_collection.update_one(
+        {"_id": existing_user["_id"]},
+        {
+            "$set": update_doc,
+            "$unset": {
+                "verification_code_hash": "",
+                "verification_code_expires_at": "",
+            },
+        },
+    )
+    return await users_collection.find_one({"_id": existing_user["_id"]}) or existing_user
+
+
 @app.on_event("startup")
 async def startup() -> None:
     logger.info("startup_begin")
@@ -831,11 +944,19 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
 async def login(payload: LoginRequest, response: Response) -> TokenResponse:
     logger.info("auth_login_attempt email=%s", payload.email.lower())
     user = await users_collection.find_one({"email": payload.email.lower()})
-    if not user or not verify_password(payload.password, user["password_hash"]):
+    if not user or not str(user.get("password_hash") or "").strip() or not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.get("is_verified"):
         raise HTTPException(status_code=403, detail="Email is not verified")
     logger.info("auth_login_success email=%s", payload.email.lower())
+    return await _issue_tokens(user, response)
+
+
+@app.post("/auth/firebase", response_model=TokenResponse)
+async def firebase_login(payload: FirebaseAuthRequest, response: Response) -> TokenResponse:
+    profile = _verify_firebase_id_token(payload.id_token)
+    user = await _upsert_firebase_user(profile)
+    logger.info("auth_firebase_login_success email=%s", str(profile.get("email") or "").lower())
     return await _issue_tokens(user, response)
 
 

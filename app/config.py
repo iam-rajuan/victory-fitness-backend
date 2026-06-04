@@ -137,6 +137,11 @@ class Settings:
     google_client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
     google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
     google_project_id = os.getenv("GOOGLE_PROJECT_ID", "").strip()
+    firebase_project_id = os.getenv("FIREBASE_PROJECT_ID", google_project_id).strip()
+    firebase_auth_provider_cert_url = os.getenv(
+        "FIREBASE_AUTH_PROVIDER_CERT_URL",
+        "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com",
+    ).strip()
     google_auth_uri = os.getenv("GOOGLE_AUTH_URI", "https://accounts.google.com/o/oauth2/auth").strip()
     google_token_uri = os.getenv("GOOGLE_TOKEN_URI", "https://oauth2.googleapis.com/token").strip()
     google_auth_provider_cert_url = os.getenv(
