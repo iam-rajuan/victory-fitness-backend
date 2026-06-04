@@ -3447,12 +3447,25 @@ async def admin_create_workout(
     if existing_workout:
         raise HTTPException(status_code=409, detail="A workout with this Vimeo ID already exists")
 
+    thumbnail = (payload.thumbnail or "").strip()
+    if payload.image_base64:
+        try:
+            thumbnail = _upload_image_to_s3(
+                "workout-thumbnails",
+                f"workout-{uuid4().hex}",
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Workout thumbnail upload failed: {exc}") from exc
+
     document = {
         "title": payload.title.strip(),
         "vimeo_id": vimeo_id,
         "tag": payload.tag.strip(),
         "visibility": payload.visibility,
-        "thumbnail": (payload.thumbnail or "").strip(),
+        "thumbnail": thumbnail,
         "created_at": now,
         "updated_at": now,
     }
@@ -3481,12 +3494,28 @@ async def admin_update_workout(
     if duplicate_workout:
         raise HTTPException(status_code=409, detail="A workout with this Vimeo ID already exists")
 
+    previous_thumbnail = str(existing_workout.get("thumbnail") or "").strip()
+    thumbnail = (payload.thumbnail or "").strip()
+    if payload.image_base64:
+        try:
+            thumbnail = _upload_image_to_s3(
+                "workout-thumbnails",
+                f"workout-{object_id}",
+                payload.image_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Workout thumbnail upload failed: {exc}") from exc
+    if previous_thumbnail and previous_thumbnail != thumbnail:
+        _delete_image_from_s3(previous_thumbnail)
+
     update_doc = {
         "title": payload.title.strip(),
         "vimeo_id": vimeo_id,
         "tag": payload.tag.strip(),
         "visibility": payload.visibility,
-        "thumbnail": (payload.thumbnail or "").strip(),
+        "thumbnail": thumbnail,
         "updated_at": datetime.now(timezone.utc),
     }
     await workouts_collection.update_one({"_id": object_id}, {"$set": update_doc})

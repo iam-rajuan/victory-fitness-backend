@@ -1071,6 +1071,9 @@ class AdminWorkoutRequest(BaseModel):
     tag: str = Field(min_length=1, max_length=80)
     visibility: str = Field(pattern=r"^(Published|Draft)$")
     thumbnail: str | None = Field(default=None, max_length=500)
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    mime_type: str = Field(default="image/jpeg", max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
 
 
 class AdminWorkoutSyncResponse(BaseModel):
