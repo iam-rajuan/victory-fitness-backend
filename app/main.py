@@ -5345,17 +5345,11 @@ def _ensure_subscription_feature_access(user: dict, feature: str, detail: str) -
 
 
 def _get_user_active_challenge_limit(user: dict) -> int | None:
-    tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
-    if tier == "SILVER":
-        return 5
     return None
 
 
 def _get_user_ready_challenge_limit(user: dict) -> int:
-    active_limit = _get_user_active_challenge_limit(user)
-    if active_limit is not None:
-        return active_limit
-    return 8
+    return 1000
 
 
 def _get_user_monthly_nutrition_generation_limit(user: dict) -> int | None:
