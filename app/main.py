@@ -988,6 +988,21 @@ async def refresh(
     return await _issue_tokens(user, response)
 
 
+@app.post("/auth/logout")
+async def logout(response: Response) -> dict[str, str]:
+    response.delete_cookie(
+        "access_token",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+    )
+    response.delete_cookie(
+        "session_token",
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+    )
+    return {"message": "Logged out"}
+
+
 @app.get("/auth/validate")
 async def validate_authorization(user: dict = Depends(_require_access_user)) -> dict[str, str]:
     return {"status": "ok"}

@@ -53,8 +53,9 @@ The compose file starts the FastAPI API and reads `MONGODB_URI` from `.env`, so 
 - `POST /auth/verify-email`
 - `POST /auth/login`
 - `POST /auth/refresh`
+- `POST /auth/logout`
 
-`/auth/login`, `/auth/verify-email`, and `/auth/refresh` set HttpOnly cookies and also return tokens in the response body for Expo native usage.
+`/auth/login`, `/auth/verify-email`, and `/auth/refresh` set HttpOnly cookies and also return tokens in the response body for Expo native usage. `POST /auth/logout` clears the auth cookies.
 
 `POST /ai/coach-victor/chat` generates a response from Coach Victor using the configured cloud model. It expects an authenticated access token and a body with `message`.
 
