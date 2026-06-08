@@ -29,6 +29,10 @@ Update `.env` before running:
 - `FRONTEND_ORIGIN`: Expo web origin, usually `http://localhost:8081`.
 - `FRONTEND_ORIGIN_REGEX`: `.*` allows all origins for development. Use a strict regex or remove it in production.
 - `COOKIE_SECURE`: use `false` for local HTTP, `true` for production HTTPS.
+- `API_PUBLIC_BASE_URL`: public HTTPS URL of the deployed backend.
+- `FRONTEND_ORIGINS`: include both local origins and the deployed web origin such as `https://victory-fitness-app.vercel.app`.
+- `COOKIE_SAMESITE`: use `none` for cross-site HTTPS auth cookies in production.
+- `GOOGLE_CLIENT_ID`: set this to the Google OAuth web client ID used by the app.
 - `ADMIN_SEED_ENABLED`, `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`: startup seed settings for a verified admin account. On startup, if the admin email does not exist yet, the backend inserts it automatically.
 
 ## Run
