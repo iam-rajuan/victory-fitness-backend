@@ -37,6 +37,27 @@ class VideoWorkoutPlanInput:
     equipment: str
 
 
+def _normalize_strength_goal(goal: str) -> str:
+    value = str(goal or "").strip().upper()
+    goal_map = {
+        "1": "HYPERTROPHY",
+        "2": "PURE STRENGTH",
+        "3": "POWER & SPEED",
+        "4": "BODY RECOMP",
+    }
+    return goal_map.get(value, value)
+
+
+def _normalize_strength_split(split: str) -> str:
+    value = str(split or "").strip().upper()
+    split_map = {
+        "1": "FULL BODY",
+        "2": "UPPER / LOWER",
+        "3": "PUSH PULL LEGS",
+    }
+    return split_map.get(value, value)
+
+
 def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
     ai_plan = _generate_strength_workout_plan_with_ai(input_data)
     if _looks_like_strength_plan(ai_plan):
@@ -350,17 +371,20 @@ def _normalize_preferred_days(days: list[str]) -> list[str]:
 
 def _strength_title_cycle(split: str, goal: str) -> list[str]:
     split_map = {
-        "1": ["Full Body Strength", "Full Body Hypertrophy", "Full Body Power"],
-        "2": ["Upper Body Strength", "Lower Body Strength", "Upper Body Volume", "Lower Body Power"],
-        "3": ["Push Strength", "Pull Strength", "Leg Strength", "Push Hypertrophy", "Pull Hypertrophy"],
+        "FULL BODY": ["Full Body Strength", "Full Body Hypertrophy", "Full Body Power"],
+        "UPPER / LOWER": ["Upper Body Strength", "Lower Body Strength", "Upper Body Volume", "Lower Body Power"],
+        "PUSH PULL LEGS": ["Push Strength", "Pull Strength", "Leg Strength", "Push Hypertrophy", "Pull Hypertrophy"],
     }
-    titles = split_map.get(str(split or "").strip(), split_map["2"])
-    if str(goal or "") == "3":
+    normalized_split = _normalize_strength_split(split)
+    normalized_goal = _normalize_strength_goal(goal)
+    titles = split_map.get(normalized_split, split_map["UPPER / LOWER"])
+    if normalized_goal == "POWER & SPEED":
         return [title.replace("Strength", "Power") for title in titles]
     return titles
 
 
 def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]:
+    normalized_goal = _normalize_strength_goal(goal)
     bodyweight_only = "bodyweight" in {str(item).strip().lower() for item in equipment}
     if bodyweight_only:
         return [
@@ -378,7 +402,7 @@ def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]
             ],
         ]
 
-    if str(goal or "") == "2":
+    if normalized_goal == "PURE STRENGTH":
         return [
             [
                 {"name": "Barbell Back Squat", "sets": 5, "reps": "4-6", "rest": "180s", "type": "Compound"},
@@ -424,9 +448,10 @@ def _strength_time_label(frequency: int, level: str) -> str:
 
 
 def _strength_intensity_label(goal: str, level: str) -> str:
-    if str(goal or "") == "2":
+    normalized_goal = _normalize_strength_goal(goal)
+    if normalized_goal == "PURE STRENGTH":
         return "RPE 8.5"
-    if str(goal or "") == "3":
+    if normalized_goal == "POWER & SPEED":
         return "RPE 8.0"
     return "RPE 7.5" if str(level or "").upper() == "BEGINNER" else "RPE 8.0"
 
