@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
 from urllib.parse import unquote, urlparse
-from urllib.request import urlopen
+from urllib.request import Request as UrlRequest, urlopen
 
 from bson import ObjectId
 from dotenv import dotenv_values
@@ -150,6 +150,7 @@ from .models import (
     RefreshRequest,
     RegisterRequest,
     ChallengeProgressUpdateRequest,
+    GoogleAuthRequest,
     UpdateAboutUsRequest,
     UpdateBodyMetricsRequest,
     UpdateMeRequest,
@@ -596,18 +597,34 @@ class FirebaseAuthRequest(BaseModel):
     id_token: str = Field(min_length=20)
 
 
+def _read_json_url(url: str, *, headers: dict[str, str] | None = None) -> dict[str, Any]:
+    request = UrlRequest(url, headers=headers or {})
+    with urlopen(request, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="Unable to load remote identity payload")
+
+    return payload
+
+
 @lru_cache(maxsize=1)
 def _get_firebase_certificates() -> dict[str, str]:
     cert_url = (getattr(settings, "firebase_auth_provider_cert_url", "") or "").strip()
     if not cert_url:
         raise HTTPException(status_code=500, detail="Firebase auth is not configured")
 
-    with urlopen(cert_url, timeout=10) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    payload = _read_json_url(cert_url)
+    return {str(k): str(v) for k, v in payload.items() if str(k).strip() and str(v).strip()}
 
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=500, detail="Unable to load Firebase certificates")
 
+@lru_cache(maxsize=1)
+def _get_google_certificates() -> dict[str, str]:
+    cert_url = (getattr(settings, "google_auth_provider_cert_url", "") or "").strip()
+    if not cert_url:
+        raise HTTPException(status_code=500, detail="Google auth is not configured")
+
+    payload = _read_json_url(cert_url)
     return {str(k): str(v) for k, v in payload.items() if str(k).strip() and str(v).strip()}
 
 
@@ -641,10 +658,68 @@ def _verify_firebase_id_token(id_token: str) -> dict[str, Any]:
     return payload
 
 
-async def _upsert_firebase_user(profile: dict[str, Any]) -> dict:
+def _verify_google_id_token(id_token: str) -> dict[str, Any]:
+    google_client_id = (getattr(settings, "google_client_id", "") or "").strip()
+    if not google_client_id:
+        raise HTTPException(status_code=500, detail="Google auth is not configured")
+
+    try:
+        header = jwt.get_unverified_header(id_token)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Google token") from exc
+
+    kid = str(header.get("kid") or "").strip()
+    certificate = _get_google_certificates().get(kid)
+    if not certificate:
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    try:
+        payload = jwt.decode(
+            id_token,
+            certificate,
+            algorithms=["RS256"],
+            audience=google_client_id,
+            issuer="https://accounts.google.com",
+        )
+    except Exception:
+        try:
+            payload = jwt.decode(
+                id_token,
+                certificate,
+                algorithms=["RS256"],
+                audience=google_client_id,
+                issuer="accounts.google.com",
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail="Invalid Google token") from exc
+
+    return payload
+
+
+def _fetch_google_userinfo(access_token: str) -> dict[str, Any]:
+    token = str(access_token or "").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Google access token")
+
+    try:
+        return _read_json_url(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Google access token") from exc
+
+
+async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> dict:
     email = str(profile.get("email") or "").strip().lower()
     if not email:
-        raise HTTPException(status_code=401, detail="Firebase account is missing an email")
+        raise HTTPException(status_code=401, detail="Google account is missing an email")
+
+    email_verified = profile.get("email_verified")
+    if email_verified is False:
+        raise HTTPException(status_code=401, detail="Google account email is not verified")
 
     display_name = str(profile.get("name") or profile.get("displayName") or email.split("@")[0]).strip()
     photo_url = str(profile.get("picture") or profile.get("photoUrl") or "").strip()
@@ -666,9 +741,9 @@ async def _upsert_firebase_user(profile: dict[str, Any]) -> dict:
             "subscription_is_purchased": False,
             "subscription_purchase_source": "",
             "password_hash": "",
-            "auth_provider": "firebase",
+            "auth_provider": auth_provider,
             "firebase_uid": firebase_uid,
-            "profileImage": photo_url,
+            "profile_image": photo_url,
             "created_at": now,
             "updated_at": now,
         }
@@ -677,13 +752,13 @@ async def _upsert_firebase_user(profile: dict[str, Any]) -> dict:
 
     update_doc: dict[str, Any] = {
         "is_verified": True,
-        "auth_provider": "firebase",
+        "auth_provider": auth_provider,
         "updated_at": now,
     }
     if display_name and not str(existing_user.get("name") or "").strip():
         update_doc["name"] = display_name
     if photo_url:
-        update_doc["profileImage"] = photo_url
+        update_doc["profile_image"] = photo_url
     if firebase_uid:
         update_doc["firebase_uid"] = firebase_uid
 
@@ -694,10 +769,51 @@ async def _upsert_firebase_user(profile: dict[str, Any]) -> dict:
             "$unset": {
                 "verification_code_hash": "",
                 "verification_code_expires_at": "",
+                "profileImage": "",
             },
         },
     )
     return await users_collection.find_one({"_id": existing_user["_id"]}) or existing_user
+
+
+async def _upsert_firebase_user(profile: dict[str, Any]) -> dict:
+    return await _upsert_identity_user(profile, "firebase")
+
+
+async def _upsert_google_user(profile: dict[str, Any]) -> dict:
+    return await _upsert_identity_user(profile, "google")
+
+
+def _resolve_google_profile(payload: GoogleAuthRequest) -> tuple[dict[str, Any], str]:
+    id_token = str(payload.id_token or "").strip()
+    access_token = str(payload.access_token or "").strip()
+
+    if not id_token and not access_token:
+        raise HTTPException(status_code=400, detail="Missing Google token")
+
+    if id_token:
+        try:
+            profile = _verify_google_id_token(id_token)
+            return profile, "google"
+        except HTTPException as exc:
+            if access_token or exc.status_code >= 500:
+                logger.warning("auth_google_id_token_verify_failed detail=%s", exc.detail)
+            else:
+                try:
+                    profile = _verify_firebase_id_token(id_token)
+                    return profile, "firebase"
+                except HTTPException:
+                    raise exc
+
+        try:
+            profile = _verify_firebase_id_token(id_token)
+            return profile, "firebase"
+        except HTTPException as firebase_exc:
+            if not access_token:
+                raise firebase_exc
+
+    profile = _fetch_google_userinfo(access_token)
+    return profile, "google"
 
 
 @app.on_event("startup")
@@ -959,6 +1075,17 @@ async def firebase_login(payload: FirebaseAuthRequest, response: Response) -> To
     profile = _verify_firebase_id_token(payload.id_token)
     user = await _upsert_firebase_user(profile)
     logger.info("auth_firebase_login_success email=%s", str(profile.get("email") or "").lower())
+    return await _issue_tokens(user, response)
+
+
+@app.post("/auth/google", response_model=TokenResponse)
+async def google_login(payload: GoogleAuthRequest, response: Response) -> TokenResponse:
+    profile, provider = _resolve_google_profile(payload)
+    if provider == "firebase":
+        user = await _upsert_firebase_user(profile)
+    else:
+        user = await _upsert_google_user(profile)
+    logger.info("auth_google_login_success provider=%s email=%s", provider, str(profile.get("email") or "").lower())
     return await _issue_tokens(user, response)
 
 

@@ -27,6 +27,11 @@ class RefreshRequest(BaseModel):
     session_token: str | None = None
 
 
+class GoogleAuthRequest(BaseModel):
+    id_token: str | None = Field(default=None, min_length=20)
+    access_token: str | None = Field(default=None, min_length=20)
+
+
 class TokenResponse(BaseModel):
     access_token: str
     session_token: str
