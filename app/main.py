@@ -110,6 +110,7 @@ from .models import (
     DashboardOverviewRecentUser,
     DashboardOverviewResponse,
     JournalAnalysisRequest,
+    JournalLatestAnalysisResponse,
     JournalAnalysisResponse,
     JournalEntryCreateRequest,
     JournalEntryListResponse,
@@ -3663,6 +3664,42 @@ async def analyze_journal_entry(
 
     logger.info("journal_analyze_success user_id=%s", user_id)
     return JournalAnalysisResponse(analysis=result.analysis)
+
+
+@app.post("/journal/analyze/latest", response_model=JournalLatestAnalysisResponse)
+async def analyze_latest_journal_entry(
+    user: dict = Depends(_require_access_user),
+) -> JournalLatestAnalysisResponse:
+    user_id = str(user["_id"])
+    logger.info("journal_analyze_latest_attempt user_id=%s", user_id)
+    record = await journal_entries_collection.find_one(
+        {"user_id": user_id},
+        sort=[("created_at", -1)],
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="No journal entries found")
+
+    entry = JournalEntryResponse(
+        id=str(record["_id"]),
+        user_id=record["user_id"],
+        mood=record["mood"],
+        content=record["content"],
+        created_at=record["created_at"],
+        updated_at=record["updated_at"],
+    )
+
+    try:
+        result = generate_journal_analysis(
+            {
+                "mood": entry.mood,
+                "content": entry.content,
+            }
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"Journal analysis unavailable: {exc}") from exc
+
+    logger.info("journal_analyze_latest_success user_id=%s entry_id=%s", user_id, entry.id)
+    return JournalLatestAnalysisResponse(entry=entry, analysis=result.analysis)
 
 
 @app.post("/ai/meal-analysis", response_model=MealImageAnalysisResponse)

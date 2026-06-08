@@ -848,6 +848,11 @@ class JournalAnalysisResponse(BaseModel):
     analysis: str
 
 
+class JournalLatestAnalysisResponse(BaseModel):
+    entry: JournalEntryResponse
+    analysis: str
+
+
 class MealImageAnalysisRequest(BaseModel):
     image_base64: str = Field(min_length=32, max_length=20000000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
