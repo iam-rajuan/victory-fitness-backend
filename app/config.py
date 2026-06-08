@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -34,6 +35,17 @@ def _get_mongodb_uri() -> str:
 def _get_csv_list(name: str, default: str) -> list[str]:
     raw = os.getenv(name, default)
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _get_optional_regex(name: str) -> str | None:
+    raw = (os.getenv(name) or "").strip()
+    if not raw or raw == "*":
+        return None
+    try:
+        re.compile(raw)
+    except re.error:
+        return None
+    return raw
 
 
 class Settings:
@@ -93,7 +105,7 @@ class Settings:
         "http://localhost:8081,http://localhost:5173",
     )
     frontend_origin = os.getenv("FRONTEND_ORIGIN", frontend_origins[0] if frontend_origins else "http://localhost:8081")
-    frontend_origin_regex = os.getenv("FRONTEND_ORIGIN_REGEX", ".*")
+    frontend_origin_regex = _get_optional_regex("FRONTEND_ORIGIN_REGEX")
     cookie_secure = _get_bool("COOKIE_SECURE", environment == "production")
     cookie_samesite = os.getenv("COOKIE_SAMESITE", "none" if environment == "production" else "lax").strip().lower()
     admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)
