@@ -10,8 +10,12 @@ JOURNAL_ANALYSIS_SYSTEM_PROMPT = (
     "Analyze the user's journal entry in a clear, supportive, emotionally intelligent way. "
     "Do not sound clinical or robotic. "
     "Keep the response concise, practical, and grounded in the user's words. "
+    "Return a short overview of the journal, not a rewritten version of it. "
+    "Do not copy, paraphrase, or restate the journal line by line. "
+    "Focus on the main emotional theme, the key pattern, and one practical next step. "
+    "Keep the total response to 2 to 4 short sentences. "
     "Return plain text only. "
-    "Use short sections with labels when useful, such as Reflection, Pattern, Reframe, and Next Step. "
+    "If labels are used, keep them very short, such as Overview, Pattern, and Next Step. "
     "Do not use markdown tables, code blocks, or long disclaimers. "
     "Avoid therapy claims, diagnosis, or unsafe mental health advice."
 )
@@ -26,8 +30,10 @@ class JournalAnalysisResult:
 
 def generate_journal_analysis(payload: dict) -> JournalAnalysisResult:
     prompt = (
-        "Analyze this journal entry and return a clearer reflective version that the user can keep in the journal text box.\n"
-        "Preserve the meaning, but improve clarity and add concise insight.\n"
+        "Analyze this journal entry and return a short summary overview.\n"
+        "Do not rewrite the journal. Do not copy phrases unless absolutely necessary.\n"
+        "Summarize the core feeling, the main pattern, and one useful next step.\n"
+        "Keep it brief and high level.\n"
         f"Current mood: {payload.get('mood', '')}\n"
         f"Journal entry: {payload.get('content', '')}"
     )
@@ -54,7 +60,7 @@ def _openai_journal_analysis(prompt: str) -> str:
                 "content": [{"type": "input_text", "text": prompt}],
             },
         ],
-        "max_output_tokens": 500,
+        "max_output_tokens": 180,
     }
 
     data = _openai_responses_json(request_payload)
@@ -69,7 +75,7 @@ def _anthropic_journal_analysis(prompt: str) -> str:
         "model": settings.anthropic_model,
         "system": JOURNAL_ANALYSIS_SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 600,
+        "max_tokens": 220,
         "temperature": 0.4,
     }
 
