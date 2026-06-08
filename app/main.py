@@ -3650,6 +3650,26 @@ async def get_journal_entry(
     )
 
 
+@app.delete("/journal/entries/{entry_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_journal_entry(
+    entry_id: str,
+    user: dict = Depends(_require_access_user),
+) -> Response:
+    user_id = str(user["_id"])
+    logger.info("journal_delete_attempt user_id=%s entry_id=%s", user_id, entry_id)
+    try:
+        object_id = ObjectId(entry_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid journal entry id") from exc
+
+    delete_result = await journal_entries_collection.delete_one({"_id": object_id, "user_id": user_id})
+    if delete_result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Journal entry not found")
+
+    logger.info("journal_delete_success user_id=%s entry_id=%s", user_id, entry_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @app.post("/journal/analyze", response_model=JournalAnalysisResponse)
 async def analyze_journal_entry(
     payload: JournalAnalysisRequest,
