@@ -826,6 +826,11 @@ class JournalEntryCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=10000)
 
 
+class JournalEntryUpdateRequest(BaseModel):
+    mood: str = Field(min_length=1, max_length=40)
+    content: str = Field(min_length=1, max_length=10000)
+
+
 class JournalEntryResponse(BaseModel):
     id: str
     user_id: str

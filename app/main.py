@@ -115,6 +115,7 @@ from .models import (
     JournalEntryCreateRequest,
     JournalEntryListResponse,
     JournalEntryResponse,
+    JournalEntryUpdateRequest,
     LongevityCircleListResponse,
     LongevityCircleResponse,
     LongevityDashboardResponse,
@@ -3668,6 +3669,45 @@ async def delete_journal_entry(
 
     logger.info("journal_delete_success user_id=%s entry_id=%s", user_id, entry_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@app.patch("/journal/entries/{entry_id}", response_model=JournalEntryResponse)
+async def update_journal_entry(
+    entry_id: str,
+    payload: JournalEntryUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> JournalEntryResponse:
+    user_id = str(user["_id"])
+    logger.info("journal_update_attempt user_id=%s entry_id=%s", user_id, entry_id)
+    try:
+        object_id = ObjectId(entry_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid journal entry id") from exc
+
+    existing_record = await journal_entries_collection.find_one({"_id": object_id, "user_id": user_id})
+    if not existing_record:
+        raise HTTPException(status_code=404, detail="Journal entry not found")
+
+    now = datetime.now(timezone.utc)
+    update_document = {
+        "mood": payload.mood.strip(),
+        "content": payload.content.strip(),
+        "updated_at": now,
+    }
+    await journal_entries_collection.update_one(
+        {"_id": object_id, "user_id": user_id},
+        {"$set": update_document},
+    )
+
+    logger.info("journal_update_success user_id=%s entry_id=%s", user_id, entry_id)
+    return JournalEntryResponse(
+        id=str(existing_record["_id"]),
+        user_id=existing_record["user_id"],
+        mood=update_document["mood"],
+        content=update_document["content"],
+        created_at=existing_record["created_at"],
+        updated_at=now,
+    )
 
 
 @app.post("/journal/analyze", response_model=JournalAnalysisResponse)
