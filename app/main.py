@@ -821,6 +821,9 @@ async def startup() -> None:
     logger.info("startup_begin")
     if settings.using_default_jwt_secret:
         logger.warning("security_warning using default JWT secret; set JWT_SECRET_KEY before production deployment")
+    if not settings.startup_jobs_enabled:
+        logger.info("startup_jobs_skipped reason=disabled")
+        return
     await ensure_indexes()
     await backfill_current_health_metrics_from_history()
     await _seed_admin_user()
@@ -832,6 +835,9 @@ async def startup() -> None:
 @app.on_event("shutdown")
 async def shutdown() -> None:
     logger.info("shutdown_begin")
+    if not settings.startup_jobs_enabled:
+        logger.info("shutdown_jobs_skipped reason=disabled")
+        return
     await stop_wearables_scheduler()
     await stop_integration_queue()
     await close_database_connection()

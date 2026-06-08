@@ -40,6 +40,8 @@ class Settings:
     app_name = os.getenv("APP_NAME", "Victory Fitness API")
     environment = os.getenv("ENVIRONMENT", "development")
     node_env = os.getenv("NODE_ENV", environment)
+    is_vercel = bool(os.getenv("VERCEL"))
+    startup_jobs_enabled = _get_bool("STARTUP_JOBS_ENABLED", not is_vercel)
     api_host = os.getenv("API_HOST", "0.0.0.0")
     api_port = _get_int("API_PORT", 8000)
     api_public_base_url = os.getenv("API_PUBLIC_BASE_URL", f"http://localhost:{api_port}").strip().rstrip("/")
