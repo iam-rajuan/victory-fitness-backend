@@ -37,6 +37,16 @@ def _get_csv_list(name: str, default: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def _merge_origins(*values: str) -> list[str]:
+    merged: list[str] = []
+    for raw in values:
+        for item in (raw or "").split(","):
+            origin = item.strip()
+            if origin and origin not in merged:
+                merged.append(origin)
+    return merged
+
+
 def _get_optional_regex(name: str) -> str | None:
     raw = (os.getenv(name) or "").strip()
     if not raw or raw == "*":
@@ -100,11 +110,18 @@ class Settings:
     aws_s3_bucket = os.getenv("AWS_S3_BUCKET", "").strip()
     aws_s3_prefix = os.getenv("AWS_S3_PREFIX", "coach-archives").strip().strip("/")
 
-    frontend_origins = _get_csv_list(
+    _frontend_origins_raw = os.getenv(
         "FRONTEND_ORIGINS",
-        "http://localhost:8081,http://localhost:5173",
+        "http://localhost:8081,http://localhost:5173,https://victory-fitness-app.vercel.app,https://victory-fitness-dashboard.vercel.app",
     )
-    frontend_origin = os.getenv("FRONTEND_ORIGIN", frontend_origins[0] if frontend_origins else "http://localhost:8081")
+    _frontend_origin_raw = os.getenv("FRONTEND_ORIGIN", "")
+    _cors_origin_raw = os.getenv("CORS_ORIGIN", "")
+    frontend_origins = _merge_origins(
+        _frontend_origins_raw,
+        _frontend_origin_raw,
+        _cors_origin_raw,
+    ) or ["http://localhost:8081", "http://localhost:5173"]
+    frontend_origin = (_frontend_origin_raw or frontend_origins[0]).strip()
     frontend_origin_regex = _get_optional_regex("FRONTEND_ORIGIN_REGEX")
     cookie_secure = _get_bool("COOKIE_SECURE", environment == "production")
     cookie_samesite = os.getenv("COOKIE_SAMESITE", "none" if environment == "production" else "lax").strip().lower()
@@ -125,7 +142,7 @@ class Settings:
     sync_retry_backoff_ms = _get_int("SYNC_RETRY_BACKOFF_MS", 5000)
     rate_limit_ttl = _get_int("RATE_LIMIT_TTL", 60)
     rate_limit_max = _get_int("RATE_LIMIT_MAX", 100)
-    cors_origin = os.getenv("CORS_ORIGIN", "").strip()
+    cors_origin = _cors_origin_raw.strip()
 
     fitbit_client_id = os.getenv("FITBIT_CLIENT_ID", "").strip()
     fitbit_client_secret = os.getenv("FITBIT_CLIENT_SECRET", "").strip()
