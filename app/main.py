@@ -160,6 +160,7 @@ from .models import (
     TokenResponse,
     StartChallengeResponse,
     StrengthWorkoutPlanRequest,
+    StrengthWorkoutPlanListResponse,
     StrengthWorkoutPlanResponse,
     SupportMessageCreateRequest,
     SupportMessageListResponse,
@@ -955,6 +956,27 @@ async def workout_strength_plan_latest(
     return StrengthWorkoutPlanResponse(**plan_data)
 
 
+@app.get("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanListResponse)
+async def workout_strength_plan_list(
+    user: dict = Depends(_require_workout_plan_access_user),
+) -> StrengthWorkoutPlanListResponse:
+    records = await strength_workout_plans_collection.find(
+        {"user_id": str(user["_id"])},
+        sort=[("created_at", -1)],
+    ).to_list(length=100)
+
+    items: list[StrengthWorkoutPlanResponse] = []
+    for record in records:
+        if not isinstance(record.get("plan"), dict):
+            continue
+        plan_data = dict(record["plan"])
+        plan_data["plan_id"] = str(record["_id"])
+        plan_data["created_at"] = record.get("created_at")
+        items.append(StrengthWorkoutPlanResponse(**plan_data))
+
+    return StrengthWorkoutPlanListResponse(items=items)
+
+
 @app.delete("/ai/workout-plan/strength/latest")
 async def workout_strength_plan_delete_latest(
     user: dict = Depends(_require_workout_plan_access_user),
@@ -962,6 +984,24 @@ async def workout_strength_plan_delete_latest(
     record = await strength_workout_plans_collection.find_one(
         {"user_id": str(user["_id"])},
         sort=[("created_at", -1)],
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    await strength_workout_plans_collection.delete_one({"_id": record["_id"]})
+    return {"status": "success", "message": "Strength workout plan deleted"}
+
+
+@app.delete("/ai/workout-plan/strength/{plan_id}")
+async def workout_strength_plan_delete(
+    plan_id: str,
+    user: dict = Depends(_require_workout_plan_access_user),
+) -> dict[str, str]:
+    if not ObjectId.is_valid(plan_id):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    record = await strength_workout_plans_collection.find_one(
+        {"_id": ObjectId(plan_id), "user_id": str(user["_id"])},
     )
     if not record:
         raise HTTPException(status_code=404, detail="Strength workout plan not found")

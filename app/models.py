@@ -1178,6 +1178,10 @@ class StrengthWorkoutPlanResponse(BaseModel):
     created_at: datetime | None = None
 
 
+class StrengthWorkoutPlanListResponse(BaseModel):
+    items: list[StrengthWorkoutPlanResponse] = Field(default_factory=list)
+
+
 class VideoWorkoutPlanItem(BaseModel):
     id: str
     title: str
