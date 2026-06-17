@@ -122,7 +122,7 @@ class Settings:
         _cors_origin_raw,
     ) or ["http://localhost:8081", "http://localhost:5173"]
     frontend_origin = (_frontend_origin_raw or frontend_origins[0]).strip()
-    frontend_origin_regex = _get_optional_regex("FRONTEND_ORIGIN_REGEX")
+    frontend_origin_regex = _get_optional_regex("FRONTEND_ORIGIN_REGEX") or r"^https://([a-z0-9-]+\.)*vercel\.app$"
     cookie_secure = _get_bool("COOKIE_SECURE", environment == "production")
     cookie_samesite = os.getenv("COOKIE_SAMESITE", "none" if environment == "production" else "lax").strip().lower()
     admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)
