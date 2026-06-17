@@ -745,6 +745,7 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
             "auth_provider": auth_provider,
             "firebase_uid": firebase_uid,
             "profile_image": photo_url,
+            "onboarding_completed": False,
             "created_at": now,
             "updated_at": now,
         }
@@ -1059,6 +1060,7 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "subscription_billing_cycle": "yearly",
             "subscription_is_purchased": False,
             "subscription_purchase_source": "",
+            "onboarding_completed": False,
             "verification_code_hash": hash_password(code),
             "verification_code_expires_at": now + timedelta(minutes=10),
             "updated_at": now,
@@ -1211,6 +1213,9 @@ async def update_me(
 
     if payload.profileImage is not None:
         update_doc["profile_image"] = payload.profileImage.strip()
+
+    if payload.onboarding_completed is not None:
+        update_doc["onboarding_completed"] = payload.onboarding_completed
 
     if not update_doc:
         return MeResponse(**(await _serialize_me_record(user)))
@@ -5756,6 +5761,7 @@ async def _serialize_me_record(record: dict) -> dict:
         "is_admin": bool(record.get("is_admin")),
         "country": str(record.get("country") or ""),
         "profileImage": str(record.get("profile_image") or ""),
+        "onboarding_completed": bool(record.get("onboarding_completed", False)),
         "points": stats["points"],
         "workouts_completed": stats["workouts_completed"],
         "workouts_total": stats["workouts_total"],

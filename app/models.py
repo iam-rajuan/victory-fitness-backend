@@ -79,6 +79,7 @@ class MeResponse(BaseModel):
     subscription_purchase_source: str = ""
     subscription_access: list[str] = Field(default_factory=list)
     subscription: SubscriptionSummaryResponse = Field(default_factory=SubscriptionSummaryResponse)
+    onboarding_completed: bool = False
 
 
 class UpdateMeRequest(BaseModel):
@@ -86,6 +87,7 @@ class UpdateMeRequest(BaseModel):
     email: EmailStr | None = None
     country: str | None = Field(default=None, max_length=120)
     profileImage: str | None = Field(default=None, max_length=500)
+    onboarding_completed: bool | None = None
 
 
 class UpdateSubscriptionRequest(BaseModel):
