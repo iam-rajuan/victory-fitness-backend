@@ -1,5 +1,4 @@
 import os
-import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -47,17 +46,6 @@ def _merge_origins(*values: str) -> list[str]:
     return merged
 
 
-def _get_optional_regex(name: str) -> str | None:
-    raw = (os.getenv(name) or "").strip()
-    if not raw or raw == "*":
-        return None
-    try:
-        re.compile(raw)
-    except re.error:
-        return None
-    return raw
-
-
 class Settings:
     app_name = os.getenv("APP_NAME", "Victory Fitness API")
     environment = os.getenv("ENVIRONMENT", "development")
@@ -66,9 +54,8 @@ class Settings:
     startup_jobs_enabled = _get_bool("STARTUP_JOBS_ENABLED", not is_vercel)
     api_host = os.getenv("API_HOST", "0.0.0.0")
     api_port = _get_int("API_PORT", 8000)
-    api_public_base_url = os.getenv("API_PUBLIC_BASE_URL", f"http://localhost:{api_port}").strip().rstrip("/")
-    app_url = os.getenv("APP_URL", api_public_base_url).strip().rstrip("/")
-    api_url = os.getenv("API_URL", api_public_base_url).strip().rstrip("/")
+    api_url = os.getenv("API_URL", f"http://localhost:{api_port}").strip().rstrip("/")
+    app_url = os.getenv("APP_URL", api_url).strip().rstrip("/")
     slow_request_threshold_ms = _get_int("SLOW_REQUEST_THRESHOLD_MS", 800)
 
     mongodb_uri = _get_mongodb_uri()
@@ -110,19 +97,13 @@ class Settings:
     aws_s3_bucket = os.getenv("AWS_S3_BUCKET", "").strip()
     aws_s3_prefix = os.getenv("AWS_S3_PREFIX", "coach-archives").strip().strip("/")
 
-    _frontend_origins_raw = os.getenv(
-        "FRONTEND_ORIGINS",
-        "http://localhost:8081,http://localhost:5173,https://victory-fitness-app.vercel.app,https://victory-fitness-dashboard.vercel.app",
-    )
-    _frontend_origin_raw = os.getenv("FRONTEND_ORIGIN", "")
-    _cors_origin_raw = os.getenv("CORS_ORIGIN", "")
-    frontend_origins = _merge_origins(
-        _frontend_origins_raw,
-        _frontend_origin_raw,
-        _cors_origin_raw,
+    cors_origins = _merge_origins(
+        os.getenv(
+            "CORS_ORIGINS",
+            "http://localhost:8081,http://localhost:5173,https://victory-fitness-app.vercel.app,https://victory-fitness-dashboard.vercel.app",
+        ),
     ) or ["http://localhost:8081", "http://localhost:5173"]
-    frontend_origin = (_frontend_origin_raw or frontend_origins[0]).strip()
-    frontend_origin_regex = _get_optional_regex("FRONTEND_ORIGIN_REGEX") or r"^https://([a-z0-9-]+\.)*vercel\.app$"
+    cors_origin_regex = r"^https://([a-z0-9-]+\.)*vercel\.app$"
     cookie_secure = _get_bool("COOKIE_SECURE", environment == "production")
     cookie_samesite = os.getenv("COOKIE_SAMESITE", "none" if environment == "production" else "lax").strip().lower()
     admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)
@@ -142,7 +123,6 @@ class Settings:
     sync_retry_backoff_ms = _get_int("SYNC_RETRY_BACKOFF_MS", 5000)
     rate_limit_ttl = _get_int("RATE_LIMIT_TTL", 60)
     rate_limit_max = _get_int("RATE_LIMIT_MAX", 100)
-    cors_origin = _cors_origin_raw.strip()
 
     fitbit_client_id = os.getenv("FITBIT_CLIENT_ID", "").strip()
     fitbit_client_secret = os.getenv("FITBIT_CLIENT_SECRET", "").strip()

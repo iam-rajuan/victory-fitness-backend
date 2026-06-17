@@ -457,8 +457,8 @@ challenge_chat_socket_manager = ChallengeChatSocketManager()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.frontend_origins,
-    allow_origin_regex=settings.frontend_origin_regex,
+    allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -4763,7 +4763,7 @@ def _build_inline_image_data_url(image_base64: str, mime_type: str) -> str:
 
 
 def _build_local_media_url(relative_path: str) -> str:
-    normalized_base = settings.api_public_base_url.rstrip("/")
+    normalized_base = settings.api_url.rstrip("/")
     normalized_path = "/" + str(relative_path or "").lstrip("/")
     return f"{normalized_base}{normalized_path}"
 
