@@ -382,6 +382,25 @@ class UpdateAboutUsRequest(BaseModel):
     html_content: str = Field(min_length=1, max_length=200000)
 
 
+class OnboardingSlideResponse(BaseModel):
+    id: str
+    badge: str = ""
+    title_lines: list[str] = Field(default_factory=list)
+    title_accent_index: int | None = None
+    description: str = ""
+    show_skip: bool = False
+    button_label: str = ""
+    button_arrow: str = ""
+    has_secondary: bool = False
+    secondary_label: str = ""
+    has_footer: bool = False
+    footer_text: str = ""
+
+
+class OnboardingContentResponse(BaseModel):
+    slides: list[OnboardingSlideResponse] = Field(default_factory=list)
+
+
 class CoachingApplicationCreateRequest(BaseModel):
     first_name: str = Field(min_length=1, max_length=80)
     last_name: str = Field(min_length=1, max_length=80)

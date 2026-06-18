@@ -160,6 +160,8 @@ from .models import (
     NutritionPlanRequest,
     NutritionPlanResponse,
     NutritionPlanSaveResponse,
+    OnboardingContentResponse,
+    OnboardingSlideResponse,
     RefreshRequest,
     RegisterRequest,
     ResetPasswordRequest,
@@ -444,6 +446,7 @@ DASHBOARD_FAQS_KEY = "dashboard_faqs"
 DASHBOARD_NOTIFICATIONS_KEY = "dashboard_notifications"
 DASHBOARD_SUBSCRIPTION_PLANS_KEY = "dashboard_subscription_plans"
 DASHBOARD_MASTERCLASSES_KEY = "dashboard_masterclasses"
+DASHBOARD_ONBOARDING_KEY = "dashboard_onboarding"
 
 DEFAULT_DASHBOARD_FAQS = [
     {
@@ -561,6 +564,51 @@ DEFAULT_DASHBOARD_MASTERCLASSES = [
         "audioUrl": "",
         "educationalContent": "",
         "thumbnailUrl": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80",
+    },
+]
+
+DEFAULT_DASHBOARD_ONBOARDING = [
+    {
+        "id": "performance-first",
+        "badge": "PERFORMANCE FIRST",
+        "title_lines": ["UNLEASH YOUR", "POTENTIAL"],
+        "title_accent_index": 1,
+        "description": "Elite discipline meets data-driven precision. Track every rep, optimize your recovery, and transcend your limits with our high-octane performance ecosystem.",
+        "show_skip": False,
+        "button_label": "NEXT",
+        "button_arrow": "->",
+        "has_secondary": False,
+        "secondary_label": "",
+        "has_footer": False,
+        "footer_text": "",
+    },
+    {
+        "id": "precision-tracking",
+        "badge": "",
+        "title_lines": ["PRECISION", "TRACKING"],
+        "title_accent_index": None,
+        "description": "Experience real-time analytics fueled by proprietary algorithms. Every rep, breath, and heartbeat becomes actionable data.",
+        "show_skip": False,
+        "button_label": "NEXT",
+        "button_arrow": "->",
+        "has_secondary": False,
+        "secondary_label": "",
+        "has_footer": False,
+        "footer_text": "",
+    },
+    {
+        "id": "stronger-together",
+        "badge": "",
+        "title_lines": ["STRONGER", "TOGETHER"],
+        "title_accent_index": None,
+        "description": "Unlock your full potential by training with a global network of elite athletes. Share data, compete in challenges, and never train alone.",
+        "show_skip": False,
+        "button_label": "GET STARTED",
+        "button_arrow": ">",
+        "has_secondary": False,
+        "secondary_label": "",
+        "has_footer": True,
+        "footer_text": "VICTORY FITNESS OS V2.0",
     },
 ]
 
@@ -1917,6 +1965,33 @@ async def admin_update_terms_condition(
 async def get_about_us() -> AboutUsResponse:
     record = await _ensure_about_us_record()
     return _serialize_about_us_record(record)
+
+
+@app.get("/content/onboarding", response_model=OnboardingContentResponse)
+async def get_onboarding_content() -> OnboardingContentResponse:
+    items = await _get_dashboard_onboarding_items()
+    slides = [
+        OnboardingSlideResponse(
+            id=str(item.get("id") or uuid4().hex),
+            badge=str(item.get("badge") or "").strip(),
+            title_lines=[
+                str(line).strip()
+                for line in item.get("title_lines") or []
+                if str(line).strip()
+            ],
+            title_accent_index=item.get("title_accent_index") if isinstance(item.get("title_accent_index"), int) else None,
+            description=str(item.get("description") or "").strip(),
+            show_skip=bool(item.get("show_skip", False)),
+            button_label=str(item.get("button_label") or "").strip(),
+            button_arrow=str(item.get("button_arrow") or "").strip(),
+            has_secondary=bool(item.get("has_secondary", False)),
+            secondary_label=str(item.get("secondary_label") or "").strip(),
+            has_footer=bool(item.get("has_footer", False)),
+            footer_text=str(item.get("footer_text") or "").strip(),
+        )
+        for item in items
+    ]
+    return OnboardingContentResponse(slides=slides)
 
 
 @app.get("/admin/content/about-us", response_model=AboutUsResponse)
@@ -5500,6 +5575,11 @@ async def _get_dashboard_subscription_plan_items() -> list[dict]:
 
 async def _get_dashboard_masterclass_items() -> list[dict]:
     record = await _ensure_items_record(DASHBOARD_MASTERCLASSES_KEY, DEFAULT_DASHBOARD_MASTERCLASSES)
+    return [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
+
+
+async def _get_dashboard_onboarding_items() -> list[dict]:
+    record = await _ensure_items_record(DASHBOARD_ONBOARDING_KEY, DEFAULT_DASHBOARD_ONBOARDING)
     return [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
 
 
