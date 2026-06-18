@@ -5,7 +5,7 @@ FastAPI backend with MongoDB auth, SMTP email verification, 10 minute access tok
 ## Setup
 
 ```powershell
-cd C:\Miskat\victoria\victory-backend
+cd C:\Miskat\victora\victory-fitness-backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -13,11 +13,15 @@ pip install -r requirements.txt
 
 Update `.env` before running:
 
-- `MONGODB_URI`: required MongoDB Atlas connection string. Auth, Coach Victor history, and nutrition plans all use this database.
+- `APP_NAME`, `ENVIRONMENT`: API display name and runtime environment.
+- `MONGODB_URI`, `MONGODB_DB`: required MongoDB Atlas connection string and database name. Auth, Coach Victor history, and nutrition plans all use this database.
 - `JWT_SECRET_KEY`: replace with a long random secret.
-- `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`: your SMTP account details.
+- `ACCESS_TOKEN_EXPIRE_MINUTES`, `SESSION_TOKEN_EXPIRE_DAYS`: auth token lifetimes.
+- `CORS_ORIGIN`: set `*` to allow all frontend origins, or set one or more comma-separated frontend origins.
+- `COOKIE_SECURE`, `COOKIE_SAMESITE`: use `COOKIE_SECURE=true` and `COOKIE_SAMESITE=none` for cross-site HTTPS auth cookies in production.
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`, `SMTP_USE_TLS`: email verification SMTP settings.
 - `OPENAI_API_KEY`: your OpenAI API key for Coach Victor and nutrition generation.
-- `OPENAI_MODEL`: OpenAI model for Coach Victor and nutrition generation, defaults to `gpt-4o-mini`.
+- `OPENAI_MODEL`: OpenAI model for Coach Victor and nutrition generation, defaults to `gpt-5.5`.
 - `OPENAI_MEAL_ANALYSIS_MODEL`: OpenAI vision model for meal photo analysis, defaults to `gpt-4o-mini`.
 - `ANTHROPIC_API_KEY`: optional Claude API key for Coach Victor.
 - `ANTHROPIC_MODEL`: Claude model for Coach Victor and nutrition generation, defaults to `claude-haiku-4-5-20251001`.
@@ -26,11 +30,7 @@ Update `.env` before running:
 - `COACH_ARCHIVE_BATCH_SIZE`: how many old messages are moved out of the live thread when retention is exceeded.
 - `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET`: optional S3 archive settings for old Coach Victor messages.
 - `AWS_S3_PREFIX`: S3 key prefix for archived Coach Victor message batches.
-- `CORS_ORIGINS`: comma-separated frontend origins, for example `http://localhost:8081,https://victory-fitness-app.vercel.app`.
-- `COOKIE_SECURE`: use `false` for local HTTP, `true` for production HTTPS.
-- `API_URL`: public HTTPS URL of the deployed backend.
-- `COOKIE_SAMESITE`: use `none` for cross-site HTTPS auth cookies in production.
-- `GOOGLE_CLIENT_ID`: set this to the Google OAuth web client ID used by the app.
+- `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_PROJECT_ID`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_PROVIDER_CERT_URL`: Google OAuth and Firebase auth settings.
 - `ADMIN_SEED_ENABLED`, `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`: startup seed settings for a verified admin account. On startup, if the admin email does not exist yet, the backend inserts it automatically.
 
 ## Run
@@ -42,7 +42,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ## Run With Docker
 
 ```powershell
-cd C:\Miskat\victoria\victory-backend
+cd C:\Miskat\victora\victory-fitness-backend
 docker compose up --build
 ```
 

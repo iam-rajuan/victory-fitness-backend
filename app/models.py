@@ -23,6 +23,20 @@ class VerifyEmailRequest(BaseModel):
     code: str = Field(pattern=r"^\d{4}$")
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class VerifyResetCodeRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(pattern=r"^\d{4}$")
+
+
+class ResetPasswordRequest(BaseModel):
+    reset_token: str = Field(min_length=20)
+    new_password: str = Field(min_length=8, max_length=128)
+
+
 class RefreshRequest(BaseModel):
     session_token: str | None = None
 
@@ -1021,6 +1035,91 @@ class DashboardOverviewResponse(BaseModel):
     recentUsers: list[DashboardOverviewRecentUser] = Field(default_factory=list)
 
 
+class FAQItemResponse(BaseModel):
+    id: str
+    question: str
+    answer: str
+
+
+class FAQListResponse(BaseModel):
+    items: list[FAQItemResponse] = Field(default_factory=list)
+
+
+class FAQRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+    answer: str = Field(min_length=1, max_length=10000)
+
+
+class AdminNotificationItem(BaseModel):
+    id: str
+    title: str
+    message: str = ""
+    read: bool = False
+    createdAt: datetime
+
+
+class AdminNotificationListResponse(BaseModel):
+    items: list[AdminNotificationItem] = Field(default_factory=list)
+
+
+class AdminNotificationUpdateRequest(BaseModel):
+    read: bool = True
+
+
+class AdminSubscriptionPlanItem(BaseModel):
+    id: str
+    tier: str
+    description: str = ""
+    priceMonthly: int | None = Field(default=None, ge=0)
+    priceYearly: int | None = Field(default=None, ge=0)
+    isApplicationOnly: bool = False
+    isMostPopular: bool = False
+    iconType: str = ""
+    features: list[str] = Field(default_factory=list)
+
+
+class AdminSubscriptionPlanListResponse(BaseModel):
+    items: list[AdminSubscriptionPlanItem] = Field(default_factory=list)
+
+
+class AdminSubscriptionPlanRequest(BaseModel):
+    tier: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=1000)
+    priceMonthly: int | None = Field(default=None, ge=0)
+    priceYearly: int | None = Field(default=None, ge=0)
+    isApplicationOnly: bool = False
+    isMostPopular: bool = False
+    iconType: str = Field(default="", max_length=80)
+    features: list[str] = Field(default_factory=list)
+
+
+class AdminMasterclassItem(BaseModel):
+    id: str
+    title: str
+    category: str = ""
+    duration: str = ""
+    description: str = ""
+    videoUrl: str = ""
+    audioUrl: str = ""
+    educationalContent: str = ""
+    thumbnailUrl: str = ""
+
+
+class AdminMasterclassListResponse(BaseModel):
+    items: list[AdminMasterclassItem] = Field(default_factory=list)
+
+
+class AdminMasterclassRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    category: str = Field(min_length=1, max_length=120)
+    duration: str = Field(min_length=1, max_length=40)
+    description: str = Field(min_length=1, max_length=4000)
+    videoUrl: str = Field(min_length=1, max_length=1000)
+    audioUrl: str = Field(default="", max_length=1000)
+    educationalContent: str = Field(default="", max_length=10000)
+    thumbnailUrl: str = Field(default="", max_length=20000000)
+
+
 class AdminUserListItem(BaseModel):
     id: str
     fullName: str
@@ -1070,6 +1169,31 @@ class AdminUserSummaryResponse(BaseModel):
 class AdminUserManagementOverviewResponse(BaseModel):
     summary: AdminUserSummaryResponse
     table: AdminUserListResponse
+
+
+class AdminSubscriberItem(BaseModel):
+    id: str
+    fullName: str
+    email: EmailStr
+    subscriptionTier: str = "NONE"
+    contactNumber: str = ""
+    country: str = ""
+    status: str = "NONE"
+    joinedDate: datetime
+    profileImage: str = ""
+    subscriptionRole: str = "NONE"
+    subscriptionBillingCycle: str = "yearly"
+    subscriptionStartedAt: datetime | None = None
+    subscriptionConfirmedAt: datetime | None = None
+    subscriptionIsPurchased: bool = False
+    subscriptionAccess: list[str] = Field(default_factory=list)
+
+
+class AdminSubscriberListResponse(BaseModel):
+    total: int = 0
+    page: int = 1
+    limit: int = 10
+    users: list[AdminSubscriberItem] = Field(default_factory=list)
 
 
 class AdminUserUpdateRequest(BaseModel):

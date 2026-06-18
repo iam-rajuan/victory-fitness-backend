@@ -34,3 +34,30 @@ def send_verification_email(to_email: str, code: str) -> None:
         if settings.smtp_username and settings.smtp_password:
             smtp.login(settings.smtp_username, settings.smtp_password)
         smtp.send_message(message)
+
+
+def send_password_reset_email(to_email: str, code: str) -> None:
+    if not settings.smtp_host or not settings.smtp_from_email:
+        raise RuntimeError("SMTP is not configured")
+
+    message = EmailMessage()
+    message["Subject"] = "Your Victory Fitness password reset code"
+    message["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+    message["To"] = to_email
+    message.set_content(
+        "Victory Fitness Password Reset\n\n"
+        "Hi,\n\n"
+        "We received a request to reset your Victory Fitness password. Use the code "
+        "below to continue.\n\n"
+        f"Password reset code: {code}\n\n"
+        "This code expires in 10 minutes. If you did not request a password reset, "
+        "you can ignore this email.\n\n"
+        "Victory Fitness"
+    )
+
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+        if settings.smtp_use_tls:
+            smtp.starttls()
+        if settings.smtp_username and settings.smtp_password:
+            smtp.login(settings.smtp_username, settings.smtp_password)
+        smtp.send_message(message)

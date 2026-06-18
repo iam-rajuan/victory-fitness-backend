@@ -1773,7 +1773,7 @@ def _basic_auth_header(client_id: str, client_secret: str) -> str:
 def _get_fitbit_settings() -> dict[str, Any]:
     client_id = (getattr(settings, "fitbit_client_id", "") or "").strip()
     client_secret = (getattr(settings, "fitbit_client_secret", "") or "").strip()
-    redirect_uri = (getattr(settings, "fitbit_redirect_uri", "") or "").strip() or f"{settings.api_url}/integrations/fitbit/callback"
+    redirect_uri = (getattr(settings, "fitbit_redirect_uri", "") or "").strip()
     if not client_id or not client_secret or not redirect_uri:
         raise HTTPException(status_code=503, detail=PROVIDER_NOT_CONFIGURED)
     scopes = list(getattr(settings, "fitbit_scopes", []) or ["activity", "heartrate", "sleep", "profile"])
@@ -1791,7 +1791,7 @@ def _get_fitbit_settings() -> dict[str, Any]:
 def _get_garmin_settings() -> dict[str, Any]:
     client_id = (getattr(settings, "garmin_client_id", "") or "").strip()
     client_secret = (getattr(settings, "garmin_client_secret", "") or "").strip()
-    redirect_uri = (getattr(settings, "garmin_redirect_uri", "") or "").strip() or f"{settings.api_url}/integrations/garmin/callback"
+    redirect_uri = (getattr(settings, "garmin_redirect_uri", "") or "").strip()
     authorize_url = (getattr(settings, "garmin_authorize_url", "") or "").strip()
     token_url = (getattr(settings, "garmin_token_url", "") or "").strip()
     api_base = (getattr(settings, "garmin_api_base_url", "") or "").strip()
@@ -1813,7 +1813,7 @@ def _get_garmin_settings() -> dict[str, Any]:
 def _get_google_fit_settings() -> dict[str, Any]:
     client_id = (getattr(settings, "google_client_id", "") or "").strip()
     client_secret = (getattr(settings, "google_client_secret", "") or "").strip()
-    redirect_uri = (getattr(settings, "google_fit_redirect_uri", "") or "").strip() or f"{settings.api_url}/integrations/google-fit/callback"
+    redirect_uri = (getattr(settings, "google_fit_redirect_uri", "") or "").strip()
     authorize_url = (getattr(settings, "google_auth_uri", "") or GOOGLE_FIT_AUTHORIZE_URL).strip() or GOOGLE_FIT_AUTHORIZE_URL
     token_url = (getattr(settings, "google_token_uri", "") or "").strip()
     api_base = (getattr(settings, "google_fit_api_base_url", "") or "").strip()

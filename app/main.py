@@ -3,7 +3,6 @@ import base64
 import json
 from io import BytesIO
 import logging
-import os
 import re
 from functools import lru_cache
 from typing import Any
@@ -16,7 +15,6 @@ from urllib.parse import unquote, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
 from bson import ObjectId
-from dotenv import dotenv_values
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -50,7 +48,7 @@ from .dependencies import (
     require_access_user as dependency_require_access_user,
     require_admin_user as dependency_require_admin_user,
 )
-from .email_service import send_verification_email
+from .email_service import send_password_reset_email, send_verification_email
 from .journal_ai import generate_journal_analysis
 from .longevity_ai import generate_longevity_weekly_plan
 from .models import (
@@ -95,6 +93,20 @@ from .models import (
     CommunityReactionToggleResponse,
     ChallengeOverviewResponse,
     ChallengeChatSummaryResponse,
+    FAQItemResponse,
+    FAQListResponse,
+    FAQRequest,
+    AdminMasterclassItem,
+    AdminMasterclassListResponse,
+    AdminMasterclassRequest,
+    AdminNotificationItem,
+    AdminNotificationListResponse,
+    AdminNotificationUpdateRequest,
+    AdminSubscriberItem,
+    AdminSubscriberListResponse,
+    AdminSubscriptionPlanItem,
+    AdminSubscriptionPlanListResponse,
+    AdminSubscriptionPlanRequest,
     DashboardOverviewChartPoint,
     AdminUserChartPoint,
     AdminUserDetailResponse,
@@ -109,6 +121,7 @@ from .models import (
     AdminWorkoutSyncResponse,
     DashboardOverviewRecentUser,
     DashboardOverviewResponse,
+    ForgotPasswordRequest,
     JournalAnalysisRequest,
     JournalLatestAnalysisResponse,
     JournalAnalysisResponse,
@@ -149,6 +162,7 @@ from .models import (
     NutritionPlanSaveResponse,
     RefreshRequest,
     RegisterRequest,
+    ResetPasswordRequest,
     ChallengeProgressUpdateRequest,
     GoogleAuthRequest,
     UpdateAboutUsRequest,
@@ -167,6 +181,7 @@ from .models import (
     SupportMessageResponse,
     UpdateAdminProfileRequest,
     VerifyEmailRequest,
+    VerifyResetCodeRequest,
     UserActiveChallengeResponse,
     UserCompletedChallengeResponse,
     UserReadyChallengeResponse,
@@ -178,6 +193,7 @@ from .models import (
     UpdateSubscriptionRequest,
 )
 from .database import (
+    app_content_collection,
     challenge_chat_messages_collection,
     challenge_message_reactions_collection,
     challenge_memberships_collection,
@@ -245,7 +261,7 @@ from .wearables import (
 app = FastAPI(title=settings.app_name)
 app.include_router(wearables_router)
 logger = logging.getLogger("victory_fitness.api")
-MEDIA_ROOT = Path("/tmp/victory-fitness-media") if os.getenv("VERCEL") else Path(__file__).resolve().parents[1] / "media"
+MEDIA_ROOT = Path("/tmp/victory-fitness-media") if settings.is_vercel else Path(__file__).resolve().parents[1] / "media"
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
@@ -421,6 +437,130 @@ DEFAULT_LONGEVITY_MASTERCLASSES = [
         "title": "Immunity Support Stack",
         "description": "Layer sleep, movement, nutrition, and recovery into a sustainable immune-support routine.",
         "thumbnail": "https://images.unsplash.com/photo-1584362917165-526a968579e8?w=600&q=80",
+    },
+]
+
+DASHBOARD_FAQS_KEY = "dashboard_faqs"
+DASHBOARD_NOTIFICATIONS_KEY = "dashboard_notifications"
+DASHBOARD_SUBSCRIPTION_PLANS_KEY = "dashboard_subscription_plans"
+DASHBOARD_MASTERCLASSES_KEY = "dashboard_masterclasses"
+
+DEFAULT_DASHBOARD_FAQS = [
+    {
+        "id": "faq-reset-password",
+        "question": "How do I reset my password?",
+        "answer": "Use the forgot password flow on the sign-in page and enter the verification code sent to your email.",
+    },
+    {
+        "id": "faq-update-billing",
+        "question": "How can I update my billing information?",
+        "answer": "Open the billing or subscription area in your account and follow the update prompts provided there.",
+    },
+    {
+        "id": "faq-refund-policy",
+        "question": "What is the refund policy?",
+        "answer": "Contact support with your order details and the team will review the request based on your plan and billing status.",
+    },
+]
+
+DEFAULT_DASHBOARD_NOTIFICATIONS = [
+    {
+        "id": "notification-dashboard-online",
+        "title": "Dashboard Online",
+        "message": "The admin dashboard is connected and ready to manage users, content, and challenges.",
+        "read": False,
+        "createdAt": "2026-06-19T00:00:00Z",
+    }
+]
+
+DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS = [
+    {
+        "id": "plan-silver",
+        "tier": "VICTORY SILVER",
+        "description": "Good start, but not enough for full transformation.",
+        "priceMonthly": 19,
+        "priceYearly": 199,
+        "isApplicationOnly": False,
+        "isMostPopular": False,
+        "iconType": "silver_medal",
+        "features": [
+            "Full Workout Library (120+)",
+            "Basic Programs",
+            "Limited Challenges",
+        ],
+    },
+    {
+        "id": "plan-gold",
+        "tier": "VICTORY GOLD",
+        "description": "This is where real consistency starts. Structure and accountability.",
+        "priceMonthly": 29,
+        "priceYearly": 299,
+        "isApplicationOnly": False,
+        "isMostPopular": True,
+        "iconType": "gold_medal",
+        "features": [
+            "All Silver features",
+            "Accountability System (Tracking, Reminders)",
+            "Community Challenges and Nutrition",
+            "Basic wearable data (sleep and activity)",
+        ],
+    },
+    {
+        "id": "plan-platinum",
+        "tier": "VICTORY PLATINUM",
+        "description": "For those who want more precision and faster results.",
+        "priceMonthly": 39,
+        "priceYearly": 399,
+        "isApplicationOnly": False,
+        "isMostPopular": False,
+        "iconType": "diamond",
+        "features": [
+            "All Gold features",
+            "Personalized Plans",
+            "Feedback System and Priority Support",
+            "Full wearable syncing and AI adjustments",
+        ],
+    },
+    {
+        "id": "plan-inner-circle",
+        "tier": "VICTORY INNER CIRCLE",
+        "description": "For those who are ready to commit. Direct coaching with Victor.",
+        "priceMonthly": None,
+        "priceYearly": None,
+        "isApplicationOnly": True,
+        "isMostPopular": False,
+        "iconType": "circle",
+        "features": [
+            "Direct Coaching with Victor",
+            "Personal Structure and Plan",
+            "Accountability Check-Ins and Adjustments",
+            "Advanced AI health insights and trends",
+        ],
+    },
+]
+
+DEFAULT_DASHBOARD_MASTERCLASSES = [
+    {
+        "id": "masterclass-heart-zone2",
+        "title": "Zone 2 For Heart Health",
+        "category": "Science",
+        "duration": "15:00",
+        "description": "Build aerobic capacity, improve recovery, and support long-term cardiovascular resilience.",
+        "videoUrl": "https://vimeo.com/740239410",
+        "audioUrl": "",
+        "educationalContent": "",
+        "thumbnailUrl": "https://images.unsplash.com/photo-1530026405186-ed1f139313f8?w=600&q=80",
+    },
+    {
+        "id": "masterclass-recovery-blueprint",
+        "title": "Post Workout Recovery Blueprint",
+        "category": "Nutrition",
+        "duration": "18:00",
+        "description": "Use sleep, hydration, and recovery windows to turn training stress into adaptation.",
+        "videoUrl": "https://vimeo.com/847239103",
+        "audioUrl": "",
+        "educationalContent": "",
+        "thumbnailUrl": "https://images.unsplash.com/photo-1541781774459-bb2a1b920155?w=600&q=80",
     },
 ]
 
@@ -1106,6 +1246,92 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
     return await _issue_tokens(user, response)
 
 
+@app.post("/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordRequest) -> dict[str, str]:
+    email = payload.email.lower()
+    logger.info("auth_forgot_password_attempt email=%s", email)
+    user = await users_collection.find_one({"email": email, "is_verified": True})
+    if not user:
+        logger.info("auth_forgot_password_skipped email=%s reason=user_not_found", email)
+        return {"message": "If that account exists, a reset code has been sent", "email": email}
+
+    code = create_verification_code()
+    now = datetime.now(timezone.utc)
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "reset_code_hash": hash_password(code),
+                "reset_code_expires_at": now + timedelta(minutes=10),
+                "updated_at": now,
+            }
+        },
+    )
+
+    try:
+        send_password_reset_email(email, code)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    logger.info("auth_forgot_password_code_sent email=%s", email)
+    return {"message": "If that account exists, a reset code has been sent", "email": email}
+
+
+@app.post("/auth/verify-reset-code")
+async def verify_reset_code(payload: VerifyResetCodeRequest) -> dict[str, str]:
+    email = payload.email.lower()
+    logger.info("auth_verify_reset_attempt email=%s", email)
+    user = await users_collection.find_one({"email": email, "is_verified": True})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    expires_at = user.get("reset_code_expires_at")
+    code_hash = str(user.get("reset_code_hash") or "")
+    if not expires_at or _as_utc(expires_at) < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Reset code expired")
+    if not code_hash or not verify_password(payload.code, code_hash):
+        raise HTTPException(status_code=400, detail="Invalid reset code")
+
+    reset_token = create_token(
+        str(user["_id"]),
+        "password_reset",
+        timedelta(minutes=15),
+    )
+    logger.info("auth_verify_reset_success email=%s", email)
+    return {"message": "Reset code verified", "reset_token": reset_token}
+
+
+@app.post("/auth/reset-password")
+async def reset_password(payload: ResetPasswordRequest) -> dict[str, str]:
+    logger.info("auth_reset_password_attempt")
+    try:
+        data = decode_token(payload.reset_token, "password_reset")
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail="Invalid reset token") from exc
+
+    try:
+        user_id = ObjectId(data["sub"])
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid reset token") from exc
+
+    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid reset token")
+
+    await users_collection.update_one(
+        {"_id": user_id},
+        {
+            "$set": {
+                "password_hash": hash_password(payload.new_password),
+                "updated_at": datetime.now(timezone.utc),
+            },
+            "$unset": {"reset_code_hash": "", "reset_code_expires_at": ""},
+        },
+    )
+    logger.info("auth_reset_password_success user_id=%s", str(user_id))
+    return {"message": "Password reset successful"}
+
+
 @app.post("/auth/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, response: Response) -> TokenResponse:
     logger.info("auth_login_attempt email=%s", payload.email.lower())
@@ -1480,6 +1706,7 @@ async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardRes
     wearables = await build_longevity_wearables_response(user_id)
     metric_insights = await build_longevity_metric_insights(user_id)
     overview_payload = dict(profile.get("overview") or {})
+    masterclass_items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
     if metric_insights.get("has_metrics"):
         overview_payload.update(metric_insights.get("overview") or {})
     return LongevityDashboardResponse(
@@ -1492,7 +1719,15 @@ async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardRes
         ),
         heal_categories=[LongevityHealCategoryResponse(**item) for item in profile.get("heal_categories") or []],
         weekly_plan=LongevityWeeklyPlanResponse(**profile["weekly_plan"]) if isinstance(profile.get("weekly_plan"), dict) else None,
-        masterclasses=[LongevityMasterclassResponse(**item) for item in profile.get("masterclasses") or []],
+        masterclasses=[
+            LongevityMasterclassResponse(
+                id=item["id"],
+                title=item["title"],
+                description=item["description"],
+                thumbnail=item["thumbnailUrl"],
+            )
+            for item in masterclass_items
+        ],
         circles=[LongevityCircleResponse(**item) for item in profile.get("circles") or []],
     )
 
@@ -1605,9 +1840,18 @@ async def longevity_update_habit(
 async def longevity_masterclasses(
     user: dict = Depends(_require_longevity_access_user),
 ) -> LongevityMasterclassListResponse:
-    profile = await _get_or_create_longevity_profile(user)
+    await _get_or_create_longevity_profile(user)
+    items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
     return LongevityMasterclassListResponse(
-        items=[LongevityMasterclassResponse(**item) for item in profile.get("masterclasses") or []]
+        items=[
+            LongevityMasterclassResponse(
+                id=item["id"],
+                title=item["title"],
+                description=item["description"],
+                thumbnail=item["thumbnailUrl"],
+            )
+            for item in items
+        ]
     )
 
 
@@ -1694,6 +1938,262 @@ async def admin_update_about_us(
     if not record:
         raise HTTPException(status_code=500, detail="About Us could not be saved")
     return _serialize_about_us_record(record)
+
+
+@app.get("/admin/faqs", response_model=FAQListResponse)
+async def admin_list_faqs(
+    _: dict = Depends(_require_admin_user),
+) -> FAQListResponse:
+    items = [_serialize_faq_item(item) for item in await _get_dashboard_faq_items()]
+    return FAQListResponse(items=[FAQItemResponse(**item) for item in items])
+
+
+@app.post("/admin/faqs", response_model=FAQItemResponse, status_code=status.HTTP_201_CREATED)
+async def admin_create_faq(
+    payload: FAQRequest,
+    _: dict = Depends(_require_admin_user),
+) -> FAQItemResponse:
+    items = [_serialize_faq_item(item) for item in await _get_dashboard_faq_items()]
+    faq = {
+        "id": uuid4().hex,
+        "question": payload.question.strip(),
+        "answer": payload.answer.strip(),
+    }
+    items.insert(0, faq)
+    await _replace_items_record(DASHBOARD_FAQS_KEY, items)
+    return FAQItemResponse(**faq)
+
+
+@app.patch("/admin/faqs/{faq_id}", response_model=FAQItemResponse)
+async def admin_update_faq(
+    faq_id: str,
+    payload: FAQRequest,
+    _: dict = Depends(_require_admin_user),
+) -> FAQItemResponse:
+    items = [_serialize_faq_item(item) for item in await _get_dashboard_faq_items()]
+    updated_faq: dict | None = None
+    for item in items:
+        if item["id"] == faq_id:
+            item["question"] = payload.question.strip()
+            item["answer"] = payload.answer.strip()
+            updated_faq = item
+            break
+    if not updated_faq:
+        raise HTTPException(status_code=404, detail="FAQ not found")
+
+    await _replace_items_record(DASHBOARD_FAQS_KEY, items)
+    return FAQItemResponse(**updated_faq)
+
+
+@app.delete("/admin/faqs/{faq_id}")
+async def admin_delete_faq(
+    faq_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, str]:
+    items = [_serialize_faq_item(item) for item in await _get_dashboard_faq_items()]
+    next_items = [item for item in items if item["id"] != faq_id]
+    if len(next_items) == len(items):
+        raise HTTPException(status_code=404, detail="FAQ not found")
+
+    await _replace_items_record(DASHBOARD_FAQS_KEY, next_items)
+    return {"status": "success", "message": "FAQ deleted"}
+
+
+@app.get("/admin/notifications", response_model=AdminNotificationListResponse)
+async def admin_list_notifications(
+    _: dict = Depends(_require_admin_user),
+) -> AdminNotificationListResponse:
+    items = [_serialize_admin_notification_item(item) for item in await _get_dashboard_notification_items()]
+    items.sort(key=lambda item: item["createdAt"], reverse=True)
+    return AdminNotificationListResponse(items=[AdminNotificationItem(**item) for item in items])
+
+
+@app.patch("/admin/notifications/{notification_id}", response_model=AdminNotificationItem)
+async def admin_update_notification(
+    notification_id: str,
+    payload: AdminNotificationUpdateRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminNotificationItem:
+    items = [_serialize_admin_notification_item(item) for item in await _get_dashboard_notification_items()]
+    updated_item: dict | None = None
+    for item in items:
+        if item["id"] == notification_id:
+            item["read"] = payload.read
+            updated_item = item
+            break
+    if not updated_item:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    await _replace_items_record(DASHBOARD_NOTIFICATIONS_KEY, items)
+    return AdminNotificationItem(**updated_item)
+
+
+@app.patch("/admin/notifications/actions/read-all", response_model=AdminNotificationListResponse)
+async def admin_mark_all_notifications_read(
+    _: dict = Depends(_require_admin_user),
+) -> AdminNotificationListResponse:
+    items = [_serialize_admin_notification_item(item) for item in await _get_dashboard_notification_items()]
+    for item in items:
+        item["read"] = True
+    await _replace_items_record(DASHBOARD_NOTIFICATIONS_KEY, items)
+    return AdminNotificationListResponse(items=[AdminNotificationItem(**item) for item in items])
+
+
+@app.get("/admin/subscription-plans", response_model=AdminSubscriptionPlanListResponse)
+async def admin_list_subscription_plans(
+    _: dict = Depends(_require_admin_user),
+) -> AdminSubscriptionPlanListResponse:
+    items = [_serialize_admin_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
+    return AdminSubscriptionPlanListResponse(items=[AdminSubscriptionPlanItem(**item) for item in items])
+
+
+@app.post("/admin/subscription-plans", response_model=AdminSubscriptionPlanItem, status_code=status.HTTP_201_CREATED)
+async def admin_create_subscription_plan(
+    payload: AdminSubscriptionPlanRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminSubscriptionPlanItem:
+    items = [_serialize_admin_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
+    plan = _serialize_admin_subscription_plan_item(
+        {
+            "id": uuid4().hex,
+            **payload.model_dump(),
+        }
+    )
+    items.append(plan)
+    await _replace_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, items)
+    return AdminSubscriptionPlanItem(**plan)
+
+
+@app.patch("/admin/subscription-plans/{plan_id}", response_model=AdminSubscriptionPlanItem)
+async def admin_update_subscription_plan(
+    plan_id: str,
+    payload: AdminSubscriptionPlanRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminSubscriptionPlanItem:
+    items = [_serialize_admin_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
+    updated_plan: dict | None = None
+    for index, item in enumerate(items):
+        if item["id"] == plan_id:
+            items[index] = _serialize_admin_subscription_plan_item({"id": plan_id, **payload.model_dump()})
+            updated_plan = items[index]
+            break
+    if not updated_plan:
+        raise HTTPException(status_code=404, detail="Subscription plan not found")
+
+    await _replace_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, items)
+    return AdminSubscriptionPlanItem(**updated_plan)
+
+
+@app.delete("/admin/subscription-plans/{plan_id}")
+async def admin_delete_subscription_plan(
+    plan_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, str]:
+    items = [_serialize_admin_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
+    next_items = [item for item in items if item["id"] != plan_id]
+    if len(next_items) == len(items):
+        raise HTTPException(status_code=404, detail="Subscription plan not found")
+
+    await _replace_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, next_items)
+    return {"status": "success", "message": "Subscription plan deleted"}
+
+
+@app.get("/admin/masterclasses", response_model=AdminMasterclassListResponse)
+async def admin_list_masterclasses(
+    _: dict = Depends(_require_admin_user),
+) -> AdminMasterclassListResponse:
+    items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
+    return AdminMasterclassListResponse(items=[AdminMasterclassItem(**item) for item in items])
+
+
+@app.post("/admin/masterclasses", response_model=AdminMasterclassItem, status_code=status.HTTP_201_CREATED)
+async def admin_create_masterclass(
+    payload: AdminMasterclassRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminMasterclassItem:
+    items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
+    masterclass = _serialize_admin_masterclass_item(
+        {
+            "id": uuid4().hex,
+            **payload.model_dump(),
+        }
+    )
+    items.insert(0, masterclass)
+    await _replace_items_record(DASHBOARD_MASTERCLASSES_KEY, items)
+    return AdminMasterclassItem(**masterclass)
+
+
+@app.patch("/admin/masterclasses/{masterclass_id}", response_model=AdminMasterclassItem)
+async def admin_update_masterclass(
+    masterclass_id: str,
+    payload: AdminMasterclassRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminMasterclassItem:
+    items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
+    updated_masterclass: dict | None = None
+    for index, item in enumerate(items):
+        if item["id"] == masterclass_id:
+            items[index] = _serialize_admin_masterclass_item({"id": masterclass_id, **payload.model_dump()})
+            updated_masterclass = items[index]
+            break
+    if not updated_masterclass:
+        raise HTTPException(status_code=404, detail="Masterclass not found")
+
+    await _replace_items_record(DASHBOARD_MASTERCLASSES_KEY, items)
+    return AdminMasterclassItem(**updated_masterclass)
+
+
+@app.delete("/admin/masterclasses/{masterclass_id}")
+async def admin_delete_masterclass(
+    masterclass_id: str,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, str]:
+    items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
+    next_items = [item for item in items if item["id"] != masterclass_id]
+    if len(next_items) == len(items):
+        raise HTTPException(status_code=404, detail="Masterclass not found")
+
+    await _replace_items_record(DASHBOARD_MASTERCLASSES_KEY, next_items)
+    return {"status": "success", "message": "Masterclass deleted"}
+
+
+@app.get("/admin/subscribers", response_model=AdminSubscriberListResponse)
+async def admin_list_subscribers(
+    page: int = 1,
+    limit: int = 100,
+    query: str | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> AdminSubscriberListResponse:
+    records = await users_collection.find({"is_admin": {"$ne": True}}).to_list(length=None)
+    subscribers = [
+        _serialize_admin_subscriber_record(record)
+        for record in records
+        if _build_subscription_summary(record)["tier"] != "NONE"
+    ]
+
+    normalized_query = str(query or "").strip().lower()
+    if normalized_query:
+        subscribers = [
+            item
+            for item in subscribers
+            if normalized_query in str(item["fullName"]).lower()
+            or normalized_query in str(item["email"]).lower()
+            or normalized_query in str(item["contactNumber"]).lower()
+            or normalized_query in str(item["country"]).lower()
+            or normalized_query in str(item["subscriptionTier"]).lower()
+        ]
+
+    subscribers.sort(key=lambda item: item["joinedDate"], reverse=True)
+    safe_page = max(page, 1)
+    safe_limit = max(limit, 1)
+    start = (safe_page - 1) * safe_limit
+    paged = subscribers[start:start + safe_limit]
+    return AdminSubscriberListResponse(
+        total=len(subscribers),
+        page=safe_page,
+        limit=safe_limit,
+        users=[AdminSubscriberItem(**item) for item in paged],
+    )
 
 
 @app.post("/applications", response_model=CoachingApplicationResponse, status_code=status.HTTP_201_CREATED)
@@ -4763,9 +5263,8 @@ def _build_inline_image_data_url(image_base64: str, mime_type: str) -> str:
 
 
 def _build_local_media_url(relative_path: str) -> str:
-    normalized_base = settings.api_url.rstrip("/")
     normalized_path = "/" + str(relative_path or "").lstrip("/")
-    return f"{normalized_base}{normalized_path}"
+    return normalized_path
 
 
 def _store_image_locally(
@@ -4943,6 +5442,143 @@ async def _ensure_about_us_record() -> dict:
         default_title=DEFAULT_ABOUT_US_TITLE,
         default_html_content=DEFAULT_ABOUT_US_HTML,
     )
+
+
+async def _ensure_items_record(key: str, default_items: list[dict]) -> dict:
+    projection = {"_id": 0, "key": 1, "items": 1, "created_at": 1, "updated_at": 1}
+    record = await app_content_collection.find_one({"key": key}, projection=projection)
+    if record and isinstance(record.get("items"), list):
+        return record
+
+    now = datetime.now(timezone.utc)
+    document = {
+        "key": key,
+        "items": [dict(item) for item in default_items],
+        "created_at": now,
+        "updated_at": now,
+    }
+    await app_content_collection.update_one(
+        {"key": key},
+        {"$setOnInsert": document},
+        upsert=True,
+    )
+    saved = await app_content_collection.find_one({"key": key}, projection=projection)
+    return saved or document
+
+
+async def _replace_items_record(key: str, items: list[dict]) -> dict:
+    now = datetime.now(timezone.utc)
+    await app_content_collection.update_one(
+        {"key": key},
+        {
+            "$set": {
+                "key": key,
+                "items": [dict(item) for item in items],
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+    return await _ensure_items_record(key, items)
+
+
+async def _get_dashboard_faq_items() -> list[dict]:
+    record = await _ensure_items_record(DASHBOARD_FAQS_KEY, DEFAULT_DASHBOARD_FAQS)
+    return [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
+
+
+async def _get_dashboard_notification_items() -> list[dict]:
+    record = await _ensure_items_record(DASHBOARD_NOTIFICATIONS_KEY, DEFAULT_DASHBOARD_NOTIFICATIONS)
+    return [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
+
+
+async def _get_dashboard_subscription_plan_items() -> list[dict]:
+    record = await _ensure_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS)
+    return [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
+
+
+async def _get_dashboard_masterclass_items() -> list[dict]:
+    record = await _ensure_items_record(DASHBOARD_MASTERCLASSES_KEY, DEFAULT_DASHBOARD_MASTERCLASSES)
+    return [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
+
+
+def _serialize_faq_item(item: dict) -> dict:
+    return {
+        "id": str(item.get("id") or uuid4().hex),
+        "question": str(item.get("question") or "").strip(),
+        "answer": str(item.get("answer") or "").strip(),
+    }
+
+
+def _serialize_admin_notification_item(item: dict) -> dict:
+    created_at = item.get("createdAt") or item.get("created_at") or datetime.now(timezone.utc)
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            created_at = datetime.now(timezone.utc)
+    return {
+        "id": str(item.get("id") or uuid4().hex),
+        "title": str(item.get("title") or "").strip(),
+        "message": str(item.get("message") or "").strip(),
+        "read": bool(item.get("read", False)),
+        "createdAt": _as_utc(created_at),
+    }
+
+
+def _serialize_admin_subscription_plan_item(item: dict) -> dict:
+    return {
+        "id": str(item.get("id") or uuid4().hex),
+        "tier": str(item.get("tier") or "").strip(),
+        "description": str(item.get("description") or "").strip(),
+        "priceMonthly": item.get("priceMonthly"),
+        "priceYearly": item.get("priceYearly"),
+        "isApplicationOnly": bool(item.get("isApplicationOnly", False)),
+        "isMostPopular": bool(item.get("isMostPopular", False)),
+        "iconType": str(item.get("iconType") or "").strip(),
+        "features": [
+            str(feature).strip()
+            for feature in item.get("features") or []
+            if str(feature).strip()
+        ],
+    }
+
+
+def _serialize_admin_masterclass_item(item: dict) -> dict:
+    thumbnail_url = str(item.get("thumbnailUrl") or item.get("thumbnail") or "").strip()
+    return {
+        "id": str(item.get("id") or uuid4().hex),
+        "title": str(item.get("title") or "").strip(),
+        "category": str(item.get("category") or "").strip(),
+        "duration": str(item.get("duration") or "").strip(),
+        "description": str(item.get("description") or "").strip(),
+        "videoUrl": str(item.get("videoUrl") or "").strip(),
+        "audioUrl": str(item.get("audioUrl") or "").strip(),
+        "educationalContent": str(item.get("educationalContent") or "").strip(),
+        "thumbnailUrl": thumbnail_url,
+    }
+
+
+def _serialize_admin_subscriber_record(record: dict) -> dict:
+    subscription = _build_subscription_summary(record)
+    return {
+        "id": str(record.get("_id")),
+        "fullName": str(record.get("name") or "").strip() or "Unnamed User",
+        "email": str(record.get("email") or "").strip(),
+        "subscriptionTier": subscription["tier"],
+        "contactNumber": str(record.get("contact_number") or "").strip(),
+        "country": str(record.get("country") or "").strip(),
+        "status": subscription["status"],
+        "joinedDate": _as_utc(record.get("created_at") or datetime.now(timezone.utc)),
+        "profileImage": str(record.get("profile_image") or "").strip(),
+        "subscriptionRole": subscription["role"],
+        "subscriptionBillingCycle": subscription["billing_cycle"],
+        "subscriptionStartedAt": _as_utc(subscription["started_at"]) if isinstance(subscription.get("started_at"), datetime) else None,
+        "subscriptionConfirmedAt": _as_utc(subscription["confirmed_at"]) if isinstance(subscription.get("confirmed_at"), datetime) else None,
+        "subscriptionIsPurchased": bool(subscription["is_purchased"]),
+        "subscriptionAccess": list(subscription["access"] or []),
+    }
 
 
 def _serialize_privacy_policy_record(record: dict) -> PrivacyPolicyResponse:
@@ -5586,10 +6222,7 @@ async def _seed_admin_user() -> None:
 
 
 def _get_vimeo_status() -> str:
-    env_path = Path(__file__).resolve().parents[1] / ".env"
-    env_values = dotenv_values(env_path)
-    token = str(env_values.get("VIMEO_ACCESS_TOKEN") or "").strip()
-    return "CONFIGURED" if token else "MISSING"
+    return "CONFIGURED" if settings.vimeo_access_token else "MISSING"
 
 
 def _normalize_admin_user_status(record: dict) -> str:
