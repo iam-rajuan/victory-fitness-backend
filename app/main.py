@@ -11,7 +11,7 @@ from calendar import month_abbr
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import perf_counter
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
 from bson import ObjectId
@@ -2438,11 +2438,19 @@ async def create_community_post(
     user: dict = Depends(_require_community_access_user),
 ) -> CommunityPostResponse:
     content = str(payload.content or "").strip()
-    if not content and not payload.image_base64:
-        raise HTTPException(status_code=400, detail="Post content or image is required.")
+    external_video_url = ""
+    if payload.external_video_url:
+        try:
+            external_video_url = _normalize_external_video_url(payload.external_video_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not content and not payload.image_base64 and not payload.video_base64 and not external_video_url:
+        raise HTTPException(status_code=400, detail="Post content, image, video, or supported video link is required.")
 
     now = datetime.now(timezone.utc)
     image_url = ""
+    video_url = ""
     if payload.image_base64:
         try:
             image_url = _upload_community_image_to_s3(
@@ -2455,12 +2463,27 @@ async def create_community_post(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
+    elif payload.video_base64:
+        try:
+            video_url = _upload_community_video_to_s3(
+                str(user["_id"]),
+                payload.video_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
+    elif external_video_url:
+        video_url = external_video_url
     document = {
         "_id": ObjectId(),
         "author_id": str(user["_id"]),
         "audience": _get_community_post_audience_for_user(user),
         "content": content,
         "image_url": image_url,
+        "video_url": video_url,
         "like_count": 0,
         "comment_count": 0,
         "created_at": now,
@@ -2595,8 +2618,16 @@ async def admin_create_community_post(
     payload: AdminCommunityPostCreateRequest,
     admin_user: dict = Depends(_require_admin_user),
 ) -> CommunityPostResponse:
+    external_video_url = ""
+    if payload.external_video_url:
+        try:
+            external_video_url = _normalize_external_video_url(payload.external_video_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     now = datetime.now(timezone.utc)
     image_url = ""
+    video_url = ""
     if payload.image_base64:
         try:
             image_url = _upload_community_image_to_s3(
@@ -2609,12 +2640,27 @@ async def admin_create_community_post(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
+    elif payload.video_base64:
+        try:
+            video_url = _upload_community_video_to_s3(
+                str(admin_user["_id"]),
+                payload.video_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
+    elif external_video_url:
+        video_url = external_video_url
     document = {
         "_id": ObjectId(),
         "author_id": str(admin_user["_id"]),
         "audience": payload.audience.strip(),
         "content": payload.content.strip(),
         "image_url": image_url,
+        "video_url": video_url,
         "like_count": 0,
         "comment_count": 0,
         "created_at": now,
@@ -2641,12 +2687,23 @@ async def admin_update_community_post(
         raise HTTPException(status_code=404, detail="Community post not found")
 
     update_doc: dict = {"updated_at": datetime.now(timezone.utc)}
+    external_video_url = None
+    if payload.external_video_url is not None:
+        external_raw = str(payload.external_video_url or "").strip()
+        if external_raw:
+            try:
+                external_video_url = _normalize_external_video_url(external_raw)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        else:
+            external_video_url = ""
     if payload.content is not None:
         update_doc["content"] = payload.content.strip()
     if payload.audience is not None:
         update_doc["audience"] = payload.audience.strip()
-    if payload.clear_image:
+    if payload.clear_image or payload.clear_media:
         update_doc["image_url"] = ""
+        update_doc["video_url"] = ""
     elif payload.image_base64:
         try:
             update_doc["image_url"] = _upload_community_image_to_s3(
@@ -2655,10 +2712,28 @@ async def admin_update_community_post(
                 payload.mime_type,
                 payload.file_name,
             )
+            update_doc["video_url"] = ""
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
+    elif payload.video_base64:
+        try:
+            update_doc["video_url"] = _upload_community_video_to_s3(
+                str(existing_record.get("author_id") or ""),
+                payload.video_base64,
+                payload.mime_type,
+                payload.file_name,
+            )
+            update_doc["image_url"] = ""
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
+    elif external_video_url is not None:
+        update_doc["video_url"] = external_video_url
+        if external_video_url:
+            update_doc["image_url"] = ""
 
     await community_posts_collection.update_one({"_id": object_id}, {"$set": update_doc})
     updated_record = await community_posts_collection.find_one({"_id": object_id})
@@ -5339,6 +5414,15 @@ def _upload_community_image_to_s3(
     return _upload_image_to_s3("community-images", user_id, image_base64, mime_type, file_name)
 
 
+def _upload_community_video_to_s3(
+    user_id: str,
+    video_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_video_to_s3("community-videos", user_id, video_base64, mime_type, file_name)
+
+
 def _upload_challenge_thumbnail_to_s3(
     user_id: str,
     image_base64: str,
@@ -5367,7 +5451,7 @@ def _build_local_media_url(relative_path: str) -> str:
     return normalized_path
 
 
-def _store_image_locally(
+def _store_binary_locally(
     folder_name: str,
     user_id: str,
     payload: bytes,
@@ -5389,34 +5473,34 @@ def _store_image_locally(
     return _build_local_media_url((Path("media") / relative_dir / object_name).as_posix())
 
 
-def _upload_image_to_s3(
+def _upload_binary_to_s3(
     folder_name: str,
     user_id: str,
-    image_base64: str,
+    payload_base64: str,
     mime_type: str,
     file_name: str | None,
+    *,
+    allowed_types: dict[str, str],
+    invalid_type_message: str,
+    invalid_payload_message: str,
+    max_size_bytes: int,
+    upload_log_label: str,
 ) -> str:
-    normalized_mime = str(mime_type or "image/jpeg").strip().lower()
-    allowed_types = {
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-    }
+    normalized_mime = str(mime_type or "").strip().lower()
     extension = allowed_types.get(normalized_mime)
     if extension is None:
-        raise ValueError("Only JPEG, PNG, and WEBP profile images are supported")
+        raise ValueError(invalid_type_message)
 
     try:
-        payload = base64.b64decode(image_base64, validate=True)
+        payload = base64.b64decode(payload_base64, validate=True)
     except Exception as exc:  # noqa: BLE001
-        raise ValueError("Profile image payload is not valid base64") from exc
+        raise ValueError(invalid_payload_message) from exc
 
-    if len(payload) > 10 * 1024 * 1024:
-        raise ValueError("Profile image must be 10MB or smaller")
+    if len(payload) > max_size_bytes:
+        raise ValueError(f"{upload_log_label.capitalize()} must be {max_size_bytes // (1024 * 1024)}MB or smaller")
 
     if not s3_archive_enabled():
-        return _store_image_locally(folder_name, user_id, payload, extension, file_name)
+        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
 
     sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
     suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
@@ -5431,8 +5515,8 @@ def _upload_image_to_s3(
     try:
         import boto3
     except ImportError as exc:
-        logger.warning("boto3_missing_for_image_upload folder=%s user_id=%s", folder_name, user_id)
-        return _store_image_locally(folder_name, user_id, payload, extension, file_name)
+        logger.warning("boto3_missing_for_%s_upload folder=%s user_id=%s", upload_log_label, folder_name, user_id)
+        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
 
     client = boto3.client(
         "s3",
@@ -5450,14 +5534,66 @@ def _upload_image_to_s3(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "s3_image_upload_failed folder=%s user_id=%s error=%s",
+            "s3_%s_upload_failed folder=%s user_id=%s error=%s",
+            upload_log_label,
             folder_name,
             user_id,
             exc,
         )
-        return _store_image_locally(folder_name, user_id, payload, extension, file_name)
+        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
 
     return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
+
+
+def _upload_image_to_s3(
+    folder_name: str,
+    user_id: str,
+    image_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_binary_to_s3(
+        folder_name,
+        user_id,
+        image_base64,
+        mime_type,
+        file_name,
+        allowed_types={
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        },
+        invalid_type_message="Only JPEG, PNG, and WEBP images are supported",
+        invalid_payload_message="Image payload is not valid base64",
+        max_size_bytes=10 * 1024 * 1024,
+        upload_log_label="image",
+    )
+
+
+def _upload_video_to_s3(
+    folder_name: str,
+    user_id: str,
+    video_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_binary_to_s3(
+        folder_name,
+        user_id,
+        video_base64,
+        mime_type,
+        file_name,
+        allowed_types={
+            "video/mp4": ".mp4",
+            "video/quicktime": ".mov",
+            "video/webm": ".webm",
+        },
+        invalid_type_message="Only MP4, MOV, and WEBM videos are supported",
+        invalid_payload_message="Video payload is not valid base64",
+        max_size_bytes=25 * 1024 * 1024,
+        upload_log_label="video",
+    )
 
 
 def _delete_image_from_s3(image_url: str | None) -> None:
@@ -5504,6 +5640,51 @@ def _delete_image_from_s3(image_url: str | None) -> None:
         client.delete_object(Bucket=settings.aws_s3_bucket, Key=object_key)
     except Exception as exc:  # noqa: BLE001
         logger.warning("s3_image_delete_failed image_url=%s error=%s", normalized_url, exc)
+
+
+def _normalize_external_video_url(video_url: str) -> str:
+    normalized_url = str(video_url or "").strip()
+    if not normalized_url:
+        raise ValueError("Video link is empty")
+
+    parsed = urlparse(normalized_url)
+    scheme = parsed.scheme.lower().strip()
+    host = parsed.netloc.lower().strip()
+    path = parsed.path.strip()
+    if scheme not in {"http", "https"} or not host:
+        raise ValueError("Only valid YouTube and Vimeo links are supported")
+
+    if host == "youtu.be":
+        video_id = path.strip("/").split("/", 1)[0]
+        if re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id or ""):
+            return f"https://www.youtube.com/embed/{video_id}?playsinline=1&rel=0"
+        raise ValueError("That YouTube link is not valid")
+
+    if host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
+        if path.startswith("/embed/"):
+            video_id = path.split("/embed/", 1)[1].split("/", 1)[0]
+        elif path.startswith("/shorts/"):
+            video_id = path.split("/shorts/", 1)[1].split("/", 1)[0]
+        else:
+            video_id = parse_qs(parsed.query).get("v", [""])[0]
+        if re.fullmatch(r"[A-Za-z0-9_-]{6,20}", video_id or ""):
+            return f"https://www.youtube.com/embed/{video_id}?playsinline=1&rel=0"
+        raise ValueError("That YouTube link is not valid")
+
+    if host == "player.vimeo.com" and path.startswith("/video/"):
+        video_id = path.split("/video/", 1)[1].split("/", 1)[0]
+        if video_id.isdigit():
+            return f"https://player.vimeo.com/video/{video_id}?playsinline=1&title=0&byline=0&portrait=0&dnt=1"
+        raise ValueError("That Vimeo link is not valid")
+
+    if host in {"vimeo.com", "www.vimeo.com"}:
+        match = re.search(r"/(\d+)(?:$|[/?#])", path + "/")
+        if match:
+            video_id = match.group(1)
+            return f"https://player.vimeo.com/video/{video_id}?playsinline=1&title=0&byline=0&portrait=0&dnt=1"
+        raise ValueError("That Vimeo link is not valid")
+
+    raise ValueError("Only YouTube and Vimeo links are supported")
 
 
 def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[dict], payload_data: dict) -> dict:
@@ -5890,6 +6071,7 @@ def _serialize_community_post_record(record: dict, author_record: dict | None = 
         "audience": str(record.get("audience") or "ALL"),
         "content": str(record.get("content") or ""),
         "image_url": str(record.get("image_url") or ""),
+        "video_url": str(record.get("video_url") or ""),
         "like_count": int(record.get("like_count") or 0),
         "comment_count": int(record.get("comment_count") or 0),
         "viewer_has_liked": False,

@@ -500,6 +500,7 @@ class CommunityPostResponse(BaseModel):
     audience: str = "ALL"
     content: str
     image_url: str = ""
+    video_url: str = ""
     like_count: int = 0
     comment_count: int = 0
     viewer_has_liked: bool = False
@@ -517,6 +518,8 @@ class CommunityPostListResponse(BaseModel):
 class CommunityPostCreateRequest(BaseModel):
     content: str | None = Field(default=None, max_length=5000)
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    external_video_url: str | None = Field(default=None, max_length=2000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
 
@@ -841,6 +844,8 @@ class AdminCommunityPostCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=5000)
     audience: str = Field(default="ALL", pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    external_video_url: str | None = Field(default=None, max_length=2000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
 
@@ -849,9 +854,12 @@ class AdminCommunityPostUpdateRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=5000)
     audience: str | None = Field(default=None, pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    external_video_url: str | None = Field(default=None, max_length=2000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
     clear_image: bool = False
+    clear_media: bool = False
 
 
 class UserOut(BaseModel):
