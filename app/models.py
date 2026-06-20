@@ -1317,6 +1317,18 @@ class AdminWorkoutRequest(BaseModel):
     file_name: str | None = Field(default=None, max_length=255)
 
 
+class AdminDirectUploadRequest(BaseModel):
+    uploadType: str = Field(pattern=r"^(WORKOUT_VIDEO)$")
+    contentType: str = Field(min_length=1, max_length=120)
+    fileName: str | None = Field(default=None, max_length=255)
+
+
+class AdminDirectUploadResponse(BaseModel):
+    uploadUrl: str
+    fileUrl: str
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
 class AdminWorkoutSyncResponse(BaseModel):
     status: str = "success"
     message: str

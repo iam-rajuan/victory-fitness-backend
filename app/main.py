@@ -59,6 +59,8 @@ from .models import (
     AdminChallengeListResponse,
     AdminChallengePlanGenerateRequest,
     AdminChallengePlanGenerateResponse,
+    AdminDirectUploadRequest,
+    AdminDirectUploadResponse,
     AdminSupportMessageUpdateRequest,
     AdminChallengeRequest,
     AdminProfileResponse,
@@ -4428,6 +4430,32 @@ async def admin_list_workouts(
     )
 
 
+@app.post("/admin/uploads/presign", response_model=AdminDirectUploadResponse)
+async def admin_create_direct_upload(
+    payload: AdminDirectUploadRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> AdminDirectUploadResponse:
+    if payload.uploadType != "WORKOUT_VIDEO":
+        raise HTTPException(status_code=400, detail="Unsupported upload type")
+
+    try:
+        return _create_presigned_media_upload(
+            "workout-videos",
+            str(admin_user["_id"]),
+            payload.contentType,
+            payload.fileName,
+            allowed_types={
+                "video/mp4": ".mp4",
+                "video/quicktime": ".mov",
+                "video/webm": ".webm",
+            },
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Direct upload initialization failed: {exc}") from exc
+
+
 @app.post("/admin/workouts", response_model=AdminWorkoutItem, status_code=status.HTTP_201_CREATED)
 async def admin_create_workout(
     payload: AdminWorkoutRequest,
@@ -5644,6 +5672,24 @@ def _store_binary_locally(
     return _build_local_media_url((Path("media") / relative_dir / object_name).as_posix())
 
 
+def _build_storage_object_key(
+    folder_name: str,
+    user_id: str,
+    extension: str,
+    file_name: str | None,
+) -> tuple[str, str]:
+    sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
+    suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
+    if suffix and not extension.endswith(suffix):
+        sanitized_file_name = ""
+
+    object_name = sanitized_file_name or f"{uuid4().hex}{extension}"
+    normalized_owner = re.sub(r"[^a-zA-Z0-9_-]", "-", str(user_id or "anonymous")).strip("-") or "anonymous"
+    key_prefix = f"{settings.aws_s3_prefix}/{folder_name}/{normalized_owner}".strip("/")
+    object_key = f"{key_prefix}/{object_name}"
+    return object_key, object_name
+
+
 def _store_media_bytes_to_storage(
     folder_name: str,
     user_id: str,
@@ -5654,15 +5700,7 @@ def _store_media_bytes_to_storage(
     content_type: str,
     upload_log_label: str,
 ) -> str:
-    sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
-    suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
-    if suffix and not extension.endswith(suffix):
-        sanitized_file_name = ""
-
-    object_name = sanitized_file_name or f"{uuid4().hex}{extension}"
-    normalized_owner = re.sub(r"[^a-zA-Z0-9_-]", "-", str(user_id or "anonymous")).strip("-") or "anonymous"
-    key_prefix = f"{settings.aws_s3_prefix}/{folder_name}/{normalized_owner}".strip("/")
-    object_key = f"{key_prefix}/{object_name}"
+    object_key, _ = _build_storage_object_key(folder_name, user_id, extension, file_name)
 
     if not s3_archive_enabled():
         return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
@@ -5817,6 +5855,55 @@ def _upload_audio_to_s3(
         invalid_payload_message="Audio payload is not valid base64",
         max_size_bytes=25 * 1024 * 1024,
         upload_log_label="audio",
+    )
+
+
+def _create_presigned_media_upload(
+    folder_name: str,
+    user_id: str,
+    mime_type: str,
+    file_name: str | None,
+    *,
+    allowed_types: dict[str, str],
+) -> AdminDirectUploadResponse:
+    normalized_mime = str(mime_type or "").strip().lower()
+    extension = allowed_types.get(normalized_mime)
+    if extension is None:
+        raise ValueError("Only MP4, MOV, and WEBM videos are supported")
+
+    if not s3_archive_enabled():
+        raise ValueError("Direct upload is not available because S3 storage is not configured")
+
+    try:
+        import boto3
+    except ImportError as exc:
+        raise ValueError("Direct upload is not available because boto3 is not installed") from exc
+
+    object_key, _ = _build_storage_object_key(folder_name, user_id, extension, file_name)
+    file_url = f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
+
+    client = boto3.client(
+        "s3",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
+    upload_url = client.generate_presigned_url(
+        "put_object",
+        Params={
+            "Bucket": settings.aws_s3_bucket,
+            "Key": object_key,
+            "ContentType": normalized_mime,
+            "CacheControl": "public, max-age=31536000",
+        },
+        ExpiresIn=900,
+        HttpMethod="PUT",
+    )
+
+    return AdminDirectUploadResponse(
+        uploadUrl=upload_url,
+        fileUrl=file_url,
+        headers={"Content-Type": normalized_mime, "Cache-Control": "public, max-age=31536000"},
     )
 
 
