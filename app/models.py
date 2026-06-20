@@ -108,6 +108,7 @@ class UpdateSubscriptionRequest(BaseModel):
     subscription_tier: str = Field(pattern=r"^(NONE|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
     billing_cycle: str = Field(default="yearly", pattern=r"^(monthly|yearly)$")
     confirm_payment: bool = True
+    plan_id: str | None = Field(default=None, max_length=120)
 
 
 class ProfileImageUploadRequest(BaseModel):
@@ -1098,6 +1099,9 @@ class AdminSubscriptionPlanItem(BaseModel):
     description: str = ""
     priceMonthly: int | None = Field(default=None, ge=0)
     priceYearly: int | None = Field(default=None, ge=0)
+    discountPercentage: int | None = Field(default=None, ge=0, le=100)
+    discountStartDate: datetime | None = None
+    discountEndDate: datetime | None = None
     isApplicationOnly: bool = False
     isMostPopular: bool = False
     iconType: str = ""
@@ -1113,10 +1117,45 @@ class AdminSubscriptionPlanRequest(BaseModel):
     description: str = Field(min_length=1, max_length=1000)
     priceMonthly: int | None = Field(default=None, ge=0)
     priceYearly: int | None = Field(default=None, ge=0)
+    discountPercentage: int | None = Field(default=None, ge=0, le=100)
+    discountStartDate: datetime | None = None
+    discountEndDate: datetime | None = None
     isApplicationOnly: bool = False
     isMostPopular: bool = False
     iconType: str = Field(default="", max_length=80)
     features: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_discount_window(self):
+        if self.discountStartDate and self.discountEndDate and self.discountEndDate < self.discountStartDate:
+            raise ValueError("discountEndDate must be after discountStartDate")
+        if self.isApplicationOnly:
+            self.priceMonthly = None
+            self.priceYearly = None
+        return self
+
+
+class AppSubscriptionPlanItem(BaseModel):
+    id: str
+    subscriptionTier: str
+    title: str
+    description: str = ""
+    priceMonthly: int | None = Field(default=None, ge=0)
+    priceYearly: int | None = Field(default=None, ge=0)
+    discountedPriceMonthly: int | None = Field(default=None, ge=0)
+    discountedPriceYearly: int | None = Field(default=None, ge=0)
+    discountPercentage: int | None = Field(default=None, ge=0, le=100)
+    discountStartDate: datetime | None = None
+    discountEndDate: datetime | None = None
+    isDiscountActive: bool = False
+    isApplicationOnly: bool = False
+    isMostPopular: bool = False
+    iconType: str = ""
+    features: list[str] = Field(default_factory=list)
+
+
+class AppSubscriptionPlanListResponse(BaseModel):
+    items: list[AppSubscriptionPlanItem] = Field(default_factory=list)
 
 
 class AdminMasterclassItem(BaseModel):

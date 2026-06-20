@@ -107,6 +107,8 @@ from .models import (
     AdminSubscriptionPlanItem,
     AdminSubscriptionPlanListResponse,
     AdminSubscriptionPlanRequest,
+    AppSubscriptionPlanItem,
+    AppSubscriptionPlanListResponse,
     DashboardOverviewChartPoint,
     AdminUserChartPoint,
     AdminUserDetailResponse,
@@ -484,6 +486,9 @@ DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS = [
         "description": "Good start, but not enough for full transformation.",
         "priceMonthly": 19,
         "priceYearly": 199,
+        "discountPercentage": None,
+        "discountStartDate": None,
+        "discountEndDate": None,
         "isApplicationOnly": False,
         "isMostPopular": False,
         "iconType": "silver_medal",
@@ -499,6 +504,9 @@ DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS = [
         "description": "This is where real consistency starts. Structure and accountability.",
         "priceMonthly": 29,
         "priceYearly": 299,
+        "discountPercentage": None,
+        "discountStartDate": None,
+        "discountEndDate": None,
         "isApplicationOnly": False,
         "isMostPopular": True,
         "iconType": "gold_medal",
@@ -515,6 +523,9 @@ DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS = [
         "description": "For those who want more precision and faster results.",
         "priceMonthly": 39,
         "priceYearly": 399,
+        "discountPercentage": None,
+        "discountStartDate": None,
+        "discountEndDate": None,
         "isApplicationOnly": False,
         "isMostPopular": False,
         "iconType": "diamond",
@@ -531,6 +542,9 @@ DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS = [
         "description": "For those who are ready to commit. Direct coaching with Victor.",
         "priceMonthly": None,
         "priceYearly": None,
+        "discountPercentage": None,
+        "discountStartDate": None,
+        "discountEndDate": None,
         "isApplicationOnly": True,
         "isMostPopular": False,
         "iconType": "circle",
@@ -1551,7 +1565,7 @@ async def update_subscription(
     user: dict = Depends(_require_access_user),
 ) -> MeResponse:
     now = datetime.now(timezone.utc)
-    update_doc = _build_subscription_update_doc(user, payload, now)
+    update_doc = await _build_subscription_update_doc(user, payload, now)
     await users_collection.update_one({"_id": user["_id"]}, {"$set": update_doc})
     updated_user = await users_collection.find_one({"_id": user["_id"]})
     if not updated_user:
@@ -2121,6 +2135,12 @@ async def admin_list_subscription_plans(
 ) -> AdminSubscriptionPlanListResponse:
     items = [_serialize_admin_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
     return AdminSubscriptionPlanListResponse(items=[AdminSubscriptionPlanItem(**item) for item in items])
+
+
+@app.get("/subscription-plans", response_model=AppSubscriptionPlanListResponse)
+async def list_subscription_plans() -> AppSubscriptionPlanListResponse:
+    items = [_serialize_app_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
+    return AppSubscriptionPlanListResponse(items=[AppSubscriptionPlanItem(**item) for item in items])
 
 
 @app.post("/admin/subscription-plans", response_model=AdminSubscriptionPlanItem, status_code=status.HTTP_201_CREATED)
@@ -5612,13 +5632,80 @@ def _serialize_admin_notification_item(item: dict) -> dict:
     }
 
 
+def _coerce_optional_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return _as_utc(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return _as_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_subscription_discount_fields(item: dict) -> tuple[int | None, datetime | None, datetime | None]:
+    raw_percentage = item.get("discountPercentage")
+    percentage = None
+    try:
+        if raw_percentage is not None and str(raw_percentage).strip() != "":
+            percentage = max(0, min(int(raw_percentage), 100))
+    except (TypeError, ValueError):
+        percentage = None
+    start_date = _coerce_optional_datetime(item.get("discountStartDate") or item.get("discount_start_date"))
+    end_date = _coerce_optional_datetime(item.get("discountEndDate") or item.get("discount_end_date"))
+    if percentage is not None and percentage <= 0:
+        percentage = None
+    return percentage, start_date, end_date
+
+
+def _is_subscription_discount_active(
+    percentage: int | None,
+    start_date: datetime | None,
+    end_date: datetime | None,
+    now: datetime | None = None,
+) -> bool:
+    if percentage is None:
+        return False
+    current_time = _as_utc(now or datetime.now(timezone.utc))
+    if start_date and current_time < _as_utc(start_date):
+        return False
+    if end_date and current_time > _as_utc(end_date):
+        return False
+    return True
+
+
+def _calculate_discounted_price(price: int | None, percentage: int | None, active: bool) -> int | None:
+    if price is None:
+        return None
+    if not active or percentage is None:
+        return price
+    return max(int(round(price * (100 - percentage) / 100)), 0)
+
+
+def _normalize_subscription_plan_tier_key(value: object) -> str:
+    normalized = str(value or "").strip().upper().replace(" ", "_")
+    if "INNER" in normalized and "CIRCLE" in normalized:
+        return "INNER_CIRCLE"
+    if "PLATINUM" in normalized:
+        return "PLATINUM"
+    if "GOLD" in normalized:
+        return "GOLD"
+    if "SILVER" in normalized:
+        return "SILVER"
+    return normalized
+
+
 def _serialize_admin_subscription_plan_item(item: dict) -> dict:
+    discount_percentage, discount_start_date, discount_end_date = _normalize_subscription_discount_fields(item)
     return {
         "id": str(item.get("id") or uuid4().hex),
         "tier": str(item.get("tier") or "").strip(),
         "description": str(item.get("description") or "").strip(),
         "priceMonthly": item.get("priceMonthly"),
         "priceYearly": item.get("priceYearly"),
+        "discountPercentage": discount_percentage,
+        "discountStartDate": discount_start_date,
+        "discountEndDate": discount_end_date,
         "isApplicationOnly": bool(item.get("isApplicationOnly", False)),
         "isMostPopular": bool(item.get("isMostPopular", False)),
         "iconType": str(item.get("iconType") or "").strip(),
@@ -5627,6 +5714,36 @@ def _serialize_admin_subscription_plan_item(item: dict) -> dict:
             for feature in item.get("features") or []
             if str(feature).strip()
         ],
+    }
+
+
+def _serialize_app_subscription_plan_item(item: dict, now: datetime | None = None) -> dict:
+    normalized = _serialize_admin_subscription_plan_item(item)
+    discount_active = _is_subscription_discount_active(
+        normalized.get("discountPercentage"),
+        normalized.get("discountStartDate"),
+        normalized.get("discountEndDate"),
+        now,
+    )
+    price_monthly = normalized.get("priceMonthly")
+    price_yearly = normalized.get("priceYearly")
+    return {
+        "id": normalized["id"],
+        "subscriptionTier": _normalize_subscription_plan_tier_key(normalized["tier"]),
+        "title": normalized["tier"],
+        "description": normalized["description"],
+        "priceMonthly": price_monthly,
+        "priceYearly": price_yearly,
+        "discountedPriceMonthly": _calculate_discounted_price(price_monthly, normalized.get("discountPercentage"), discount_active),
+        "discountedPriceYearly": _calculate_discounted_price(price_yearly, normalized.get("discountPercentage"), discount_active),
+        "discountPercentage": normalized.get("discountPercentage"),
+        "discountStartDate": normalized.get("discountStartDate"),
+        "discountEndDate": normalized.get("discountEndDate"),
+        "isDiscountActive": discount_active,
+        "isApplicationOnly": normalized["isApplicationOnly"],
+        "isMostPopular": normalized["isMostPopular"],
+        "iconType": normalized["iconType"],
+        "features": normalized["features"],
     }
 
 
@@ -6438,11 +6555,64 @@ def _build_subscription_summary(record: dict) -> dict:
     }
 
 
-def _build_subscription_update_doc(existing_user: dict, payload: UpdateSubscriptionRequest, now: datetime) -> dict:
+async def _resolve_subscription_checkout_plan(
+    subscription_tier: str,
+    billing_cycle: str,
+    plan_id: str | None = None,
+) -> dict | None:
+    normalized_tier = _normalize_subscription_tier(subscription_tier)
+    if normalized_tier == "NONE":
+        return None
+
+    items = await _get_dashboard_subscription_plan_items()
+    matched: dict | None = None
+    for item in items:
+        item_id = str(item.get("id") or "")
+        item_tier = _normalize_subscription_plan_tier_key(item.get("tier"))
+        if plan_id and item_id == plan_id:
+            matched = item
+            break
+        if item_tier == normalized_tier:
+            matched = item
+            if not plan_id:
+                break
+
+    if not matched:
+        raise HTTPException(status_code=404, detail="Subscription plan not found")
+
+    matched_tier = _normalize_subscription_plan_tier_key(matched.get("tier"))
+    if matched_tier != normalized_tier:
+        raise HTTPException(status_code=400, detail="Selected plan does not match the requested subscription tier")
+
+    plan = _serialize_app_subscription_plan_item(matched)
+    if plan["isApplicationOnly"]:
+        return {
+            "plan_id": plan["id"],
+            "price": None,
+            "original_price": None,
+            "discount_percentage": plan["discountPercentage"] if plan["isDiscountActive"] else None,
+            "billing_cycle": billing_cycle,
+            "title": plan["title"],
+        }
+
+    original_price = plan["priceMonthly"] if billing_cycle == "monthly" else plan["priceYearly"]
+    final_price = plan["discountedPriceMonthly"] if billing_cycle == "monthly" else plan["discountedPriceYearly"]
+    return {
+        "plan_id": plan["id"],
+        "price": final_price,
+        "original_price": original_price,
+        "discount_percentage": plan["discountPercentage"] if plan["isDiscountActive"] else None,
+        "billing_cycle": billing_cycle,
+        "title": plan["title"],
+    }
+
+
+async def _build_subscription_update_doc(existing_user: dict, payload: UpdateSubscriptionRequest, now: datetime) -> dict:
     tier = _normalize_subscription_tier(payload.subscription_tier)
     billing_cycle = _normalize_billing_cycle(payload.billing_cycle)
     subscription_status = "ACTIVE" if payload.confirm_payment and tier != "NONE" else "NONE"
     is_purchased = bool(payload.confirm_payment and tier != "NONE")
+    checkout_plan = await _resolve_subscription_checkout_plan(tier, billing_cycle, payload.plan_id) if tier != "NONE" else None
     update_doc: dict = {
         "subscription_tier": tier,
         "subscription_role": tier,
@@ -6450,6 +6620,10 @@ def _build_subscription_update_doc(existing_user: dict, payload: UpdateSubscript
         "subscription_billing_cycle": billing_cycle,
         "subscription_is_purchased": is_purchased,
         "subscription_purchase_source": "manual_confirm" if is_purchased else "",
+        "subscription_plan_id": checkout_plan["plan_id"] if checkout_plan and is_purchased else "",
+        "subscription_price_amount": checkout_plan["price"] if checkout_plan and is_purchased else None,
+        "subscription_original_price_amount": checkout_plan["original_price"] if checkout_plan and is_purchased else None,
+        "subscription_discount_percentage": checkout_plan["discount_percentage"] if checkout_plan and is_purchased else None,
         "updated_at": now,
     }
 
@@ -6460,6 +6634,10 @@ def _build_subscription_update_doc(existing_user: dict, payload: UpdateSubscript
         update_doc["subscription_is_purchased"] = False
         update_doc["subscription_role"] = "NONE"
         update_doc["subscription_purchase_source"] = ""
+        update_doc["subscription_plan_id"] = ""
+        update_doc["subscription_price_amount"] = None
+        update_doc["subscription_original_price_amount"] = None
+        update_doc["subscription_discount_percentage"] = None
     else:
         update_doc["subscription_started_at"] = existing_user.get("subscription_started_at") or now
         update_doc["subscription_confirmed_at"] = now if subscription_status == "ACTIVE" else existing_user.get("subscription_confirmed_at")
