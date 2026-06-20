@@ -60,6 +60,21 @@ def _get_csv_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+DEFAULT_CORS_ORIGINS = [
+    "https://victory-fitness-dashboard.vercel.app",
+    "https://victory-fitness-app.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:8081",
+]
+DEFAULT_CORS_ORIGIN_REGEX = (
+    r"^https://"
+    r"(victory-fitness-dashboard|victory-fitness-app|victory-fitness-backend)"
+    r"(?:-[a-z0-9-]+)?"
+    r"-miskatul-masabis-projects\.vercel\.app$"
+)
+
+
 def _get_cors_origins() -> tuple[str, bool, list[str], str | None]:
     raw_origin = _get_str("CORS_ORIGIN", _get_str("CORS_ORIGINS", "*")) or "*"
     raw_origin_regex = _get_str("CORS_ORIGIN_REGEX")
@@ -71,7 +86,7 @@ def _get_cors_origins() -> tuple[str, bool, list[str], str | None]:
     origins = [origin.strip() for origin in raw_origin.split(",") if origin.strip()]
     allow_all = allow_all_flag or "*" in origins
     if allow_all:
-        return raw_origin, True, [], r".*"
+        return raw_origin, False, DEFAULT_CORS_ORIGINS, DEFAULT_CORS_ORIGIN_REGEX
     return raw_origin, False, origins, None
 
 
