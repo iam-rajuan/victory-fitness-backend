@@ -1789,6 +1789,7 @@ async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardRes
                 description=item["description"],
                 thumbnail=item["thumbnailUrl"],
                 videoUrl=item["videoUrl"],
+                videoSource=item["videoSource"],
                 audioUrl=item["audioUrl"],
                 category=item["category"],
                 duration=item["duration"],
@@ -1918,6 +1919,7 @@ async def longevity_masterclasses(
                 description=item["description"],
                 thumbnail=item["thumbnailUrl"],
                 videoUrl=item["videoUrl"],
+                videoSource=item["videoSource"],
                 audioUrl=item["audioUrl"],
                 category=item["category"],
                 duration=item["duration"],
@@ -2219,6 +2221,10 @@ async def admin_create_masterclass(
 ) -> AdminMasterclassItem:
     items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
     payload_data = payload.model_dump()
+    try:
+        payload_data["videoUrl"] = await _prepare_masterclass_video_payload(payload, str(admin_user["_id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload.audio_base64:
         try:
             payload_data["audioUrl"] = _upload_masterclass_audio_to_s3(
@@ -2251,6 +2257,10 @@ async def admin_update_masterclass(
     items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
     updated_masterclass: dict | None = None
     payload_data = payload.model_dump()
+    try:
+        payload_data["videoUrl"] = await _prepare_masterclass_video_payload(payload, str(admin_user["_id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload.clear_audio:
         payload_data["audioUrl"] = ""
     elif payload.audio_base64:
@@ -5493,6 +5503,15 @@ def _upload_workout_video_to_s3(
     return _upload_video_to_s3("workout-videos", user_id, video_base64, mime_type, file_name)
 
 
+def _upload_masterclass_video_to_s3(
+    user_id: str,
+    video_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_video_to_s3("masterclass-videos", user_id, video_base64, mime_type, file_name)
+
+
 def _upload_masterclass_audio_to_s3(
     user_id: str,
     audio_base64: str,
@@ -5868,6 +5887,51 @@ async def _prepare_workout_video_payload(payload: AdminWorkoutRequest, owner_key
         raise
 
 
+def _normalize_masterclass_video_url(video_source: str, raw_video_value: str) -> str:
+    normalized_source = str(video_source or "VIMEO").strip().upper() or "VIMEO"
+    normalized_video_value = str(raw_video_value or "").strip()
+
+    if normalized_source == "UPLOAD":
+        if not normalized_video_value:
+            raise ValueError("Upload a video file before saving")
+        return normalized_video_value
+
+    if not normalized_video_value:
+        if normalized_source == "YOUTUBE":
+            raise ValueError("A YouTube link is required")
+        raise ValueError("A Vimeo link is required")
+
+    normalized_url = _normalize_external_video_url(normalized_video_value)
+    if normalized_source == "YOUTUBE":
+        if "youtube.com/embed/" not in normalized_url:
+            raise ValueError("Use a valid YouTube link for YouTube masterclasses")
+        return normalized_url
+
+    if "player.vimeo.com/video/" not in normalized_url:
+        raise ValueError("Use a valid Vimeo link for Vimeo masterclasses")
+    return normalized_url
+
+
+async def _prepare_masterclass_video_payload(payload: AdminMasterclassRequest, user_id: str) -> str:
+    if payload.video_base64:
+        try:
+            return _upload_masterclass_video_to_s3(
+                user_id,
+                payload.video_base64,
+                payload.video_mime_type,
+                payload.video_file_name,
+            )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Masterclass video upload failed: {exc}") from exc
+
+    try:
+        return _normalize_masterclass_video_url(payload.videoSource, payload.videoUrl)
+    except ValueError:
+        raise
+
+
 def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[dict], payload_data: dict) -> dict:
     normalized_days = [dict(day) for day in days]
     shopping_list = _build_progressive_shopping_list(normalized_days)
@@ -6118,6 +6182,7 @@ def _serialize_admin_masterclass_item(item: dict) -> dict:
         "duration": str(item.get("duration") or "").strip(),
         "description": str(item.get("description") or "").strip(),
         "videoUrl": str(item.get("videoUrl") or "").strip(),
+        "videoSource": str(item.get("videoSource") or "VIMEO").strip().upper() or "VIMEO",
         "audioUrl": str(item.get("audioUrl") or "").strip(),
         "educationalContent": str(item.get("educationalContent") or "").strip(),
         "thumbnailUrl": thumbnail_url,

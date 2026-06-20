@@ -317,6 +317,7 @@ class LongevityMasterclassResponse(BaseModel):
     description: str = ""
     thumbnail: str = ""
     videoUrl: str = ""
+    videoSource: str = "VIMEO"
     audioUrl: str = ""
     category: str = ""
     duration: str = ""
@@ -1178,6 +1179,7 @@ class AdminMasterclassItem(BaseModel):
     duration: str = ""
     description: str = ""
     videoUrl: str = ""
+    videoSource: str = "VIMEO"
     audioUrl: str = ""
     educationalContent: str = ""
     thumbnailUrl: str = ""
@@ -1192,7 +1194,11 @@ class AdminMasterclassRequest(BaseModel):
     category: str = Field(min_length=1, max_length=120)
     duration: str = Field(min_length=1, max_length=40)
     description: str = Field(min_length=1, max_length=4000)
-    videoUrl: str = Field(min_length=1, max_length=1000)
+    videoUrl: str = Field(default="", max_length=2000)
+    videoSource: str = Field(default="VIMEO", pattern=r"^(VIMEO|YOUTUBE|UPLOAD)$")
+    video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    video_mime_type: str = Field(default="video/mp4", max_length=120)
+    video_file_name: str | None = Field(default=None, max_length=255)
     audioUrl: str = Field(default="", max_length=1000)
     audio_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
     audio_mime_type: str = Field(default="audio/mpeg", max_length=120)
