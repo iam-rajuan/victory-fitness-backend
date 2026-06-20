@@ -817,13 +817,6 @@ class AdminChallengeRequest(BaseModel):
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
 
-    @field_validator("durationDays")
-    @classmethod
-    def validate_duration_days(cls, value: int) -> int:
-        if value not in ALLOWED_CHALLENGE_DURATIONS:
-            raise ValueError("durationDays must be one of 3, 5, 7, 14, or 21")
-        return value
-
 
 class AdminChallengePlanGenerateRequest(BaseModel):
     title: str = Field(min_length=2, max_length=160)
@@ -831,13 +824,6 @@ class AdminChallengePlanGenerateRequest(BaseModel):
     category: str = Field(min_length=1, max_length=80)
     difficulty: str = Field(pattern=r"^(BEGINNER|INTERMEDIATE|ADVANCED)$")
     durationDays: int = Field(default=7, ge=1, le=365)
-
-    @field_validator("durationDays")
-    @classmethod
-    def validate_duration_days(cls, value: int) -> int:
-        if value not in ALLOWED_CHALLENGE_DURATIONS:
-            raise ValueError("durationDays must be one of 3, 5, 7, 14, or 21")
-        return value
 
 
 class AdminChallengePlanGenerateResponse(BaseModel):
