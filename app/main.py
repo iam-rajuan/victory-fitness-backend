@@ -1788,6 +1788,11 @@ async def _serialize_longevity_dashboard(profile: dict) -> LongevityDashboardRes
                 title=item["title"],
                 description=item["description"],
                 thumbnail=item["thumbnailUrl"],
+                videoUrl=item["videoUrl"],
+                audioUrl=item["audioUrl"],
+                category=item["category"],
+                duration=item["duration"],
+                educationalContent=item["educationalContent"],
             )
             for item in masterclass_items
         ],
@@ -1912,6 +1917,11 @@ async def longevity_masterclasses(
                 title=item["title"],
                 description=item["description"],
                 thumbnail=item["thumbnailUrl"],
+                videoUrl=item["videoUrl"],
+                audioUrl=item["audioUrl"],
+                category=item["category"],
+                duration=item["duration"],
+                educationalContent=item["educationalContent"],
             )
             for item in items
         ]
@@ -2205,13 +2215,26 @@ async def admin_list_masterclasses(
 @app.post("/admin/masterclasses", response_model=AdminMasterclassItem, status_code=status.HTTP_201_CREATED)
 async def admin_create_masterclass(
     payload: AdminMasterclassRequest,
-    _: dict = Depends(_require_admin_user),
+    admin_user: dict = Depends(_require_admin_user),
 ) -> AdminMasterclassItem:
     items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
+    payload_data = payload.model_dump()
+    if payload.audio_base64:
+        try:
+            payload_data["audioUrl"] = _upload_masterclass_audio_to_s3(
+                str(admin_user["_id"]),
+                payload.audio_base64,
+                payload.audio_mime_type,
+                payload.audio_file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Masterclass audio upload failed: {exc}") from exc
     masterclass = _serialize_admin_masterclass_item(
         {
             "id": uuid4().hex,
-            **payload.model_dump(),
+            **payload_data,
         }
     )
     items.insert(0, masterclass)
@@ -2223,13 +2246,28 @@ async def admin_create_masterclass(
 async def admin_update_masterclass(
     masterclass_id: str,
     payload: AdminMasterclassRequest,
-    _: dict = Depends(_require_admin_user),
+    admin_user: dict = Depends(_require_admin_user),
 ) -> AdminMasterclassItem:
     items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
     updated_masterclass: dict | None = None
+    payload_data = payload.model_dump()
+    if payload.clear_audio:
+        payload_data["audioUrl"] = ""
+    elif payload.audio_base64:
+        try:
+            payload_data["audioUrl"] = _upload_masterclass_audio_to_s3(
+                str(admin_user["_id"]),
+                payload.audio_base64,
+                payload.audio_mime_type,
+                payload.audio_file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Masterclass audio upload failed: {exc}") from exc
     for index, item in enumerate(items):
         if item["id"] == masterclass_id:
-            items[index] = _serialize_admin_masterclass_item({"id": masterclass_id, **payload.model_dump()})
+            items[index] = _serialize_admin_masterclass_item({"id": masterclass_id, **payload_data})
             updated_masterclass = items[index]
             break
     if not updated_masterclass:
@@ -5423,6 +5461,15 @@ def _upload_community_video_to_s3(
     return _upload_video_to_s3("community-videos", user_id, video_base64, mime_type, file_name)
 
 
+def _upload_masterclass_audio_to_s3(
+    user_id: str,
+    audio_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_audio_to_s3("masterclass-audio", user_id, audio_base64, mime_type, file_name)
+
+
 def _upload_challenge_thumbnail_to_s3(
     user_id: str,
     image_base64: str,
@@ -5593,6 +5640,38 @@ def _upload_video_to_s3(
         invalid_payload_message="Video payload is not valid base64",
         max_size_bytes=25 * 1024 * 1024,
         upload_log_label="video",
+    )
+
+
+def _upload_audio_to_s3(
+    folder_name: str,
+    user_id: str,
+    audio_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_binary_to_s3(
+        folder_name,
+        user_id,
+        audio_base64,
+        mime_type,
+        file_name,
+        allowed_types={
+            "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
+            "audio/mp4": ".m4a",
+            "audio/x-m4a": ".m4a",
+            "audio/wav": ".wav",
+            "audio/x-wav": ".wav",
+            "audio/wave": ".wav",
+            "audio/webm": ".webm",
+            "audio/ogg": ".ogg",
+            "application/ogg": ".ogg",
+        },
+        invalid_type_message="Only MP3, M4A, WAV, OGG, and WEBM audio files are supported",
+        invalid_payload_message="Audio payload is not valid base64",
+        max_size_bytes=25 * 1024 * 1024,
+        upload_log_label="audio",
     )
 
 

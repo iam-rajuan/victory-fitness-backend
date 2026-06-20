@@ -316,6 +316,11 @@ class LongevityMasterclassResponse(BaseModel):
     title: str
     description: str = ""
     thumbnail: str = ""
+    videoUrl: str = ""
+    audioUrl: str = ""
+    category: str = ""
+    duration: str = ""
+    educationalContent: str = ""
 
 
 class LongevityMasterclassListResponse(BaseModel):
@@ -1189,6 +1194,10 @@ class AdminMasterclassRequest(BaseModel):
     description: str = Field(min_length=1, max_length=4000)
     videoUrl: str = Field(min_length=1, max_length=1000)
     audioUrl: str = Field(default="", max_length=1000)
+    audio_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    audio_mime_type: str = Field(default="audio/mpeg", max_length=120)
+    audio_file_name: str | None = Field(default=None, max_length=255)
+    clear_audio: bool = False
     educationalContent: str = Field(default="", max_length=10000)
     thumbnailUrl: str = Field(default="", max_length=20000000)
 
