@@ -9,6 +9,8 @@ def serialize_public_workout_record(record: dict) -> dict:
         "id": str(record["_id"]),
         "title": str(record.get("title") or ""),
         "vimeoId": str(record.get("vimeo_id") or ""),
+        "videoUrl": str(record.get("video_url") or ""),
+        "videoSource": str(record.get("video_source") or "VIMEO"),
         "tag": str(record.get("tag") or "Workout"),
         "thumbnail": str(record.get("thumbnail") or ""),
         "dateAdded": created_at,

@@ -1292,7 +1292,9 @@ class AdminUserUpdateRequest(BaseModel):
 class AdminWorkoutItem(BaseModel):
     id: str
     title: str
-    vimeoId: str
+    vimeoId: str = ""
+    videoUrl: str = ""
+    videoSource: str = "VIMEO"
     tag: str
     visibility: str
     thumbnail: str
@@ -1307,12 +1309,17 @@ class AdminWorkoutListResponse(BaseModel):
 
 class AdminWorkoutRequest(BaseModel):
     title: str = Field(min_length=2, max_length=160)
-    vimeoId: str = Field(min_length=1, max_length=80)
+    vimeoId: str = Field(default="", max_length=80)
+    videoUrl: str = Field(default="", max_length=2000)
+    videoSource: str = Field(default="VIMEO", pattern=r"^(VIMEO|YOUTUBE|UPLOAD)$")
     tag: str = Field(min_length=1, max_length=80)
     visibility: str = Field(pattern=r"^(Published|Draft)$")
     thumbnail: str | None = Field(default=None, max_length=500)
+    video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    video_mime_type: str = Field(default="video/mp4", max_length=120)
     mime_type: str = Field(default="image/jpeg", max_length=120)
+    video_file_name: str | None = Field(default=None, max_length=255)
     file_name: str | None = Field(default=None, max_length=255)
 
 
@@ -1325,7 +1332,9 @@ class AdminWorkoutSyncResponse(BaseModel):
 class WorkoutLibraryItem(BaseModel):
     id: str
     title: str
-    vimeoId: str
+    vimeoId: str = ""
+    videoUrl: str = ""
+    videoSource: str = "VIMEO"
     tag: str
     thumbnail: str
     dateAdded: datetime

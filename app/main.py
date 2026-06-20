@@ -4329,6 +4329,8 @@ async def admin_list_workouts(
             {"title": {"$regex": escaped, "$options": "i"}},
             {"tag": {"$regex": escaped, "$options": "i"}},
             {"vimeo_id": {"$regex": escaped, "$options": "i"}},
+            {"video_url": {"$regex": escaped, "$options": "i"}},
+            {"video_source": {"$regex": escaped, "$options": "i"}},
             {"visibility": {"$regex": escaped, "$options": "i"}},
         ]
 
@@ -4346,14 +4348,24 @@ async def admin_list_workouts(
 @app.post("/admin/workouts", response_model=AdminWorkoutItem, status_code=status.HTTP_201_CREATED)
 async def admin_create_workout(
     payload: AdminWorkoutRequest,
-    _: dict = Depends(_require_admin_user),
+    admin_user: dict = Depends(_require_admin_user),
 ) -> AdminWorkoutItem:
     now = datetime.now(timezone.utc)
-    vimeo_id = payload.vimeoId.strip()
+    video_source = str(payload.videoSource or "VIMEO").strip().upper() or "VIMEO"
+    try:
+        video_url, vimeo_id = await _prepare_workout_video_payload(payload, f"workout-{uuid4().hex}", str(admin_user["_id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    existing_workout = await workouts_collection.find_one({"vimeo_id": vimeo_id})
+    if not video_url:
+        raise HTTPException(status_code=400, detail="A workout video is required")
+
+    existing_filter = {"video_url": video_url}
+    if vimeo_id:
+        existing_filter = {"$or": [{"video_url": video_url}, {"vimeo_id": vimeo_id}]}
+    existing_workout = await workouts_collection.find_one(existing_filter)
     if existing_workout:
-        raise HTTPException(status_code=409, detail="A workout with this Vimeo ID already exists")
+        raise HTTPException(status_code=409, detail="A workout with this video already exists")
 
     thumbnail = (payload.thumbnail or "").strip()
     if payload.image_base64:
@@ -4371,6 +4383,8 @@ async def admin_create_workout(
     document = {
         "title": payload.title.strip(),
         "vimeo_id": vimeo_id,
+        "video_url": video_url,
+        "video_source": video_source,
         "tag": payload.tag.strip(),
         "visibility": payload.visibility,
         "thumbnail": thumbnail,
@@ -4386,7 +4400,7 @@ async def admin_create_workout(
 async def admin_update_workout(
     workout_id: str,
     payload: AdminWorkoutRequest,
-    _: dict = Depends(_require_admin_user),
+    admin_user: dict = Depends(_require_admin_user),
 ) -> AdminWorkoutItem:
     try:
         object_id = ObjectId(workout_id)
@@ -4397,10 +4411,17 @@ async def admin_update_workout(
     if not existing_workout:
         raise HTTPException(status_code=404, detail="Workout not found")
 
-    vimeo_id = payload.vimeoId.strip()
-    duplicate_workout = await workouts_collection.find_one({"vimeo_id": vimeo_id, "_id": {"$ne": object_id}})
+    video_source = str(payload.videoSource or "VIMEO").strip().upper() or "VIMEO"
+    try:
+        video_url, vimeo_id = await _prepare_workout_video_payload(payload, f"workout-{object_id}", str(admin_user["_id"]))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    duplicate_filter = {"video_url": video_url, "_id": {"$ne": object_id}}
+    if vimeo_id:
+        duplicate_filter = {"$or": [{"video_url": video_url, "_id": {"$ne": object_id}}, {"vimeo_id": vimeo_id, "_id": {"$ne": object_id}}]}
+    duplicate_workout = await workouts_collection.find_one(duplicate_filter)
     if duplicate_workout:
-        raise HTTPException(status_code=409, detail="A workout with this Vimeo ID already exists")
+        raise HTTPException(status_code=409, detail="A workout with this video already exists")
 
     previous_thumbnail = str(existing_workout.get("thumbnail") or "").strip()
     thumbnail = (payload.thumbnail or "").strip()
@@ -4421,6 +4442,8 @@ async def admin_update_workout(
     update_doc = {
         "title": payload.title.strip(),
         "vimeo_id": vimeo_id,
+        "video_url": video_url,
+        "video_source": video_source,
         "tag": payload.tag.strip(),
         "visibility": payload.visibility,
         "thumbnail": thumbnail,
@@ -5461,6 +5484,15 @@ def _upload_community_video_to_s3(
     return _upload_video_to_s3("community-videos", user_id, video_base64, mime_type, file_name)
 
 
+def _upload_workout_video_to_s3(
+    user_id: str,
+    video_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_video_to_s3("workout-videos", user_id, video_base64, mime_type, file_name)
+
+
 def _upload_masterclass_audio_to_s3(
     user_id: str,
     audio_base64: str,
@@ -5764,6 +5796,76 @@ def _normalize_external_video_url(video_url: str) -> str:
         raise ValueError("That Vimeo link is not valid")
 
     raise ValueError("Only YouTube and Vimeo links are supported")
+
+
+def _extract_vimeo_id_from_url(video_url: str) -> str:
+    normalized_url = str(video_url or "").strip()
+    if not normalized_url:
+        return ""
+
+    parsed = urlparse(normalized_url)
+    host = parsed.netloc.lower().strip()
+    path = parsed.path.strip()
+
+    if host == "player.vimeo.com" and path.startswith("/video/"):
+        video_id = path.split("/video/", 1)[1].split("/", 1)[0]
+        return video_id if video_id.isdigit() else ""
+
+    if host in {"vimeo.com", "www.vimeo.com"}:
+        match = re.search(r"/(\d+)(?:$|[/?#])", path + "/")
+        return match.group(1) if match else ""
+
+    return ""
+
+
+def _normalize_workout_video_url(video_source: str, raw_video_value: str, raw_vimeo_id: str) -> tuple[str, str]:
+    normalized_source = str(video_source or "VIMEO").strip().upper() or "VIMEO"
+    normalized_video_value = str(raw_video_value or "").strip()
+    normalized_vimeo_id = str(raw_vimeo_id or "").strip()
+
+    if normalized_source == "UPLOAD":
+        return normalized_video_value, ""
+
+    if normalized_source == "YOUTUBE":
+        normalized_url = _normalize_external_video_url(normalized_video_value)
+        if "youtube.com/embed/" not in normalized_url:
+            raise ValueError("Use a valid YouTube link for YouTube workouts")
+        return normalized_url, ""
+
+    if normalized_vimeo_id:
+        if not normalized_vimeo_id.isdigit():
+            raise ValueError("Vimeo video ID must be numeric")
+        return f"https://player.vimeo.com/video/{normalized_vimeo_id}?autoplay=0&title=0&byline=0&portrait=0&playsinline=1&dnt=1", normalized_vimeo_id
+
+    if normalized_video_value:
+        normalized_url = _normalize_external_video_url(normalized_video_value)
+        vimeo_id = _extract_vimeo_id_from_url(normalized_video_value) or _extract_vimeo_id_from_url(normalized_url)
+        if not vimeo_id:
+            raise ValueError("Use a valid Vimeo link for Vimeo workouts")
+        return normalized_url, vimeo_id
+
+    raise ValueError("A Vimeo ID or Vimeo link is required")
+
+
+async def _prepare_workout_video_payload(payload: AdminWorkoutRequest, owner_key: str, user_id: str) -> tuple[str, str]:
+    if payload.video_base64:
+        try:
+            video_url = _upload_workout_video_to_s3(
+                owner_key or user_id,
+                payload.video_base64,
+                payload.video_mime_type,
+                payload.video_file_name,
+            )
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Workout video upload failed: {exc}") from exc
+        return video_url, ""
+
+    try:
+        return _normalize_workout_video_url(payload.videoSource, payload.videoUrl, payload.vimeoId)
+    except ValueError:
+        raise
 
 
 def _build_progressive_plan_snapshot(summary: str, goal_label: str, days: list[dict], payload_data: dict) -> dict:
@@ -7153,6 +7255,8 @@ def _serialize_admin_workout_record(record: dict) -> dict:
         "id": str(record["_id"]),
         "title": str(record.get("title") or ""),
         "vimeoId": str(record.get("vimeo_id") or ""),
+        "videoUrl": str(record.get("video_url") or ""),
+        "videoSource": str(record.get("video_source") or "VIMEO"),
         "tag": str(record.get("tag") or ""),
         "visibility": str(record.get("visibility") or "Draft"),
         "thumbnail": str(record.get("thumbnail") or ""),

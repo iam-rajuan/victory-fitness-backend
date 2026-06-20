@@ -5,6 +5,8 @@ PUBLIC_WORKOUT_PROJECTION = {
     "_id": 1,
     "title": 1,
     "vimeo_id": 1,
+    "video_url": 1,
+    "video_source": 1,
     "tag": 1,
     "thumbnail": 1,
     "created_at": 1,
