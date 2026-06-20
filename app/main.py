@@ -3,6 +3,7 @@ import base64
 import json
 from io import BytesIO
 import logging
+from mimetypes import guess_type
 import re
 from functools import lru_cache
 from typing import Any
@@ -268,6 +269,28 @@ logger = logging.getLogger("victory_fitness.api")
 MEDIA_ROOT = Path("/tmp/victory-fitness-media") if settings.is_vercel else Path(__file__).resolve().parents[1] / "media"
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
+REMOTE_MEDIA_MIME_TO_EXTENSION = {
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/webm": ".webm",
+    "video/x-m4v": ".m4v",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/ogg": ".ogg",
+    "application/ogg": ".ogg",
+    "audio/webm": ".webm",
+}
+REMOTE_MEDIA_BLOCKED_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "youtu.be",
+    "player.vimeo.com",
+    "vimeo.com",
+    "www.vimeo.com",
+}
 STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
 PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 SUBSCRIPTION_TIERS = ("NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
@@ -2237,6 +2260,22 @@ async def admin_create_masterclass(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Masterclass audio upload failed: {exc}") from exc
+    elif str(payload.audioUrl or "").strip():
+        audio_value = str(payload.audioUrl or "").strip()
+        if _looks_like_remote_media_url(audio_value):
+            try:
+                payload_data["audioUrl"] = _download_remote_media_to_storage(
+                    "masterclass-audio",
+                    str(admin_user["_id"]),
+                    audio_value,
+                    upload_log_label="audio",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Masterclass audio download failed: {exc}") from exc
+        else:
+            payload_data["audioUrl"] = audio_value
     masterclass = _serialize_admin_masterclass_item(
         {
             "id": uuid4().hex,
@@ -2275,6 +2314,22 @@ async def admin_update_masterclass(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Masterclass audio upload failed: {exc}") from exc
+    elif str(payload.audioUrl or "").strip():
+        audio_value = str(payload.audioUrl or "").strip()
+        if _looks_like_remote_media_url(audio_value):
+            try:
+                payload_data["audioUrl"] = _download_remote_media_to_storage(
+                    "masterclass-audio",
+                    str(admin_user["_id"]),
+                    audio_value,
+                    upload_log_label="audio",
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"Masterclass audio download failed: {exc}") from exc
+        else:
+            payload_data["audioUrl"] = audio_value
     for index, item in enumerate(items):
         if item["id"] == masterclass_id:
             items[index] = _serialize_admin_masterclass_item({"id": masterclass_id, **payload_data})
@@ -2489,7 +2544,13 @@ async def create_community_post(
     external_video_url = ""
     if payload.external_video_url:
         try:
-            external_video_url = _normalize_external_video_url(payload.external_video_url)
+            external_video_url = _resolve_media_url_to_storage(
+                payload.external_video_url,
+                folder_name="community-videos",
+                user_id=str(user["_id"]),
+                upload_log_label="video",
+                allow_embed_urls=True,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2669,7 +2730,13 @@ async def admin_create_community_post(
     external_video_url = ""
     if payload.external_video_url:
         try:
-            external_video_url = _normalize_external_video_url(payload.external_video_url)
+            external_video_url = _resolve_media_url_to_storage(
+                payload.external_video_url,
+                folder_name="community-videos",
+                user_id=str(admin_user["_id"]),
+                upload_log_label="video",
+                allow_embed_urls=True,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2740,7 +2807,13 @@ async def admin_update_community_post(
         external_raw = str(payload.external_video_url or "").strip()
         if external_raw:
             try:
-                external_video_url = _normalize_external_video_url(external_raw)
+                external_video_url = _resolve_media_url_to_storage(
+                    external_raw,
+                    folder_name="community-videos",
+                    user_id=str(existing_record.get("author_id") or ""),
+                    upload_log_label="video",
+                    allow_embed_urls=True,
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
         else:
@@ -5571,6 +5644,62 @@ def _store_binary_locally(
     return _build_local_media_url((Path("media") / relative_dir / object_name).as_posix())
 
 
+def _store_media_bytes_to_storage(
+    folder_name: str,
+    user_id: str,
+    payload: bytes,
+    extension: str,
+    file_name: str | None,
+    *,
+    content_type: str,
+    upload_log_label: str,
+) -> str:
+    sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
+    suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
+    if suffix and not extension.endswith(suffix):
+        sanitized_file_name = ""
+
+    object_name = sanitized_file_name or f"{uuid4().hex}{extension}"
+    normalized_owner = re.sub(r"[^a-zA-Z0-9_-]", "-", str(user_id or "anonymous")).strip("-") or "anonymous"
+    key_prefix = f"{settings.aws_s3_prefix}/{folder_name}/{normalized_owner}".strip("/")
+    object_key = f"{key_prefix}/{object_name}"
+
+    if not s3_archive_enabled():
+        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
+
+    try:
+        import boto3
+    except ImportError:
+        logger.warning("boto3_missing_for_%s_upload folder=%s user_id=%s", upload_log_label, folder_name, user_id)
+        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
+
+    client = boto3.client(
+        "s3",
+        region_name=settings.aws_region,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+    )
+    try:
+        client.put_object(
+            Bucket=settings.aws_s3_bucket,
+            Key=object_key,
+            Body=payload,
+            ContentType=content_type,
+            CacheControl="public, max-age=31536000",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "s3_%s_upload_failed folder=%s user_id=%s error=%s",
+            upload_log_label,
+            folder_name,
+            user_id,
+            exc,
+        )
+        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
+
+    return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
+
+
 def _upload_binary_to_s3(
     folder_name: str,
     user_id: str,
@@ -5597,50 +5726,15 @@ def _upload_binary_to_s3(
     if len(payload) > max_size_bytes:
         raise ValueError(f"{upload_log_label.capitalize()} must be {max_size_bytes // (1024 * 1024)}MB or smaller")
 
-    if not s3_archive_enabled():
-        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
-
-    sanitized_file_name = re.sub(r"[^a-zA-Z0-9._-]", "-", str(file_name or "").strip()).strip("-")
-    suffix = sanitized_file_name.rsplit(".", 1)[-1].lower() if "." in sanitized_file_name else ""
-    if suffix and not extension.endswith(suffix):
-        sanitized_file_name = ""
-
-    object_name = sanitized_file_name or f"{uuid4().hex}{extension}"
-    normalized_owner = re.sub(r"[^a-zA-Z0-9_-]", "-", str(user_id or "anonymous")).strip("-") or "anonymous"
-    key_prefix = f"{settings.aws_s3_prefix}/{folder_name}/{normalized_owner}".strip("/")
-    object_key = f"{key_prefix}/{object_name}"
-
-    try:
-        import boto3
-    except ImportError as exc:
-        logger.warning("boto3_missing_for_%s_upload folder=%s user_id=%s", upload_log_label, folder_name, user_id)
-        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
-
-    client = boto3.client(
-        "s3",
-        region_name=settings.aws_region,
-        aws_access_key_id=settings.aws_access_key_id,
-        aws_secret_access_key=settings.aws_secret_access_key,
+    return _store_media_bytes_to_storage(
+        folder_name,
+        user_id,
+        payload,
+        extension,
+        file_name,
+        content_type=normalized_mime,
+        upload_log_label=upload_log_label,
     )
-    try:
-        client.put_object(
-            Bucket=settings.aws_s3_bucket,
-            Key=object_key,
-            Body=payload,
-            ContentType=normalized_mime,
-            CacheControl="public, max-age=31536000",
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "s3_%s_upload_failed folder=%s user_id=%s error=%s",
-            upload_log_label,
-            folder_name,
-            user_id,
-            exc,
-        )
-        return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
-
-    return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
 
 
 def _upload_image_to_s3(
@@ -5817,6 +5911,159 @@ def _normalize_external_video_url(video_url: str) -> str:
     raise ValueError("Only YouTube and Vimeo links are supported")
 
 
+def _is_platform_video_url(video_url: str) -> bool:
+    normalized_url = str(video_url or "").strip()
+    if not normalized_url:
+        return False
+
+    try:
+        parsed = urlparse(normalized_url)
+    except Exception:  # noqa: BLE001
+        return False
+
+    host = parsed.netloc.lower().strip()
+    return host in REMOTE_MEDIA_BLOCKED_HOSTS
+
+
+def _is_owned_media_url(video_url: str) -> bool:
+    normalized_url = str(video_url or "").strip()
+    if not normalized_url:
+        return False
+
+    if normalized_url.startswith("/media/"):
+        return True
+
+    parsed = urlparse(normalized_url)
+    host = parsed.netloc.lower().strip()
+    expected_host = f"{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com".lower().strip()
+    return bool(expected_host and host == expected_host)
+
+
+def _looks_like_remote_media_url(video_url: str) -> bool:
+    normalized_url = str(video_url or "").strip()
+    if not normalized_url or _is_platform_video_url(normalized_url) or _is_owned_media_url(normalized_url):
+        return False
+
+    parsed = urlparse(normalized_url)
+    scheme = parsed.scheme.lower().strip()
+    if scheme not in {"http", "https"}:
+        return False
+
+    suffix = Path(parsed.path).suffix.lower()
+    if suffix in {".mp4", ".mov", ".m4v", ".webm", ".mp3", ".m4a", ".wav", ".ogg"}:
+        return True
+
+    guessed_type = (guess_type(parsed.path)[0] or "").split(";", 1)[0].lower().strip()
+    return guessed_type.startswith("video/") or guessed_type.startswith("audio/")
+
+
+def _download_remote_media_to_storage(
+    folder_name: str,
+    user_id: str,
+    media_url: str,
+    *,
+    upload_log_label: str,
+    max_size_bytes: int = 200 * 1024 * 1024,
+) -> str:
+    normalized_url = str(media_url or "").strip()
+    if not normalized_url:
+        raise ValueError("Media link is empty")
+    if _is_platform_video_url(normalized_url):
+        raise ValueError("Use a direct media file URL if you want the file stored in S3")
+    if _is_owned_media_url(normalized_url):
+        return normalized_url
+
+    parsed = urlparse(normalized_url)
+    if parsed.scheme.lower().strip() not in {"http", "https"} or not parsed.netloc.strip():
+        raise ValueError("Only direct HTTP or HTTPS media links can be stored in S3")
+
+    path_suffix = Path(parsed.path).suffix.lower()
+    guessed_mime = (guess_type(parsed.path)[0] or "").split(";", 1)[0].lower().strip()
+    mime_type = guessed_mime
+    extension = REMOTE_MEDIA_MIME_TO_EXTENSION.get(mime_type, "")
+    if not extension and path_suffix in {".mp4", ".mov", ".m4v", ".webm", ".mp3", ".m4a", ".wav", ".ogg"}:
+        extension = path_suffix
+        mime_type = {
+            ".mp4": "video/mp4",
+            ".mov": "video/quicktime",
+            ".m4v": "video/x-m4v",
+            ".webm": "video/webm",
+            ".mp3": "audio/mpeg",
+            ".m4a": "audio/mp4",
+            ".wav": "audio/wav",
+            ".ogg": "audio/ogg",
+        }[extension]
+
+    if not extension:
+        raise ValueError("Only direct MP4, MOV, WEBM, MP3, M4A, WAV, and OGG media links can be stored in S3")
+
+    request = UrlRequest(normalized_url, headers={"User-Agent": "VictoryFitnessMediaBot/1.0"})
+    try:
+        with urlopen(request, timeout=30) as response:
+            content_type_header = str(response.headers.get("Content-Type") or "").split(";", 1)[0].lower().strip()
+            content_length_header = response.headers.get("Content-Length")
+            if content_length_header:
+                try:
+                    content_length = int(content_length_header)
+                except Exception:
+                    content_length = None
+                if content_length is not None and content_length > max_size_bytes:
+                    raise ValueError(f"{upload_log_label.capitalize()} must be {max_size_bytes // (1024 * 1024)}MB or smaller")
+
+            detected_type = content_type_header if content_type_header not in {"", "application/octet-stream", "binary/octet-stream"} else mime_type
+            if not detected_type.startswith("video/") and not detected_type.startswith("audio/"):
+                raise ValueError("Only direct media file URLs can be stored in S3")
+
+            payload = response.read(max_size_bytes + 1)
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Unable to download media from the provided URL: {exc}") from exc
+
+    if len(payload) > max_size_bytes:
+        raise ValueError(f"{upload_log_label.capitalize()} must be {max_size_bytes // (1024 * 1024)}MB or smaller")
+
+    filename = Path(parsed.path).name or None
+    return _store_media_bytes_to_storage(
+        folder_name,
+        user_id,
+        payload,
+        extension,
+        filename,
+        content_type=mime_type,
+        upload_log_label=upload_log_label,
+    )
+
+
+def _resolve_media_url_to_storage(
+    raw_url: str,
+    *,
+    folder_name: str,
+    user_id: str,
+    upload_log_label: str,
+    allow_embed_urls: bool,
+) -> str:
+    normalized_url = str(raw_url or "").strip()
+    if not normalized_url:
+        return ""
+
+    if _is_owned_media_url(normalized_url):
+        return normalized_url
+
+    if _looks_like_remote_media_url(normalized_url):
+        return _download_remote_media_to_storage(
+            folder_name,
+            user_id,
+            normalized_url,
+            upload_log_label=upload_log_label,
+        )
+
+    if allow_embed_urls:
+        return _normalize_external_video_url(normalized_url)
+
+    raise ValueError("Use a direct media file URL if you want the file stored in S3")
+
+
 def _extract_vimeo_id_from_url(video_url: str) -> str:
     normalized_url = str(video_url or "").strip()
     if not normalized_url:
@@ -5881,6 +6128,22 @@ async def _prepare_workout_video_payload(payload: AdminWorkoutRequest, owner_key
             raise HTTPException(status_code=500, detail=f"Workout video upload failed: {exc}") from exc
         return video_url, ""
 
+    normalized_video_value = str(payload.videoUrl or "").strip()
+    if normalized_video_value and _is_owned_media_url(normalized_video_value):
+        return normalized_video_value, ""
+
+    if normalized_video_value and _looks_like_remote_media_url(normalized_video_value):
+        try:
+            stored_url = _download_remote_media_to_storage(
+                "workout-videos",
+                user_id,
+                normalized_video_value,
+                upload_log_label="video",
+            )
+        except ValueError:
+            raise
+        return stored_url, ""
+
     try:
         return _normalize_workout_video_url(payload.videoSource, payload.videoUrl, payload.vimeoId)
     except ValueError:
@@ -5925,6 +6188,21 @@ async def _prepare_masterclass_video_payload(payload: AdminMasterclassRequest, u
             raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Masterclass video upload failed: {exc}") from exc
+
+    normalized_video_value = str(payload.videoUrl or "").strip()
+    if normalized_video_value and _is_owned_media_url(normalized_video_value):
+        return normalized_video_value
+
+    if normalized_video_value and _looks_like_remote_media_url(normalized_video_value):
+        try:
+            return _download_remote_media_to_storage(
+                "masterclass-videos",
+                user_id,
+                normalized_video_value,
+                upload_log_label="video",
+            )
+        except ValueError:
+            raise
 
     try:
         return _normalize_masterclass_video_url(payload.videoSource, payload.videoUrl)
