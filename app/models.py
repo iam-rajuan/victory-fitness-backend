@@ -548,6 +548,8 @@ class ChallengePlanExercise(BaseModel):
     workout_id: str = Field(default="", max_length=80)
     workout_title: str = Field(default="", max_length=160)
     workout_vimeo_id: str = Field(default="", max_length=80)
+    workout_video_url: str = Field(default="", max_length=2000)
+    workout_video_source: str = Field(default="VIMEO", pattern=r"^(VIMEO|YOUTUBE|UPLOAD)$")
     workout_thumbnail: str = Field(default="", max_length=20000000)
 
 
@@ -1413,6 +1415,8 @@ class VideoWorkoutPlanItem(BaseModel):
     image: str = ""
     tag: str = ""
     vimeo_id: str = ""
+    video_url: str = ""
+    video_source: str = "VIMEO"
 
 
 class VideoWorkoutPlanDay(BaseModel):

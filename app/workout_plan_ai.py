@@ -169,6 +169,8 @@ def generate_video_workout_plan(input_data: VideoWorkoutPlanInput, workouts: lis
                     "image": str(source.get("thumbnail") or ""),
                     "tag": str(source.get("tag") or "Recommended"),
                     "vimeo_id": str(source.get("vimeoId") or source.get("vimeo_id") or ""),
+                    "video_url": str(source.get("videoUrl") or source.get("video_url") or ""),
+                    "video_source": str(source.get("videoSource") or source.get("video_source") or "VIMEO"),
                 }
             )
         cursor += items_per_day

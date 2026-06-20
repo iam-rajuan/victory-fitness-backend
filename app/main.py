@@ -7338,8 +7338,11 @@ async def _sync_workout_library_from_challenge_plan(plan_days: list[dict], chall
     for day in plan_days:
         for section in day.get("sections") or []:
             for exercise in section.get("exercises") or []:
+                workout_id = str(exercise.get("workout_id") or "").strip()
                 vimeo_id = str(exercise.get("workout_vimeo_id") or "").strip()
-                if not vimeo_id:
+                video_url = str(exercise.get("workout_video_url") or "").strip()
+                video_source = str(exercise.get("workout_video_source") or "VIMEO").strip().upper() or "VIMEO"
+                if not workout_id and not vimeo_id and not video_url:
                     continue
 
                 title = str(exercise.get("workout_title") or exercise.get("name") or "").strip()
@@ -7347,10 +7350,16 @@ async def _sync_workout_library_from_challenge_plan(plan_days: list[dict], chall
                     title = f"{category_tag} Exercise"
 
                 thumbnail = _normalize_challenge_thumbnail(exercise.get("workout_thumbnail"))
-                existing = await workouts_collection.find_one({"vimeo_id": vimeo_id})
+                existing = None
+                if workout_id and ObjectId.is_valid(workout_id):
+                    existing = await workouts_collection.find_one({"_id": ObjectId(workout_id)})
+                if not existing and vimeo_id:
+                    existing = await workouts_collection.find_one({"vimeo_id": vimeo_id})
                 document = {
                     "title": title,
                     "vimeo_id": vimeo_id,
+                    "video_url": video_url,
+                    "video_source": video_source,
                     "tag": category_tag,
                     "visibility": "Published",
                     "thumbnail": thumbnail,
@@ -7451,6 +7460,8 @@ def _normalize_challenge_plan_days(raw_days: list[ChallengePlanDay] | list[dict]
                         "workout_id": str(exercise_data.get("workout_id") or "").strip(),
                         "workout_title": str(exercise_data.get("workout_title") or "").strip(),
                         "workout_vimeo_id": str(exercise_data.get("workout_vimeo_id") or "").strip(),
+                        "workout_video_url": str(exercise_data.get("workout_video_url") or "").strip(),
+                        "workout_video_source": str(exercise_data.get("workout_video_source") or "VIMEO").strip().upper() or "VIMEO",
                         "workout_thumbnail": _normalize_challenge_thumbnail(exercise_data.get("workout_thumbnail")),
                     }
                 )
