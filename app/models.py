@@ -604,6 +604,7 @@ class UserActiveChallengeResponse(BaseModel):
     challenge_id: str
     title: str
     description: str = ""
+    why_it_matters: str = ""
     type: str
     plan_text: str = ""
     duration_days: int = 0
@@ -621,6 +622,7 @@ class UserCompletedChallengeResponse(BaseModel):
     challenge_id: str
     title: str
     description: str = ""
+    why_it_matters: str = ""
     duration_days: int = 0
     type: str
     earned_points: int = 0
@@ -634,6 +636,7 @@ class UserReadyChallengeResponse(BaseModel):
     id: str
     title: str
     description: str
+    why_it_matters: str = ""
     plan_text: str = ""
     duration_days: int = 0
     type: str
@@ -662,6 +665,7 @@ class ChallengeDetailResponse(BaseModel):
     challenge_id: str
     title: str
     description: str
+    why_it_matters: str = ""
     plan_text: str = ""
     plan_days: list[ChallengePlanDay] = Field(default_factory=list)
     category: str
@@ -711,6 +715,7 @@ class ChallengeChatThreadResponse(BaseModel):
     challenge_id: str
     title: str
     description: str
+    why_it_matters: str = ""
     plan_text: str = ""
     plan_days: list[ChallengePlanDay] = Field(default_factory=list)
     category: str
@@ -764,6 +769,7 @@ class AdminChallengeItem(BaseModel):
     id: str
     title: str
     description: str
+    whyItMatters: str = ""
     planText: str = ""
     planDays: list[ChallengePlanDay] = Field(default_factory=list)
     category: str
@@ -786,6 +792,7 @@ class AdminChallengeListResponse(BaseModel):
 class AdminChallengeRequest(BaseModel):
     title: str = Field(min_length=2, max_length=160)
     description: str = Field(min_length=1, max_length=4000)
+    whyItMatters: str | None = Field(default=None, max_length=4000)
     planText: str | None = Field(default=None, max_length=30000)
     planDays: list[ChallengePlanDay] = Field(default_factory=list)
     category: str = Field(min_length=1, max_length=80)
