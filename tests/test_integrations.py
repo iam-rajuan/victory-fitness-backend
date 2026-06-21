@@ -5,11 +5,12 @@ import importlib
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+backend_module = importlib.import_module("app.main")
 wearables_router_module = importlib.import_module("app.wearables.router")
 from app.wearables.service import store_normalized_metrics
 
@@ -235,6 +236,115 @@ class IntegrationRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["processed"], 12)
         self.assertTrue(response.json()["force"])
         backfill_current_health_metrics_from_history.assert_awaited_once_with(force=True)
+
+
+class CommunityPostUploadTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        app = FastAPI()
+        app.include_router(backend_module.app.router)
+        app.dependency_overrides[backend_module._require_community_access_user] = lambda: {
+            "_id": "user-1",
+            "is_verified": True,
+            "subscription_tier": "GOLD",
+        }
+        cls.client = TestClient(app)
+
+    def test_create_community_post_accepts_image_multipart(self) -> None:
+        upload_mock = Mock(return_value="https://cdn.example.com/community-images/image.png")
+        serialize_mock = AsyncMock(
+            return_value=[
+                {
+                    "id": "post-1",
+                    "author_id": "user-1",
+                    "author_name": "Tester",
+                    "author_role": "Member",
+                    "author_profile_image": "",
+                    "audience": "ALL",
+                    "content": "image post",
+                    "image_url": "https://cdn.example.com/community-images/image.png",
+                    "video_url": "",
+                    "like_count": 0,
+                    "comment_count": 0,
+                    "viewer_has_liked": False,
+                    "can_delete": True,
+                    "comments": [],
+                    "reactions": [],
+                    "created_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+            ]
+        )
+        collection = SimpleNamespace(insert_one=AsyncMock())
+
+        with patch.object(backend_module, "_upload_binary_bytes_to_s3", upload_mock), patch.object(
+            backend_module, "_serialize_community_post_records", serialize_mock
+        ), patch.object(backend_module, "community_posts_collection", collection):
+            response = self.client.post(
+                "/community/posts",
+                data={
+                    "content": "image post",
+                    "mime_type": "image/png",
+                    "file_name": "image.png",
+                },
+                files={
+                    "media_file": ("image.png", b"png-bytes", "image/png"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["image_url"], "https://cdn.example.com/community-images/image.png")
+        upload_mock.assert_called_once()
+        self.assertEqual(upload_mock.call_args.args[0], "community-images")
+        collection.insert_one.assert_awaited_once()
+
+    def test_create_community_post_accepts_video_multipart(self) -> None:
+        upload_mock = Mock(return_value="https://cdn.example.com/community-videos/video.mp4")
+        serialize_mock = AsyncMock(
+            return_value=[
+                {
+                    "id": "post-2",
+                    "author_id": "user-1",
+                    "author_name": "Tester",
+                    "author_role": "Member",
+                    "author_profile_image": "",
+                    "audience": "ALL",
+                    "content": "video post",
+                    "image_url": "",
+                    "video_url": "https://cdn.example.com/community-videos/video.mp4",
+                    "like_count": 0,
+                    "comment_count": 0,
+                    "viewer_has_liked": False,
+                    "can_delete": True,
+                    "comments": [],
+                    "reactions": [],
+                    "created_at": _utc_now(),
+                    "updated_at": _utc_now(),
+                }
+            ]
+        )
+        collection = SimpleNamespace(insert_one=AsyncMock())
+
+        with patch.object(backend_module, "_upload_binary_bytes_to_s3", upload_mock), patch.object(
+            backend_module, "_serialize_community_post_records", serialize_mock
+        ), patch.object(backend_module, "community_posts_collection", collection):
+            response = self.client.post(
+                "/community/posts",
+                data={
+                    "content": "video post",
+                    "mime_type": "video/mp4",
+                    "file_name": "video.mp4",
+                },
+                files={
+                    "media_file": ("video.mp4", b"mp4-bytes", "video/mp4"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["video_url"], "https://cdn.example.com/community-videos/video.mp4")
+        upload_mock.assert_called_once()
+        self.assertEqual(upload_mock.call_args.args[0], "community-videos")
+        collection.insert_one.assert_awaited_once()
 
 
 class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):

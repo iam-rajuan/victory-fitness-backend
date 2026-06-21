@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import inspect
 import json
 from io import BytesIO
 import logging
@@ -2846,7 +2847,7 @@ async def create_community_post(
         file_name = str(form.get("file_name") or "").strip() or None
 
         media_file = form.get("media_file") or form.get("media")
-        if isinstance(media_file, UploadFile):
+        if media_file is not None and hasattr(media_file, "read") and hasattr(media_file, "filename"):
             payload = await media_file.read()
             if payload:
                 file_name = media_file.filename or file_name
@@ -2896,6 +2897,11 @@ async def create_community_post(
                         raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
                 else:
                     raise HTTPException(status_code=400, detail="Only image or video files are supported")
+            close_method = getattr(media_file, "close", None)
+            if callable(close_method):
+                close_result = close_method()
+                if inspect.isawaitable(close_result):
+                    await close_result
         image_base64 = str(form.get("image_base64") or "").strip()
         video_base64 = str(form.get("video_base64") or "").strip()
     else:
