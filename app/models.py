@@ -1038,6 +1038,13 @@ class NutritionMealCompletionUpdateRequest(BaseModel):
     completed: bool = True
 
 
+class StrengthWorkoutPlanProgressUpdateRequest(BaseModel):
+    day: str = Field(min_length=1, max_length=40)
+    exercise_id: str | None = Field(default=None, max_length=120)
+    started: bool | None = None
+    completed: bool | None = None
+
+
 class DashboardOverviewChartPoint(BaseModel):
     month: str
     userCount: int = 0
@@ -1395,9 +1402,18 @@ class StrengthWorkoutPlanRequest(BaseModel):
 
 
 class StrengthWorkoutPlanResponse(BaseModel):
+    class DayProgress(BaseModel):
+        day: str
+        started: bool = False
+        completed: bool = False
+        completed_exercise_ids: list[str] = Field(default_factory=list)
+        started_at: datetime | None = None
+        completed_at: datetime | None = None
+
     plan_id: str | None = None
     summary: str
     days: list[StrengthWorkoutDay] = Field(default_factory=list)
+    progress: list[DayProgress] = Field(default_factory=list)
     created_at: datetime | None = None
 
 

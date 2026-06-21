@@ -181,6 +181,7 @@ from .models import (
     TokenResponse,
     StartChallengeResponse,
     StrengthWorkoutPlanRequest,
+    StrengthWorkoutPlanProgressUpdateRequest,
     StrengthWorkoutPlanListResponse,
     StrengthWorkoutPlanResponse,
     SupportMessageCreateRequest,
@@ -1161,6 +1162,34 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
     )
 
 
+def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlanResponse:
+    plan_data = dict(record.get("plan") or {})
+    raw_progress = record.get("progress") or []
+    normalized_progress: list[dict[str, Any]] = []
+    for item in raw_progress:
+        if not isinstance(item, dict):
+            continue
+        normalized_progress.append(
+            {
+                "day": str(item.get("day") or "").strip(),
+                "started": bool(item.get("started")),
+                "completed": bool(item.get("completed")),
+                "completed_exercise_ids": [
+                    str(value).strip()
+                    for value in item.get("completed_exercise_ids", [])
+                    if str(value).strip()
+                ],
+                "started_at": item.get("started_at"),
+                "completed_at": item.get("completed_at"),
+            }
+        )
+
+    plan_data["plan_id"] = str(record["_id"])
+    plan_data["created_at"] = record.get("created_at")
+    plan_data["progress"] = normalized_progress
+    return StrengthWorkoutPlanResponse(**plan_data)
+
+
 @app.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
 async def workout_strength_plan(
     payload: StrengthWorkoutPlanRequest,
@@ -1189,13 +1218,19 @@ async def workout_strength_plan(
             "user_id": str(user["_id"]),
             "input": payload.model_dump(),
             "plan": plan_data,
+            "progress": [],
             "created_at": created_at,
             "updated_at": created_at,
         }
     )
-    plan_data["plan_id"] = str(insert_result.inserted_id)
-    plan_data["created_at"] = created_at
-    return StrengthWorkoutPlanResponse(**plan_data)
+    return _serialize_strength_workout_plan_record(
+        {
+            "_id": insert_result.inserted_id,
+            "plan": plan_data,
+            "progress": [],
+            "created_at": created_at,
+        }
+    )
 
 
 @app.get("/ai/workout-plan/strength/latest", response_model=StrengthWorkoutPlanResponse)
@@ -1209,10 +1244,7 @@ async def workout_strength_plan_latest(
     if not record or not isinstance(record.get("plan"), dict):
         raise HTTPException(status_code=404, detail="Strength workout plan not found")
 
-    plan_data = dict(record["plan"])
-    plan_data["plan_id"] = str(record["_id"])
-    plan_data["created_at"] = record.get("created_at")
-    return StrengthWorkoutPlanResponse(**plan_data)
+    return _serialize_strength_workout_plan_record(record)
 
 
 @app.get("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanListResponse)
@@ -1228,12 +1260,131 @@ async def workout_strength_plan_list(
     for record in records:
         if not isinstance(record.get("plan"), dict):
             continue
-        plan_data = dict(record["plan"])
-        plan_data["plan_id"] = str(record["_id"])
-        plan_data["created_at"] = record.get("created_at")
-        items.append(StrengthWorkoutPlanResponse(**plan_data))
+        items.append(_serialize_strength_workout_plan_record(record))
 
     return StrengthWorkoutPlanListResponse(items=items)
+
+
+@app.patch("/ai/workout-plan/strength/{plan_id}/progress", response_model=StrengthWorkoutPlanResponse)
+async def workout_strength_plan_progress_update(
+    plan_id: str,
+    payload: StrengthWorkoutPlanProgressUpdateRequest,
+    user: dict = Depends(_require_workout_plan_access_user),
+) -> StrengthWorkoutPlanResponse:
+    if not ObjectId.is_valid(plan_id):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    record = await strength_workout_plans_collection.find_one(
+        {"_id": ObjectId(plan_id), "user_id": str(user["_id"])},
+    )
+    if not record or not isinstance(record.get("plan"), dict):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    day_key = str(payload.day or "").strip()
+    if not day_key:
+        raise HTTPException(status_code=400, detail="Day is required")
+
+    plan_days = record["plan"].get("days") or []
+    selected_day = next(
+        (day for day in plan_days if str(day.get("day") or "").strip() == day_key),
+        None,
+    )
+    if not isinstance(selected_day, dict):
+        raise HTTPException(status_code=400, detail="Workout day not found")
+
+    valid_exercise_ids = [
+        str(exercise.get("id") or "").strip()
+        for exercise in selected_day.get("exercises", [])
+        if str(exercise.get("id") or "").strip()
+    ]
+
+    raw_progress = record.get("progress") or []
+    progress_map: dict[str, dict[str, Any]] = {}
+    for item in raw_progress:
+        if not isinstance(item, dict):
+            continue
+        item_day = str(item.get("day") or "").strip()
+        if item_day:
+            progress_map[item_day] = dict(item)
+
+    now = datetime.now(timezone.utc)
+    day_progress = progress_map.get(
+        day_key,
+        {
+            "day": day_key,
+            "started": False,
+            "completed": False,
+            "completed_exercise_ids": [],
+            "started_at": None,
+            "completed_at": None,
+        },
+    )
+    existing_completed_ids = {
+        str(value).strip()
+        for value in day_progress.get("completed_exercise_ids", [])
+        if str(value).strip()
+    }
+    completed_exercise_ids = [exercise_id for exercise_id in valid_exercise_ids if exercise_id in existing_completed_ids]
+
+    if payload.exercise_id:
+        exercise_id = str(payload.exercise_id).strip()
+        if exercise_id not in valid_exercise_ids:
+            raise HTTPException(status_code=400, detail="Workout exercise not found")
+
+        should_complete = True if payload.completed is None else bool(payload.completed)
+        if should_complete:
+            if exercise_id not in completed_exercise_ids:
+                completed_exercise_ids.append(exercise_id)
+            day_progress["started"] = True
+            day_progress["started_at"] = day_progress.get("started_at") or now
+        else:
+            completed_exercise_ids = [value for value in completed_exercise_ids if value != exercise_id]
+    elif payload.completed is not None:
+        if payload.completed:
+            completed_exercise_ids = valid_exercise_ids[:]
+            day_progress["started"] = True
+            day_progress["started_at"] = day_progress.get("started_at") or now
+        else:
+            completed_exercise_ids = []
+
+    if payload.started is not None:
+        day_progress["started"] = bool(payload.started)
+        if day_progress["started"]:
+            day_progress["started_at"] = day_progress.get("started_at") or now
+        elif not completed_exercise_ids:
+            day_progress["started_at"] = None
+
+    is_completed = False
+    if valid_exercise_ids:
+        is_completed = len(completed_exercise_ids) >= len(valid_exercise_ids)
+    elif payload.completed is not None:
+        is_completed = bool(payload.completed)
+
+    day_progress["completed_exercise_ids"] = completed_exercise_ids
+    day_progress["completed"] = is_completed
+    if is_completed:
+        day_progress["started"] = True
+        day_progress["started_at"] = day_progress.get("started_at") or now
+        day_progress["completed_at"] = now
+    else:
+        day_progress["completed_at"] = None
+
+    progress_map[day_key] = day_progress
+    ordered_progress = [progress_map[str(day.get("day") or "").strip()] for day in plan_days if str(day.get("day") or "").strip() in progress_map]
+
+    await strength_workout_plans_collection.update_one(
+        {"_id": record["_id"]},
+        {
+            "$set": {
+                "progress": ordered_progress,
+                "updated_at": now,
+            }
+        },
+    )
+
+    record["progress"] = ordered_progress
+    record["updated_at"] = now
+    return _serialize_strength_workout_plan_record(record)
 
 
 @app.delete("/ai/workout-plan/strength/latest")
