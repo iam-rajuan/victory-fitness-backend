@@ -1040,6 +1040,7 @@ class NutritionMealCompletionUpdateRequest(BaseModel):
 
 class StrengthWorkoutPlanProgressUpdateRequest(BaseModel):
     day: str = Field(min_length=1, max_length=40)
+    section_id: str | None = Field(default=None, max_length=120)
     exercise_id: str | None = Field(default=None, max_length=120)
     started: bool | None = None
     completed: bool | None = None
@@ -1376,12 +1377,20 @@ class StrengthWorkoutExercise(BaseModel):
     type: str
 
 
+class StrengthWorkoutSection(BaseModel):
+    id: str
+    title: str
+    estimated_minutes: int = Field(default=0, ge=0, le=180)
+    exercises: list[StrengthWorkoutExercise] = Field(default_factory=list)
+
+
 class StrengthWorkoutDay(BaseModel):
     day: str
     title: str
     est_time: str
     volume: str
     intensity: str
+    sections: list[StrengthWorkoutSection] = Field(default_factory=list)
     exercises: list[StrengthWorkoutExercise] = Field(default_factory=list)
 
 
@@ -1406,6 +1415,7 @@ class StrengthWorkoutPlanResponse(BaseModel):
         day: str
         started: bool = False
         completed: bool = False
+        completed_section_ids: list[str] = Field(default_factory=list)
         completed_exercise_ids: list[str] = Field(default_factory=list)
         started_at: datetime | None = None
         completed_at: datetime | None = None

@@ -1164,6 +1164,56 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
 
 def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlanResponse:
     plan_data = dict(record.get("plan") or {})
+    normalized_days: list[dict[str, Any]] = []
+    for raw_day in plan_data.get("days") or []:
+        if not isinstance(raw_day, dict):
+            continue
+        day_exercises = [dict(exercise) for exercise in raw_day.get("exercises", []) if isinstance(exercise, dict)]
+        raw_sections = raw_day.get("sections") or []
+        normalized_sections: list[dict[str, Any]] = []
+        if isinstance(raw_sections, list) and raw_sections:
+            for section in raw_sections:
+                if not isinstance(section, dict):
+                    continue
+                section_exercises = [dict(exercise) for exercise in section.get("exercises", []) if isinstance(exercise, dict)]
+                normalized_sections.append(
+                    {
+                        "id": str(section.get("id") or "").strip() or f"{str(raw_day.get('day') or 'day').lower()}-section-{len(normalized_sections) + 1}",
+                        "title": str(section.get("title") or "Workout Block").strip() or "Workout Block",
+                        "estimated_minutes": max(int(section.get("estimated_minutes") or 0), 0),
+                        "exercises": section_exercises,
+                    }
+                )
+        if not normalized_sections:
+            grouped_sections: dict[str, dict[str, Any]] = {}
+            section_order: list[str] = []
+            for index, exercise in enumerate(day_exercises):
+                exercise_type = str(exercise.get("type") or "work").strip() or "work"
+                section_key = re.sub(r"[^a-z0-9]+", "-", exercise_type.lower()).strip("-") or f"section-{index + 1}"
+                section_id = f"{str(raw_day.get('day') or 'day').lower()}-{section_key}"
+                if section_id not in grouped_sections:
+                    grouped_sections[section_id] = {
+                        "id": section_id,
+                        "title": exercise_type.title(),
+                        "estimated_minutes": 0,
+                        "exercises": [],
+                    }
+                    section_order.append(section_id)
+                grouped_sections[section_id]["exercises"].append(exercise)
+            for section_id in section_order:
+                section = grouped_sections[section_id]
+                section["estimated_minutes"] = max(len(section["exercises"]) * 6, 6)
+                normalized_sections.append(section)
+
+        normalized_days.append(
+            {
+                **raw_day,
+                "sections": normalized_sections,
+                "exercises": day_exercises,
+            }
+        )
+
+    plan_data["days"] = normalized_days
     raw_progress = record.get("progress") or []
     normalized_progress: list[dict[str, Any]] = []
     for item in raw_progress:
@@ -1174,6 +1224,11 @@ def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlan
                 "day": str(item.get("day") or "").strip(),
                 "started": bool(item.get("started")),
                 "completed": bool(item.get("completed")),
+                "completed_section_ids": [
+                    str(value).strip()
+                    for value in item.get("completed_section_ids", [])
+                    if str(value).strip()
+                ],
                 "completed_exercise_ids": [
                     str(value).strip()
                     for value in item.get("completed_exercise_ids", [])
@@ -1292,11 +1347,26 @@ async def workout_strength_plan_progress_update(
     if not isinstance(selected_day, dict):
         raise HTTPException(status_code=400, detail="Workout day not found")
 
+    selected_day_response = _serialize_strength_workout_plan_record(
+        {
+            "_id": record["_id"],
+            "plan": {"summary": record["plan"].get("summary"), "days": [selected_day]},
+            "progress": [],
+            "created_at": record.get("created_at"),
+        }
+    ).days[0]
+
     valid_exercise_ids = [
-        str(exercise.get("id") or "").strip()
-        for exercise in selected_day.get("exercises", [])
-        if str(exercise.get("id") or "").strip()
+        str(exercise.id).strip()
+        for section in selected_day_response.sections
+        for exercise in section.exercises
+        if str(exercise.id).strip()
     ]
+    valid_section_ids = [str(section.id).strip() for section in selected_day_response.sections if str(section.id).strip()]
+    section_exercise_map = {
+        str(section.id).strip(): [str(exercise.id).strip() for exercise in section.exercises if str(exercise.id).strip()]
+        for section in selected_day_response.sections
+    }
 
     raw_progress = record.get("progress") or []
     progress_map: dict[str, dict[str, Any]] = {}
@@ -1314,11 +1384,18 @@ async def workout_strength_plan_progress_update(
             "day": day_key,
             "started": False,
             "completed": False,
+            "completed_section_ids": [],
             "completed_exercise_ids": [],
             "started_at": None,
             "completed_at": None,
         },
     )
+    existing_completed_section_ids = {
+        str(value).strip()
+        for value in day_progress.get("completed_section_ids", [])
+        if str(value).strip()
+    }
+    completed_section_ids = [section_id for section_id in valid_section_ids if section_id in existing_completed_section_ids]
     existing_completed_ids = {
         str(value).strip()
         for value in day_progress.get("completed_exercise_ids", [])
@@ -1326,7 +1403,24 @@ async def workout_strength_plan_progress_update(
     }
     completed_exercise_ids = [exercise_id for exercise_id in valid_exercise_ids if exercise_id in existing_completed_ids]
 
-    if payload.exercise_id:
+    if payload.section_id:
+        section_id = str(payload.section_id).strip()
+        if section_id not in valid_section_ids:
+            raise HTTPException(status_code=400, detail="Workout section not found")
+        section_exercise_ids = section_exercise_map.get(section_id, [])
+        should_complete = True if payload.completed is None else bool(payload.completed)
+        if should_complete:
+            if section_id not in completed_section_ids:
+                completed_section_ids.append(section_id)
+            for exercise_id in section_exercise_ids:
+                if exercise_id not in completed_exercise_ids:
+                    completed_exercise_ids.append(exercise_id)
+            day_progress["started"] = True
+            day_progress["started_at"] = day_progress.get("started_at") or now
+        else:
+            completed_section_ids = [value for value in completed_section_ids if value != section_id]
+            completed_exercise_ids = [value for value in completed_exercise_ids if value not in section_exercise_ids]
+    elif payload.exercise_id:
         exercise_id = str(payload.exercise_id).strip()
         if exercise_id not in valid_exercise_ids:
             raise HTTPException(status_code=400, detail="Workout exercise not found")
@@ -1341,25 +1435,36 @@ async def workout_strength_plan_progress_update(
             completed_exercise_ids = [value for value in completed_exercise_ids if value != exercise_id]
     elif payload.completed is not None:
         if payload.completed:
+            completed_section_ids = valid_section_ids[:]
             completed_exercise_ids = valid_exercise_ids[:]
             day_progress["started"] = True
             day_progress["started_at"] = day_progress.get("started_at") or now
         else:
+            completed_section_ids = []
             completed_exercise_ids = []
 
     if payload.started is not None:
         day_progress["started"] = bool(payload.started)
         if day_progress["started"]:
             day_progress["started_at"] = day_progress.get("started_at") or now
-        elif not completed_exercise_ids:
+        elif not completed_exercise_ids and not completed_section_ids:
             day_progress["started_at"] = None
 
+    completed_section_ids = [
+        section_id
+        for section_id in valid_section_ids
+        if all(exercise_id in completed_exercise_ids for exercise_id in section_exercise_map.get(section_id, []))
+    ]
+
     is_completed = False
-    if valid_exercise_ids:
+    if valid_section_ids:
+        is_completed = len(completed_section_ids) >= len(valid_section_ids)
+    elif valid_exercise_ids:
         is_completed = len(completed_exercise_ids) >= len(valid_exercise_ids)
     elif payload.completed is not None:
         is_completed = bool(payload.completed)
 
+    day_progress["completed_section_ids"] = completed_section_ids
     day_progress["completed_exercise_ids"] = completed_exercise_ids
     day_progress["completed"] = is_completed
     if is_completed:
