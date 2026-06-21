@@ -346,6 +346,54 @@ class CommunityPostUploadTests(unittest.TestCase):
         self.assertEqual(upload_mock.call_args.args[0], "community-videos")
         collection.insert_one.assert_awaited_once()
 
+    def test_create_community_post_rejects_oversized_image_multipart(self) -> None:
+        upload_mock = Mock(return_value="https://cdn.example.com/community-images/image.png")
+        collection = SimpleNamespace(insert_one=AsyncMock())
+
+        with patch.object(backend_module, "COMMUNITY_IMAGE_MAX_SIZE_BYTES", 1 * 1024 * 1024), patch.object(
+            backend_module, "_upload_binary_bytes_to_s3", upload_mock
+        ), patch.object(backend_module, "community_posts_collection", collection):
+            response = self.client.post(
+                "/community/posts",
+                data={
+                    "content": "image post",
+                    "mime_type": "image/png",
+                    "file_name": "image.png",
+                },
+                files={
+                    "media_file": ("image.png", b"1" * (1 * 1024 * 1024 + 1), "image/png"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("1MB or smaller", response.json()["detail"])
+        upload_mock.assert_not_called()
+        collection.insert_one.assert_not_awaited()
+
+    def test_create_community_post_rejects_oversized_video_multipart(self) -> None:
+        upload_mock = Mock(return_value="https://cdn.example.com/community-videos/video.mp4")
+        collection = SimpleNamespace(insert_one=AsyncMock())
+
+        with patch.object(backend_module, "COMMUNITY_VIDEO_MAX_SIZE_BYTES", 20 * 1024 * 1024), patch.object(
+            backend_module, "_upload_binary_bytes_to_s3", upload_mock
+        ), patch.object(backend_module, "community_posts_collection", collection):
+            response = self.client.post(
+                "/community/posts",
+                data={
+                    "content": "video post",
+                    "mime_type": "video/mp4",
+                    "file_name": "video.mp4",
+                },
+                files={
+                    "media_file": ("video.mp4", b"1" * (20 * 1024 * 1024 + 1), "video/mp4"),
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("20MB or smaller", response.json()["detail"])
+        upload_mock.assert_not_called()
+        collection.insert_one.assert_not_awaited()
+
 
 class FaviconRouteTests(unittest.TestCase):
     @classmethod

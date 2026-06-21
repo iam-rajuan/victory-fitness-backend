@@ -274,6 +274,9 @@ MEDIA_ROOT = Path("/tmp/victory-fitness-media") if settings.is_vercel else Path(
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
 
+COMMUNITY_IMAGE_MAX_SIZE_BYTES = 1 * 1024 * 1024
+COMMUNITY_VIDEO_MAX_SIZE_BYTES = 20 * 1024 * 1024
+
 
 @lru_cache(maxsize=1)
 def _build_favicon_png_bytes() -> bytes:
@@ -2895,60 +2898,72 @@ async def create_community_post(
 
         media_file = form.get("media_file") or form.get("media")
         if media_file is not None and hasattr(media_file, "read") and hasattr(media_file, "filename"):
-            payload = await media_file.read()
-            if payload:
-                file_name = media_file.filename or file_name
-                mime_type = str(media_file.content_type or mime_type).strip().lower() or mime_type
-                if mime_type.startswith("image/"):
-                    try:
-                        image_url = _upload_binary_bytes_to_s3(
-                            "community-images",
-                            str(user["_id"]),
-                            payload,
-                            mime_type,
-                            file_name,
-                            allowed_types={
-                                "image/jpeg": ".jpg",
-                                "image/jpg": ".jpg",
-                                "image/png": ".png",
-                                "image/webp": ".webp",
-                            },
-                            invalid_type_message="Only JPEG, PNG, and WEBP images are supported",
-                            max_size_bytes=10 * 1024 * 1024,
-                            upload_log_label="image",
-                        )
-                    except ValueError as exc:
-                        raise HTTPException(status_code=400, detail=str(exc)) from exc
-                    except Exception as exc:
-                        raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
-                elif mime_type.startswith("video/"):
-                    try:
-                        video_url = _upload_binary_bytes_to_s3(
-                            "community-videos",
-                            str(user["_id"]),
-                            payload,
-                            mime_type,
-                            file_name,
-                            allowed_types={
-                                "video/mp4": ".mp4",
-                                "video/quicktime": ".mov",
-                                "video/webm": ".webm",
-                            },
-                            invalid_type_message="Only MP4, MOV, and WEBM videos are supported",
-                            max_size_bytes=25 * 1024 * 1024,
-                            upload_log_label="video",
-                        )
-                    except ValueError as exc:
-                        raise HTTPException(status_code=400, detail=str(exc)) from exc
-                    except Exception as exc:
-                        raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
-                else:
-                    raise HTTPException(status_code=400, detail="Only image or video files are supported")
-            close_method = getattr(media_file, "close", None)
-            if callable(close_method):
-                close_result = close_method()
-                if inspect.isawaitable(close_result):
-                    await close_result
+            try:
+                payload = await media_file.read()
+                if payload:
+                    file_name = media_file.filename or file_name
+                    mime_type = str(media_file.content_type or mime_type).strip().lower() or mime_type
+                    if mime_type.startswith("image/"):
+                        if len(payload) > COMMUNITY_IMAGE_MAX_SIZE_BYTES:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Image must be {COMMUNITY_IMAGE_MAX_SIZE_BYTES // (1024 * 1024)}MB or smaller",
+                            )
+                        try:
+                            image_url = _upload_binary_bytes_to_s3(
+                                "community-images",
+                                str(user["_id"]),
+                                payload,
+                                mime_type,
+                                file_name,
+                                allowed_types={
+                                    "image/jpeg": ".jpg",
+                                    "image/jpg": ".jpg",
+                                    "image/png": ".png",
+                                    "image/webp": ".webp",
+                                },
+                                invalid_type_message="Only JPEG, PNG, and WEBP images are supported",
+                                max_size_bytes=COMMUNITY_IMAGE_MAX_SIZE_BYTES,
+                                upload_log_label="image",
+                            )
+                        except ValueError as exc:
+                            raise HTTPException(status_code=400, detail=str(exc)) from exc
+                        except Exception as exc:
+                            raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
+                    elif mime_type.startswith("video/"):
+                        if len(payload) > COMMUNITY_VIDEO_MAX_SIZE_BYTES:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Video must be {COMMUNITY_VIDEO_MAX_SIZE_BYTES // (1024 * 1024)}MB or smaller",
+                            )
+                        try:
+                            video_url = _upload_binary_bytes_to_s3(
+                                "community-videos",
+                                str(user["_id"]),
+                                payload,
+                                mime_type,
+                                file_name,
+                                allowed_types={
+                                    "video/mp4": ".mp4",
+                                    "video/quicktime": ".mov",
+                                    "video/webm": ".webm",
+                                },
+                                invalid_type_message="Only MP4, MOV, and WEBM videos are supported",
+                                max_size_bytes=COMMUNITY_VIDEO_MAX_SIZE_BYTES,
+                                upload_log_label="video",
+                            )
+                        except ValueError as exc:
+                            raise HTTPException(status_code=400, detail=str(exc)) from exc
+                        except Exception as exc:
+                            raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
+                    else:
+                        raise HTTPException(status_code=400, detail="Only image or video files are supported")
+            finally:
+                close_method = getattr(media_file, "close", None)
+                if callable(close_method):
+                    close_result = close_method()
+                    if inspect.isawaitable(close_result):
+                        await close_result
         image_base64 = str(form.get("image_base64") or "").strip()
         video_base64 = str(form.get("video_base64") or "").strip()
     else:
@@ -6022,8 +6037,26 @@ def _upload_community_image_to_s3(
     image_base64: str,
     mime_type: str,
     file_name: str | None,
+    *,
+    max_size_bytes: int = COMMUNITY_IMAGE_MAX_SIZE_BYTES,
 ) -> str:
-    return _upload_image_to_s3("community-images", user_id, image_base64, mime_type, file_name)
+    return _upload_binary_to_s3(
+        "community-images",
+        user_id,
+        image_base64,
+        mime_type,
+        file_name,
+        allowed_types={
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        },
+        invalid_type_message="Only JPEG, PNG, and WEBP images are supported",
+        invalid_payload_message="Image payload is not valid base64",
+        max_size_bytes=max_size_bytes,
+        upload_log_label="image",
+    )
 
 
 def _upload_community_video_to_s3(
@@ -6031,8 +6064,25 @@ def _upload_community_video_to_s3(
     video_base64: str,
     mime_type: str,
     file_name: str | None,
+    *,
+    max_size_bytes: int = COMMUNITY_VIDEO_MAX_SIZE_BYTES,
 ) -> str:
-    return _upload_video_to_s3("community-videos", user_id, video_base64, mime_type, file_name)
+    return _upload_binary_to_s3(
+        "community-videos",
+        user_id,
+        video_base64,
+        mime_type,
+        file_name,
+        allowed_types={
+            "video/mp4": ".mp4",
+            "video/quicktime": ".mov",
+            "video/webm": ".webm",
+        },
+        invalid_type_message="Only MP4, MOV, and WEBM videos are supported",
+        invalid_payload_message="Video payload is not valid base64",
+        max_size_bytes=max_size_bytes,
+        upload_log_label="video",
+    )
 
 
 def _upload_workout_video_to_s3(
