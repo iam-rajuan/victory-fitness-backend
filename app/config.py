@@ -7,8 +7,9 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parents[1]
 ENV_FILE = BASE_DIR / ".env"
 
-# Keep local backend runs aligned with victory-fitness-backend/.env.
-load_dotenv(ENV_FILE, override=True)
+# Keep local backend runs aligned with victory-fitness-backend/.env
+# without overriding deployment environment variables.
+load_dotenv(ENV_FILE, override=False)
 
 
 def _get_str(name: str, default: str = "", *, strip_value: bool = True) -> str:
