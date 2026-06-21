@@ -3053,7 +3053,7 @@ async def delete_own_community_post(
 ) -> Response:
     record = await _get_community_post_or_404(post_id)
     _ensure_community_post_access(record, user)
-    if not _can_manage_community_post(record, user):
+    if not _can_delete_own_community_post(record, user):
         raise HTTPException(status_code=403, detail="You can only delete your own post")
 
     await community_posts_collection.delete_one({"_id": record["_id"]})
@@ -7295,7 +7295,7 @@ async def _serialize_community_post_records(
         serialized = _serialize_community_post_record(record, author_records_by_id.get(author_id))
         post_id = serialized["id"]
         serialized["viewer_has_liked"] = post_id in liked_post_ids
-        serialized["can_delete"] = bool(viewer_user_id) and _can_manage_community_post(record, {"_id": viewer_user_id, "is_admin": False})
+        serialized["can_delete"] = bool(viewer_user_id) and _can_delete_own_community_post(record, {"_id": viewer_user_id})
         serialized["comments"] = comments_by_post.get(post_id, [])
         serialized["reactions"] = reactions_by_post.get(post_id, [])
         serialized_posts.append(serialized)
@@ -7432,9 +7432,7 @@ async def _sync_community_author_profile(user_record: dict) -> None:
     )
 
 
-def _can_manage_community_post(record: dict, user: dict) -> bool:
-    if user.get("is_admin"):
-        return True
+def _can_delete_own_community_post(record: dict, user: dict) -> bool:
     return str(record.get("author_id") or "") == str(user.get("_id") or "")
 
 
