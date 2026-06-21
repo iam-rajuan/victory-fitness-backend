@@ -683,6 +683,36 @@ class ChallengeChatSocketManager:
 
 challenge_chat_socket_manager = ChallengeChatSocketManager()
 
+
+def _build_cors_response_headers(request: Request) -> dict[str, str]:
+    origin = str(request.headers.get("origin") or "").strip()
+    if not origin:
+        return {}
+
+    if origin in settings.cors_origins:
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+
+    origin_regex = settings.cors_origin_regex
+    if origin_regex and re.match(origin_regex, origin):
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+            "Vary": "Origin",
+        }
+
+    return {}
+
+
+def _cors_json_response(request: Request, *, status_code: int, content: dict[str, Any]) -> JSONResponse:
+    response = JSONResponse(status_code=status_code, content=content)
+    for header_name, header_value in _build_cors_response_headers(request).items():
+        response.headers[header_name] = header_value
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -729,7 +759,7 @@ async def database_not_configured_handler(
     exc: DatabaseNotConfiguredError,
 ) -> JSONResponse:
     logger.error("database_not_configured path=%s detail=%s", request.url.path, str(exc))
-    return JSONResponse(status_code=503, content={"detail": str(exc)})
+    return _cors_json_response(request, status_code=503, content={"detail": str(exc)})
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -744,7 +774,7 @@ async def http_exception_handler(
         exc.status_code,
         exc.detail,
     )
-    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return _cors_json_response(request, status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(Exception)
@@ -759,7 +789,7 @@ async def unhandled_exception_handler(
         request.url.path,
         detail,
     )
-    return JSONResponse(status_code=500, content={"detail": detail})
+    return _cors_json_response(request, status_code=500, content={"detail": detail})
 
 
 async def _require_access_user(
@@ -4493,7 +4523,6 @@ async def admin_create_workout(
 
     document = {
         "title": payload.title.strip(),
-        "vimeo_id": vimeo_id,
         "video_url": video_url,
         "video_source": video_source,
         "tag": payload.tag.strip(),
@@ -4502,6 +4531,8 @@ async def admin_create_workout(
         "created_at": now,
         "updated_at": now,
     }
+    if vimeo_id:
+        document["vimeo_id"] = vimeo_id
     insert_result = await workouts_collection.insert_one(document)
     document["_id"] = insert_result.inserted_id
     return AdminWorkoutItem(**_serialize_admin_workout_record(document))
@@ -4552,7 +4583,6 @@ async def admin_update_workout(
 
     update_doc = {
         "title": payload.title.strip(),
-        "vimeo_id": vimeo_id,
         "video_url": video_url,
         "video_source": video_source,
         "tag": payload.tag.strip(),
@@ -4560,7 +4590,12 @@ async def admin_update_workout(
         "thumbnail": thumbnail,
         "updated_at": datetime.now(timezone.utc),
     }
-    await workouts_collection.update_one({"_id": object_id}, {"$set": update_doc})
+    update_operation: dict[str, Any] = {"$set": update_doc}
+    if vimeo_id:
+        update_doc["vimeo_id"] = vimeo_id
+    else:
+        update_operation["$unset"] = {"vimeo_id": ""}
+    await workouts_collection.update_one({"_id": object_id}, update_operation)
 
     updated_workout = await workouts_collection.find_one({"_id": object_id})
     if not updated_workout:
@@ -5876,6 +5911,7 @@ def _create_presigned_media_upload(
 
     try:
         import boto3
+        from botocore.config import Config
     except ImportError as exc:
         raise ValueError("Direct upload is not available because boto3 is not installed") from exc
 
@@ -5885,8 +5921,10 @@ def _create_presigned_media_upload(
     client = boto3.client(
         "s3",
         region_name=settings.aws_region,
+        endpoint_url=f"https://s3.{settings.aws_region}.amazonaws.com",
         aws_access_key_id=settings.aws_access_key_id,
         aws_secret_access_key=settings.aws_secret_access_key,
+        config=Config(s3={"addressing_style": "virtual"}),
     )
     upload_url = client.generate_presigned_url(
         "put_object",
