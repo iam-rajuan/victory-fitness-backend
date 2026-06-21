@@ -64,13 +64,14 @@ def _get_csv_list(name: str, default: str = "") -> list[str]:
 DEFAULT_CORS_ORIGINS = [
     "https://victory-fitness-dashboard.vercel.app",
     "https://victory-fitness-app.vercel.app",
+    "https://victora-web-app.vercel.app",
     "http://localhost:3000",
     "http://localhost:5173",
     "http://localhost:8081",
 ]
 DEFAULT_CORS_ORIGIN_REGEX = (
     r"^https://"
-    r"(victory-fitness-dashboard|victory-fitness-app|victory-fitness-backend)"
+    r"(victory-fitness-dashboard|victory-fitness-app|victora-web-app|victory-fitness-backend)"
     r"(?:-[a-z0-9-]+)?"
     r"-miskatul-masabis-projects\.vercel\.app$"
 )
