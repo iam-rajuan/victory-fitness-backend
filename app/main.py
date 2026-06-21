@@ -4721,20 +4721,35 @@ async def admin_create_direct_upload(
     payload: AdminDirectUploadRequest,
     admin_user: dict = Depends(_require_admin_user),
 ) -> AdminDirectUploadResponse:
-    if payload.uploadType != "WORKOUT_VIDEO":
-        raise HTTPException(status_code=400, detail="Unsupported upload type")
-
     try:
+        folder_name, allowed_types = _get_direct_upload_target(payload.uploadType)
         return _create_presigned_media_upload(
-            "workout-videos",
+            folder_name,
             str(admin_user["_id"]),
             payload.contentType,
             payload.fileName,
-            allowed_types={
-                "video/mp4": ".mp4",
-                "video/quicktime": ".mov",
-                "video/webm": ".webm",
-            },
+            allowed_types=allowed_types,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/uploads/presign", response_model=AdminDirectUploadResponse)
+async def create_direct_upload(
+    payload: AdminDirectUploadRequest,
+    user: dict = Depends(_require_community_access_user),
+) -> AdminDirectUploadResponse:
+    if payload.uploadType != "COMMUNITY_VIDEO":
+        raise HTTPException(status_code=400, detail="Unsupported upload type")
+
+    try:
+        folder_name, allowed_types = _get_direct_upload_target(payload.uploadType)
+        return _create_presigned_media_upload(
+            folder_name,
+            str(user["_id"]),
+            payload.contentType,
+            payload.fileName,
+            allowed_types=allowed_types,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -6199,6 +6214,22 @@ def _create_presigned_media_upload(
         fileUrl=file_url,
         headers={"Content-Type": normalized_mime, "Cache-Control": "public, max-age=31536000"},
     )
+
+
+def _get_direct_upload_target(upload_type: str) -> tuple[str, dict[str, str]]:
+    normalized_type = str(upload_type or "").strip().upper()
+    allowed_types = {
+        "video/mp4": ".mp4",
+        "video/quicktime": ".mov",
+        "video/webm": ".webm",
+    }
+
+    if normalized_type == "WORKOUT_VIDEO":
+        return "workout-videos", allowed_types
+    if normalized_type == "COMMUNITY_VIDEO":
+        return "community-videos", allowed_types
+
+    raise ValueError("Unsupported upload type")
 
 
 def _delete_image_from_s3(image_url: str | None) -> None:

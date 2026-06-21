@@ -1326,7 +1326,7 @@ class AdminWorkoutRequest(BaseModel):
 
 
 class AdminDirectUploadRequest(BaseModel):
-    uploadType: str = Field(pattern=r"^(WORKOUT_VIDEO)$")
+    uploadType: str = Field(pattern=r"^(WORKOUT_VIDEO|COMMUNITY_VIDEO)$")
     contentType: str = Field(min_length=1, max_length=120)
     fileName: str | None = Field(default=None, max_length=255)
 
