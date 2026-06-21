@@ -2874,7 +2874,7 @@ async def get_community_posts(user: dict = Depends(_require_community_access_use
         sort=[("created_at", -1), ("_id", -1)],
         limit=100,
     ).to_list(length=100)
-    posts = await _serialize_community_post_records(records, str(user["_id"]), include_reactions=False)
+    posts = await _serialize_community_post_records(records, user, include_reactions=False)
     return CommunityPostListResponse(
         posts=[CommunityPostResponse(**post) for post in posts]
     )
@@ -3042,7 +3042,7 @@ async def create_community_post(
         "updated_at": now,
     }
     await community_posts_collection.insert_one(document)
-    serialized = await _serialize_community_post_records([document], str(user["_id"]), include_reactions=False)
+    serialized = await _serialize_community_post_records([document], user, include_reactions=False)
     return CommunityPostResponse(**serialized[0])
 
 
@@ -3053,7 +3053,7 @@ async def delete_own_community_post(
 ) -> Response:
     record = await _get_community_post_or_404(post_id)
     _ensure_community_post_access(record, user)
-    if not _can_delete_own_community_post(record, user):
+    if not _can_delete_community_post(record, user):
         raise HTTPException(status_code=403, detail="You can only delete your own post")
 
     await community_posts_collection.delete_one({"_id": record["_id"]})
@@ -3225,7 +3225,7 @@ async def admin_create_community_post(
         "updated_at": now,
     }
     await community_posts_collection.insert_one(document)
-    serialized = await _serialize_community_post_records([document], str(admin_user["_id"]), comment_limit_per_post=200, include_reactions=True)
+    serialized = await _serialize_community_post_records([document], admin_user, comment_limit_per_post=200, include_reactions=True)
     return CommunityPostResponse(**serialized[0])
 
 
@@ -7276,7 +7276,7 @@ def _serialize_community_reaction_user_record(record: dict, user_record: dict | 
 
 async def _serialize_community_post_records(
     records: list[dict],
-    viewer_user_id: str | None,
+    viewer_user: dict | None,
     comment_limit_per_post: int = 3,
     include_reactions: bool = False,
 ) -> list[dict]:
@@ -7285,6 +7285,7 @@ async def _serialize_community_post_records(
 
     author_records_by_id = await _load_community_author_records(records)
     post_ids = [str(record.get("_id")) for record in records if record.get("_id")]
+    viewer_user_id = str(viewer_user.get("_id") or "") if viewer_user else None
     comments_by_post = await _load_community_comments(records, limit_per_post=comment_limit_per_post)
     liked_post_ids = await _load_community_liked_post_ids(post_ids, viewer_user_id)
     reactions_by_post = await _load_community_reactions(records) if include_reactions else {}
@@ -7295,7 +7296,7 @@ async def _serialize_community_post_records(
         serialized = _serialize_community_post_record(record, author_records_by_id.get(author_id))
         post_id = serialized["id"]
         serialized["viewer_has_liked"] = post_id in liked_post_ids
-        serialized["can_delete"] = bool(viewer_user_id) and _can_delete_own_community_post(record, {"_id": viewer_user_id})
+        serialized["can_delete"] = bool(viewer_user) and _can_delete_community_post(record, viewer_user)
         serialized["comments"] = comments_by_post.get(post_id, [])
         serialized["reactions"] = reactions_by_post.get(post_id, [])
         serialized_posts.append(serialized)
@@ -7432,7 +7433,9 @@ async def _sync_community_author_profile(user_record: dict) -> None:
     )
 
 
-def _can_delete_own_community_post(record: dict, user: dict) -> bool:
+def _can_delete_community_post(record: dict, user: dict) -> bool:
+    if user.get("is_admin"):
+        return True
     return str(record.get("author_id") or "") == str(user.get("_id") or "")
 
 

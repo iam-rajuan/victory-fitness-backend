@@ -404,9 +404,9 @@ class CommunityPostDeletePermissionTests(unittest.TestCase):
 
     def test_community_post_delete_is_owner_only(self) -> None:
         record = {"_id": "post-1", "author_id": "user-1"}
-        self.assertTrue(backend_module._can_delete_own_community_post(record, {"_id": "user-1"}))
-        self.assertFalse(backend_module._can_delete_own_community_post(record, {"_id": "user-2"}))
-        self.assertFalse(backend_module._can_delete_own_community_post(record, {"_id": "admin-1", "is_admin": True}))
+        self.assertTrue(backend_module._can_delete_community_post(record, {"_id": "user-1"}))
+        self.assertFalse(backend_module._can_delete_community_post(record, {"_id": "user-2"}))
+        self.assertTrue(backend_module._can_delete_community_post(record, {"_id": "admin-1", "is_admin": True}))
 
     def test_delete_own_community_post_rejects_non_owner(self) -> None:
         client = self._build_client({"_id": "user-2", "is_verified": True, "subscription_tier": "GOLD"})
@@ -428,6 +428,27 @@ class CommunityPostDeletePermissionTests(unittest.TestCase):
 
     def test_delete_own_community_post_allows_owner(self) -> None:
         client = self._build_client({"_id": "user-1", "is_verified": True, "subscription_tier": "GOLD"})
+        record = {"_id": "post-1", "author_id": "user-1", "audience": "ALL"}
+        delete_one = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
+        delete_many = AsyncMock()
+
+        with patch.object(backend_module, "_get_community_post_or_404", AsyncMock(return_value=record)), patch.object(
+            backend_module, "_ensure_community_post_access", lambda *_args, **_kwargs: None
+        ), patch.object(
+            backend_module, "community_posts_collection", SimpleNamespace(delete_one=delete_one)
+        ), patch.object(
+            backend_module, "community_comments_collection", SimpleNamespace(delete_many=delete_many)
+        ), patch.object(
+            backend_module, "community_reactions_collection", SimpleNamespace(delete_many=delete_many)
+        ):
+            response = client.delete("/community/posts/post-1")
+
+        self.assertEqual(response.status_code, 204)
+        delete_one.assert_awaited_once()
+        self.assertEqual(delete_many.await_count, 2)
+
+    def test_delete_own_community_post_allows_admin(self) -> None:
+        client = self._build_client({"_id": "admin-1", "is_admin": True, "is_verified": True, "subscription_tier": "GOLD"})
         record = {"_id": "post-1", "author_id": "user-1", "audience": "ALL"}
         delete_one = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
         delete_many = AsyncMock()
