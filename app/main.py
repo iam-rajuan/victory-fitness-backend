@@ -1136,6 +1136,9 @@ async def startup() -> None:
     if not settings.startup_jobs_enabled:
         logger.info("startup_jobs_skipped reason=disabled")
         return
+    if not settings.mongodb_configured:
+        logger.info("startup_jobs_skipped reason=database_not_configured")
+        return
     await ensure_indexes()
     await backfill_current_health_metrics_from_history()
     await _seed_admin_user()
@@ -1149,6 +1152,9 @@ async def shutdown() -> None:
     logger.info("shutdown_begin")
     if not settings.startup_jobs_enabled:
         logger.info("shutdown_jobs_skipped reason=disabled")
+        return
+    if not settings.mongodb_configured:
+        logger.info("shutdown_jobs_skipped reason=database_not_configured")
         return
     await stop_wearables_scheduler()
     await stop_integration_queue()

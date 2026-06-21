@@ -16,49 +16,94 @@ class DatabaseNotConfiguredError(RuntimeError):
     pass
 
 
-if not settings.mongodb_configured:
-    raise DatabaseNotConfiguredError(MONGODB_NOT_CONFIGURED_MESSAGE)
+class _UnconfiguredCollection:
+    def __getattr__(self, name: str):
+        raise DatabaseNotConfiguredError(MONGODB_NOT_CONFIGURED_MESSAGE)
+
+    def __bool__(self) -> bool:
+        return False
 
 
-client = AsyncIOMotorClient(
-    settings.mongodb_uri,
-    serverSelectionTimeoutMS=10000,
-    maxPoolSize=settings.mongodb_max_pool_size,
-    minPoolSize=settings.mongodb_min_pool_size,
-)
-db = client[settings.mongodb_db]
-users_collection = db["users"]
-nutrition_plans_collection = db["nutrition_plans"]
-nutrition_plan_jobs_collection = db["nutrition_plan_jobs"]
-nutrition_progressive_plans_collection = db["nutrition_progressive_plans"]
-nutrition_progressive_plan_jobs_collection = db["nutrition_progressive_plan_jobs"]
-meal_analysis_entries_collection = db["meal_analysis_entries"]
-strength_workout_plans_collection = db["strength_workout_plans"]
-app_content_collection = db["app_content"]
-coaching_applications_collection = db["coaching_applications"]
-support_messages_collection = db["support_messages"]
-longevity_os_profiles_collection = db["longevity_os_profiles"]
-coach_victor_threads_collection = db["coach_victor_threads"]
-coach_victor_archives_collection = db["coach_victor_archives"]
-journal_entries_collection = db["journal_entries"]
-workouts_collection = db["workouts"]
-challenges_collection = db["challenges"]
-challenge_memberships_collection = db["challenge_memberships"]
-challenge_chat_messages_collection = db["challenge_chat_messages"]
-challenge_message_reactions_collection = db["challenge_message_reactions"]
-community_posts_collection = db["community_posts"]
-community_comments_collection = db["community_comments"]
-community_reactions_collection = db["community_reactions"]
-user_provider_connections_collection = db["user_provider_connections"]
-provider_tokens_collection = db["provider_tokens"]
-health_metric_current_collection = db["health_metric_current"]
-health_samples_collection = db["health_samples"]
-sync_jobs_collection = db["sync_jobs"]
-sync_errors_collection = db["sync_errors"]
-integration_audit_logs_collection = db["integration_audit_logs"]
-wearable_connections_collection = user_provider_connections_collection
-health_metric_history_collection = health_samples_collection
-health_metrics_collection = health_metric_current_collection
+def _require_database_configured() -> None:
+    if not settings.mongodb_configured:
+        raise DatabaseNotConfiguredError(MONGODB_NOT_CONFIGURED_MESSAGE)
+
+
+if settings.mongodb_configured:
+    client = AsyncIOMotorClient(
+        settings.mongodb_uri,
+        serverSelectionTimeoutMS=10000,
+        maxPoolSize=settings.mongodb_max_pool_size,
+        minPoolSize=settings.mongodb_min_pool_size,
+    )
+    db = client[settings.mongodb_db]
+    users_collection = db["users"]
+    nutrition_plans_collection = db["nutrition_plans"]
+    nutrition_plan_jobs_collection = db["nutrition_plan_jobs"]
+    nutrition_progressive_plans_collection = db["nutrition_progressive_plans"]
+    nutrition_progressive_plan_jobs_collection = db["nutrition_progressive_plan_jobs"]
+    meal_analysis_entries_collection = db["meal_analysis_entries"]
+    strength_workout_plans_collection = db["strength_workout_plans"]
+    app_content_collection = db["app_content"]
+    coaching_applications_collection = db["coaching_applications"]
+    support_messages_collection = db["support_messages"]
+    longevity_os_profiles_collection = db["longevity_os_profiles"]
+    coach_victor_threads_collection = db["coach_victor_threads"]
+    coach_victor_archives_collection = db["coach_victor_archives"]
+    journal_entries_collection = db["journal_entries"]
+    workouts_collection = db["workouts"]
+    challenges_collection = db["challenges"]
+    challenge_memberships_collection = db["challenge_memberships"]
+    challenge_chat_messages_collection = db["challenge_chat_messages"]
+    challenge_message_reactions_collection = db["challenge_message_reactions"]
+    community_posts_collection = db["community_posts"]
+    community_comments_collection = db["community_comments"]
+    community_reactions_collection = db["community_reactions"]
+    user_provider_connections_collection = db["user_provider_connections"]
+    provider_tokens_collection = db["provider_tokens"]
+    health_metric_current_collection = db["health_metric_current"]
+    health_samples_collection = db["health_samples"]
+    sync_jobs_collection = db["sync_jobs"]
+    sync_errors_collection = db["sync_errors"]
+    integration_audit_logs_collection = db["integration_audit_logs"]
+    wearable_connections_collection = user_provider_connections_collection
+    health_metric_history_collection = health_samples_collection
+    health_metrics_collection = health_metric_current_collection
+else:
+    client = None
+    db = None
+    users_collection = _UnconfiguredCollection()
+    nutrition_plans_collection = _UnconfiguredCollection()
+    nutrition_plan_jobs_collection = _UnconfiguredCollection()
+    nutrition_progressive_plans_collection = _UnconfiguredCollection()
+    nutrition_progressive_plan_jobs_collection = _UnconfiguredCollection()
+    meal_analysis_entries_collection = _UnconfiguredCollection()
+    strength_workout_plans_collection = _UnconfiguredCollection()
+    app_content_collection = _UnconfiguredCollection()
+    coaching_applications_collection = _UnconfiguredCollection()
+    support_messages_collection = _UnconfiguredCollection()
+    longevity_os_profiles_collection = _UnconfiguredCollection()
+    coach_victor_threads_collection = _UnconfiguredCollection()
+    coach_victor_archives_collection = _UnconfiguredCollection()
+    journal_entries_collection = _UnconfiguredCollection()
+    workouts_collection = _UnconfiguredCollection()
+    challenges_collection = _UnconfiguredCollection()
+    challenge_memberships_collection = _UnconfiguredCollection()
+    challenge_chat_messages_collection = _UnconfiguredCollection()
+    challenge_message_reactions_collection = _UnconfiguredCollection()
+    community_posts_collection = _UnconfiguredCollection()
+    community_comments_collection = _UnconfiguredCollection()
+    community_reactions_collection = _UnconfiguredCollection()
+    user_provider_connections_collection = _UnconfiguredCollection()
+    provider_tokens_collection = _UnconfiguredCollection()
+    health_metric_current_collection = _UnconfiguredCollection()
+    health_samples_collection = _UnconfiguredCollection()
+    sync_jobs_collection = _UnconfiguredCollection()
+    sync_errors_collection = _UnconfiguredCollection()
+    integration_audit_logs_collection = _UnconfiguredCollection()
+    wearable_connections_collection = user_provider_connections_collection
+    health_metric_history_collection = health_samples_collection
+    health_metrics_collection = health_metric_current_collection
 
 
 def _parse_health_datetime(value: Any) -> datetime | None:
@@ -154,6 +199,7 @@ async def _collapse_health_snapshot_collection(collection, *, preserve_existing:
 
 
 async def ensure_indexes() -> None:
+    _require_database_configured()
     await client.admin.command("ping")
     await _collapse_health_snapshot_collection(health_metric_current_collection)
     await _collapse_health_snapshot_collection(health_samples_collection)
@@ -230,4 +276,5 @@ async def ensure_indexes() -> None:
 
 
 async def close_database_connection() -> None:
-    client.close()
+    if client is not None:
+        client.close()
