@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
 from bson import ObjectId
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, WebSocket, WebSocketDisconnect, status
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -2825,15 +2825,97 @@ async def get_community_posts(user: dict = Depends(_require_community_access_use
 
 @app.post("/community/posts", response_model=CommunityPostResponse, status_code=status.HTTP_201_CREATED)
 async def create_community_post(
-    payload: CommunityPostCreateRequest,
+    request: Request,
     user: dict = Depends(_require_community_access_user),
 ) -> CommunityPostResponse:
-    content = str(payload.content or "").strip()
+    content = ""
+    image_base64 = ""
+    video_base64 = ""
+    external_video_url_raw = ""
+    mime_type = "image/jpeg"
+    file_name: str | None = None
+    image_url = ""
+    video_url = ""
+
+    content_type = request.headers.get("content-type", "").lower()
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        content = str(form.get("content") or "").strip()
+        external_video_url_raw = str(form.get("external_video_url") or "").strip()
+        mime_type = str(form.get("mime_type") or mime_type).strip() or mime_type
+        file_name = str(form.get("file_name") or "").strip() or None
+
+        media_file = form.get("media_file") or form.get("media")
+        if isinstance(media_file, UploadFile):
+            payload = await media_file.read()
+            if payload:
+                file_name = media_file.filename or file_name
+                mime_type = str(media_file.content_type or mime_type).strip().lower() or mime_type
+                if mime_type.startswith("image/"):
+                    try:
+                        image_url = _upload_binary_bytes_to_s3(
+                            "community-images",
+                            str(user["_id"]),
+                            payload,
+                            mime_type,
+                            file_name,
+                            allowed_types={
+                                "image/jpeg": ".jpg",
+                                "image/jpg": ".jpg",
+                                "image/png": ".png",
+                                "image/webp": ".webp",
+                            },
+                            invalid_type_message="Only JPEG, PNG, and WEBP images are supported",
+                            max_size_bytes=10 * 1024 * 1024,
+                            upload_log_label="image",
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    except Exception as exc:
+                        raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
+                elif mime_type.startswith("video/"):
+                    try:
+                        video_url = _upload_binary_bytes_to_s3(
+                            "community-videos",
+                            str(user["_id"]),
+                            payload,
+                            mime_type,
+                            file_name,
+                            allowed_types={
+                                "video/mp4": ".mp4",
+                                "video/quicktime": ".mov",
+                                "video/webm": ".webm",
+                            },
+                            invalid_type_message="Only MP4, MOV, and WEBM videos are supported",
+                            max_size_bytes=25 * 1024 * 1024,
+                            upload_log_label="video",
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
+                    except Exception as exc:
+                        raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
+                else:
+                    raise HTTPException(status_code=400, detail="Only image or video files are supported")
+        image_base64 = str(form.get("image_base64") or "").strip()
+        video_base64 = str(form.get("video_base64") or "").strip()
+    else:
+        try:
+            raw_payload = await request.json()
+        except Exception:
+            raw_payload = {}
+        payload = CommunityPostCreateRequest.model_validate(raw_payload)
+        content = str(payload.content or "").strip()
+        image_base64 = str(payload.image_base64 or "").strip()
+        video_base64 = str(payload.video_base64 or "").strip()
+        external_video_url_raw = str(payload.external_video_url or "").strip()
+        mime_type = str(payload.mime_type or mime_type).strip() or mime_type
+        file_name = str(payload.file_name or "").strip() or None
+
     external_video_url = ""
-    if payload.external_video_url:
+    if external_video_url_raw:
         try:
             external_video_url = _resolve_media_url_to_storage(
-                payload.external_video_url,
+                external_video_url_raw,
                 folder_name="community-videos",
                 user_id=str(user["_id"]),
                 upload_log_label="video",
@@ -2842,31 +2924,29 @@ async def create_community_post(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if not content and not payload.image_base64 and not payload.video_base64 and not external_video_url:
+    if not content and not image_url and not video_url and not image_base64 and not video_base64 and not external_video_url:
         raise HTTPException(status_code=400, detail="Post content, image, video, or supported video link is required.")
 
     now = datetime.now(timezone.utc)
-    image_url = ""
-    video_url = ""
-    if payload.image_base64:
+    if image_base64 and not image_url:
         try:
             image_url = _upload_community_image_to_s3(
                 str(user["_id"]),
-                payload.image_base64,
-                payload.mime_type,
-                payload.file_name,
+                image_base64,
+                mime_type,
+                file_name,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
-    elif payload.video_base64:
+    elif video_base64 and not video_url:
         try:
             video_url = _upload_community_video_to_s3(
                 str(user["_id"]),
-                payload.video_base64,
-                payload.mime_type,
-                payload.file_name,
+                video_base64,
+                mime_type,
+                file_name,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2874,6 +2954,7 @@ async def create_community_post(
             raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
     elif external_video_url:
         video_url = external_video_url
+
     document = {
         "_id": ObjectId(),
         "author_id": str(user["_id"]),
@@ -6066,6 +6147,37 @@ def _upload_binary_to_s3(
         payload = base64.b64decode(payload_base64, validate=True)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(invalid_payload_message) from exc
+
+    if len(payload) > max_size_bytes:
+        raise ValueError(f"{upload_log_label.capitalize()} must be {max_size_bytes // (1024 * 1024)}MB or smaller")
+
+    return _store_media_bytes_to_storage(
+        folder_name,
+        user_id,
+        payload,
+        extension,
+        file_name,
+        content_type=normalized_mime,
+        upload_log_label=upload_log_label,
+    )
+
+
+def _upload_binary_bytes_to_s3(
+    folder_name: str,
+    user_id: str,
+    payload: bytes,
+    mime_type: str,
+    file_name: str | None,
+    *,
+    allowed_types: dict[str, str],
+    invalid_type_message: str,
+    max_size_bytes: int,
+    upload_log_label: str,
+) -> str:
+    normalized_mime = str(mime_type or "").strip().lower()
+    extension = allowed_types.get(normalized_mime)
+    if extension is None:
+        raise ValueError(invalid_type_message)
 
     if len(payload) > max_size_bytes:
         raise ValueError(f"{upload_log_label.capitalize()} must be {max_size_bytes // (1024 * 1024)}MB or smaller")
