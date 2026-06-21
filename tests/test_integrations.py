@@ -347,6 +347,20 @@ class CommunityPostUploadTests(unittest.TestCase):
         collection.insert_one.assert_awaited_once()
 
 
+class FaviconRouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = TestClient(backend_module.app)
+
+    def test_favicon_ico_returns_content(self) -> None:
+        response = self.client.get("/favicon.ico")
+        self.assertIn(response.status_code, {200, 204})
+
+    def test_favicon_png_returns_content(self) -> None:
+        response = self.client.get("/favicon.png")
+        self.assertIn(response.status_code, {200, 204})
+
+
 class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_metrics_are_skipped_idempotently(self) -> None:
         class SnapshotCursor:

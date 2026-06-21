@@ -273,6 +273,53 @@ logger = logging.getLogger("victory_fitness.api")
 MEDIA_ROOT = Path("/tmp/victory-fitness-media") if settings.is_vercel else Path(__file__).resolve().parents[1] / "media"
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=MEDIA_ROOT), name="media")
+
+
+@lru_cache(maxsize=1)
+def _build_favicon_png_bytes() -> bytes:
+    if Image is None:
+        return b""
+
+    canvas = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.ellipse((2, 2, 13, 13), fill=(16, 185, 129, 255))
+    draw.ellipse((5, 5, 10, 10), fill=(255, 255, 255, 255))
+
+    buffer = BytesIO()
+    canvas.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+@lru_cache(maxsize=1)
+def _build_favicon_ico_bytes() -> bytes:
+    if Image is None:
+        return b""
+
+    canvas = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.ellipse((2, 2, 13, 13), fill=(16, 185, 129, 255))
+    draw.ellipse((5, 5, 10, 10), fill=(255, 255, 255, 255))
+
+    buffer = BytesIO()
+    canvas.save(buffer, format="ICO", sizes=[(16, 16)])
+    return buffer.getvalue()
+
+
+@app.get("/favicon.ico")
+async def get_favicon_ico() -> Response:
+    content = _build_favicon_ico_bytes()
+    if not content:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(content=content, media_type="image/x-icon")
+
+
+@app.get("/favicon.png")
+async def get_favicon_png() -> Response:
+    content = _build_favicon_png_bytes()
+    if not content:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return Response(content=content, media_type="image/png")
+
 REMOTE_MEDIA_MIME_TO_EXTENSION = {
     "video/mp4": ".mp4",
     "video/quicktime": ".mov",
