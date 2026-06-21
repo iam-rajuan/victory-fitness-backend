@@ -191,7 +191,7 @@ async def ensure_indexes() -> None:
     await workouts_collection.create_index(
         "vimeo_id",
         unique=True,
-        partialFilterExpression={"vimeo_id": {"$exists": True, "$type": "string", "$ne": ""}},
+        sparse=True,
     )
     await challenges_collection.create_index([("status", 1), ("created_at", -1)])
     await challenges_collection.create_index([("category", 1), ("created_at", -1)])
