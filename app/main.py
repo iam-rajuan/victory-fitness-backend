@@ -3930,6 +3930,21 @@ async def complete_challenge_today(
     challenge_id: str,
     user: dict = Depends(_require_challenge_access_user),
 ) -> ChallengePlanProgressResponse:
+    return await _complete_current_challenge_day(challenge_id, user)
+
+
+@app.post("/challenges/{challenge_id}/current-day/complete", response_model=ChallengePlanProgressResponse)
+async def complete_current_challenge_day(
+    challenge_id: str,
+    user: dict = Depends(_require_challenge_access_user),
+) -> ChallengePlanProgressResponse:
+    return await _complete_current_challenge_day(challenge_id, user)
+
+
+async def _complete_current_challenge_day(
+    challenge_id: str,
+    user: dict,
+) -> ChallengePlanProgressResponse:
     challenge = await _get_challenge_or_404(challenge_id)
     membership = await _get_challenge_membership_or_403(challenge_id, str(user["_id"]))
     _ensure_challenge_write_access(membership, challenge)
