@@ -469,6 +469,55 @@ class CommunityPostDeletePermissionTests(unittest.TestCase):
         self.assertEqual(delete_many.await_count, 2)
 
 
+class ChallengeStartTests(unittest.TestCase):
+    def _build_client(self) -> TestClient:
+        app = FastAPI()
+        app.include_router(backend_module.app.router)
+        app.dependency_overrides[backend_module._require_challenge_access_user] = lambda: {
+            "_id": "user-1",
+            "name": "Test User",
+            "is_verified": True,
+            "subscription_tier": "GOLD",
+        }
+        return TestClient(app)
+
+    def test_start_challenge_returns_success_for_existing_active_membership(self) -> None:
+        client = self._build_client()
+        challenge_id = "6a25c55f6dbb4f1f0f4d1111"
+        existing_membership = {
+            "_id": "membership-1",
+            "user_id": "user-1",
+            "challenge_id": challenge_id,
+            "status": "ACTIVE",
+        }
+        challenge_record = {
+            "_id": backend_module.ObjectId(challenge_id),
+            "status": "ACTIVE",
+        }
+
+        with patch.object(
+            backend_module,
+            "challenges_collection",
+            SimpleNamespace(find_one=AsyncMock(return_value=challenge_record)),
+        ), patch.object(
+            backend_module,
+            "challenge_memberships_collection",
+            SimpleNamespace(
+                count_documents=AsyncMock(return_value=0),
+                find_one=AsyncMock(return_value=existing_membership),
+            ),
+        ), patch.object(
+            backend_module,
+            "challenge_chat_messages_collection",
+            SimpleNamespace(insert_one=AsyncMock()),
+        ):
+            response = client.post(f"/challenges/{challenge_id}/start")
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["status"], "success")
+        self.assertEqual(response.json()["membership_id"], "membership-1")
+
+
 class FaviconRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

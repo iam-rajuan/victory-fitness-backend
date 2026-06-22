@@ -4322,7 +4322,7 @@ async def start_challenge(
     if existing_membership:
         existing_status = str(existing_membership.get("status") or "").upper()
         if existing_status == "ACTIVE":
-            raise HTTPException(status_code=409, detail="You already started this challenge")
+            return StartChallengeResponse(membership_id=str(existing_membership["_id"]))
         if existing_status == "COMPLETED":
             raise HTTPException(status_code=409, detail="You already completed this challenge")
         if existing_status == "LEFT":
