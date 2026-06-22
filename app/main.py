@@ -3789,6 +3789,22 @@ async def _store_membership_plan_progress(
 
 
 def _get_current_challenge_day_number(membership: dict, plan_days: list[dict], duration_days: int) -> int:
+    started_at_raw = membership.get("started_at")
+    if started_at_raw:
+        try:
+            started_at = datetime.fromisoformat(str(started_at_raw).replace("Z", "+00:00"))
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            else:
+                started_at = started_at.astimezone(timezone.utc)
+            today = datetime.now(timezone.utc).date()
+            started_day = started_at.date()
+            elapsed_days = max((today - started_day).days, 0)
+            calendar_day_number = min(max(elapsed_days + 1, 1), max(duration_days, 1))
+            return calendar_day_number
+        except ValueError:
+            pass
+
     raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
     for day in plan_days:
         day_number = max(int(day.get("day_number") or 0), 0)
