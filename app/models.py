@@ -700,6 +700,9 @@ class ChallengeDetailResponse(BaseModel):
     can_complete_today: bool = False
     completed_today: bool = False
     messages: list["ChallengeChatMessageResponse"] = Field(default_factory=list)
+    started_at: datetime | None = None
+
+
 
 
 class ChallengeChatMessageResponse(BaseModel):
@@ -744,6 +747,8 @@ class ChallengeChatThreadResponse(BaseModel):
     viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
     unread_count: int = 0
     messages: list[ChallengeChatMessageResponse] = Field(default_factory=list)
+    started_at: datetime | None = None
+
 
 
 class ChallengeChatMessageCreateRequest(BaseModel):

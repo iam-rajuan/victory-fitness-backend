@@ -3420,6 +3420,7 @@ async def get_challenge_detail(
         can_complete_today=bool(has_joined and membership_status == "ACTIVE" and challenge_status == "ACTIVE" and current_day_number and not completed_today),
         completed_today=completed_today,
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
+        started_at=membership.get("started_at") if membership else None,
     )
 
 
@@ -3478,6 +3479,7 @@ async def get_challenge_chat_thread(
         viewer_plan_progress=viewer_plan_progress,
         unread_count=unread_count,
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
+        started_at=membership.get("started_at"),
     )
 
 
