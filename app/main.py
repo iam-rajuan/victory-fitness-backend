@@ -4048,28 +4048,24 @@ async def complete_challenge_plan_section(
         raise HTTPException(status_code=404, detail="Challenge plan section not found")
 
     existing_day_progress = _get_membership_day_progress(membership, day_number)
-    completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
-        existing_day_progress,
-        valid_section_ids,
-        valid_exercise_ids,
-    )
-    section_record = _get_plan_section_or_404(plan_day, section_id)
-    section_exercise_ids = _get_section_exercise_ids(section_record)
-
-    if payload.completed and section_id not in completed_section_ids:
-        completed_section_ids.append(section_id)
-    if not payload.completed:
-        completed_section_ids = [value for value in completed_section_ids if value != section_id]
-
-    if payload.completed and section_exercise_ids:
-        for exercise_id in section_exercise_ids:
-            if exercise_id not in completed_exercise_ids:
-                completed_exercise_ids.append(exercise_id)
-    if not payload.completed and section_exercise_ids:
-        completed_exercise_ids = [value for value in completed_exercise_ids if value not in section_exercise_ids]
-
     prior_completed = bool(isinstance(existing_day_progress, dict) and existing_day_progress.get("completed"))
-    will_complete_day = len(completed_section_ids) >= len(valid_section_ids) > 0
+    if payload.completed:
+        completed_section_ids = list(valid_section_ids)
+        completed_exercise_ids = list(valid_exercise_ids)
+        will_complete_day = True
+    else:
+        completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
+            existing_day_progress,
+            valid_section_ids,
+            valid_exercise_ids,
+        )
+        section_record = _get_plan_section_or_404(plan_day, section_id)
+        section_exercise_ids = _get_section_exercise_ids(section_record)
+        completed_section_ids = [value for value in completed_section_ids if value != section_id]
+        if section_exercise_ids:
+            completed_exercise_ids = [value for value in completed_exercise_ids if value not in section_exercise_ids]
+        will_complete_day = False
+
     return await _store_membership_plan_progress(
         challenge=challenge,
         membership=membership,
