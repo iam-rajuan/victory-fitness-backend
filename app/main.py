@@ -14605,19 +14605,19 @@ def _get_allowed_community_audiences(user: dict) -> list[str]:
 
 
 
-    membership = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
-
-    hierarchy = {
-
-        "SILVER": ["SILVER"],
-
-        "GOLD": ["SILVER", "GOLD"],
-
-        "PLATINUM": ["SILVER", "GOLD", "PLATINUM"],
-
-        "INNER_CIRCLE": ["SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
-
-    }
+    membership = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
+
+    hierarchy = {
+
+        "SILVER": ["ALL", "SILVER"],
+
+        "GOLD": ["ALL", "SILVER", "GOLD"],
+
+        "PLATINUM": ["ALL", "SILVER", "GOLD", "PLATINUM"],
+
+        "INNER_CIRCLE": ["ALL", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
+
+    }
 
     return hierarchy.get(membership, [])
 
