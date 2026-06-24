@@ -5,7 +5,7 @@ import importlib
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -428,9 +428,16 @@ class CommunityPostDeletePermissionTests(unittest.TestCase):
 
     def test_delete_own_community_post_allows_owner(self) -> None:
         client = self._build_client({"_id": "user-1", "is_verified": True, "subscription_tier": "GOLD"})
-        record = {"_id": "post-1", "author_id": "user-1", "audience": "ALL"}
+        record = {
+            "_id": "post-1",
+            "author_id": "user-1",
+            "audience": "ALL",
+            "image_url": "https://cdn.example.com/image.jpg",
+            "video_url": "https://cdn.example.com/video.mp4",
+        }
         delete_one = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
         delete_many = AsyncMock()
+        delete_media = Mock()
 
         with patch.object(backend_module, "_get_community_post_or_404", AsyncMock(return_value=record)), patch.object(
             backend_module, "_ensure_community_post_access", lambda *_args, **_kwargs: None
@@ -440,18 +447,28 @@ class CommunityPostDeletePermissionTests(unittest.TestCase):
             backend_module, "community_comments_collection", SimpleNamespace(delete_many=delete_many)
         ), patch.object(
             backend_module, "community_reactions_collection", SimpleNamespace(delete_many=delete_many)
+        ), patch.object(
+            backend_module, "_delete_image_from_s3", delete_media
         ):
             response = client.delete("/community/posts/post-1")
 
         self.assertEqual(response.status_code, 204)
         delete_one.assert_awaited_once()
         self.assertEqual(delete_many.await_count, 2)
+        delete_media.assert_has_calls([call(record["image_url"]), call(record["video_url"])])
 
     def test_delete_own_community_post_allows_admin(self) -> None:
         client = self._build_client({"_id": "admin-1", "is_admin": True, "is_verified": True, "subscription_tier": "GOLD"})
-        record = {"_id": "post-1", "author_id": "user-1", "audience": "ALL"}
+        record = {
+            "_id": "post-1",
+            "author_id": "user-1",
+            "audience": "ALL",
+            "image_url": "https://cdn.example.com/image.jpg",
+            "video_url": "https://cdn.example.com/video.mp4",
+        }
         delete_one = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
         delete_many = AsyncMock()
+        delete_media = Mock()
 
         with patch.object(backend_module, "_get_community_post_or_404", AsyncMock(return_value=record)), patch.object(
             backend_module, "_ensure_community_post_access", lambda *_args, **_kwargs: None
@@ -461,12 +478,49 @@ class CommunityPostDeletePermissionTests(unittest.TestCase):
             backend_module, "community_comments_collection", SimpleNamespace(delete_many=delete_many)
         ), patch.object(
             backend_module, "community_reactions_collection", SimpleNamespace(delete_many=delete_many)
+        ), patch.object(
+            backend_module, "_delete_image_from_s3", delete_media
         ):
             response = client.delete("/community/posts/post-1")
 
         self.assertEqual(response.status_code, 204)
         delete_one.assert_awaited_once()
         self.assertEqual(delete_many.await_count, 2)
+        delete_media.assert_has_calls([call(record["image_url"]), call(record["video_url"])])
+
+    def test_admin_delete_community_post_cleans_up_media(self) -> None:
+        client = self._build_client({"_id": "admin-1", "is_admin": True, "is_verified": True, "subscription_tier": "GOLD"})
+        object_id = backend_module.ObjectId()
+        record = {
+            "_id": object_id,
+            "author_id": "user-1",
+            "audience": "ALL",
+            "image_url": "https://cdn.example.com/image.jpg",
+            "video_url": "https://cdn.example.com/video.mp4",
+        }
+        delete_one = AsyncMock(return_value=SimpleNamespace(deleted_count=1))
+        delete_many = AsyncMock()
+        find_one = AsyncMock(return_value=record)
+        delete_media = Mock()
+
+        with patch.object(
+            backend_module,
+            "community_posts_collection",
+            SimpleNamespace(find_one=find_one, delete_one=delete_one),
+        ), patch.object(
+            backend_module, "community_comments_collection", SimpleNamespace(delete_many=delete_many)
+        ), patch.object(
+            backend_module, "community_reactions_collection", SimpleNamespace(delete_many=delete_many)
+        ), patch.object(
+            backend_module, "_delete_image_from_s3", delete_media
+        ):
+            response = client.delete(f"/admin/community/posts/{object_id}")
+
+        self.assertEqual(response.status_code, 204)
+        find_one.assert_awaited_once_with({"_id": object_id})
+        delete_one.assert_awaited_once_with({"_id": object_id})
+        self.assertEqual(delete_many.await_count, 2)
+        delete_media.assert_has_calls([call(record["image_url"]), call(record["video_url"])])
 
 
 class ChallengeStartTests(unittest.TestCase):

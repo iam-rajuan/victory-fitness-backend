@@ -6116,7 +6116,9 @@ async def delete_own_community_post(
 
 
 
-    await community_posts_collection.delete_one({"_id": record["_id"]})
+    await community_posts_collection.delete_one({"_id": record["_id"]})
+
+    _delete_community_post_media(record)
 
     await community_comments_collection.delete_many({"post_id": str(record["_id"])})
 
@@ -6638,13 +6640,21 @@ async def admin_delete_community_post(
 
 
 
-    delete_result = await community_posts_collection.delete_one({"_id": object_id})
+    record = await community_posts_collection.find_one({"_id": object_id})
+
+    if not record:
+
+        raise HTTPException(status_code=404, detail="Community post not found")
+
+    delete_result = await community_posts_collection.delete_one({"_id": object_id})
 
     if delete_result.deleted_count == 0:
 
         raise HTTPException(status_code=404, detail="Community post not found")
 
-    await community_comments_collection.delete_many({"post_id": str(object_id)})
+    _delete_community_post_media(record)
+
+    await community_comments_collection.delete_many({"post_id": str(object_id)})
 
     await community_reactions_collection.delete_many({"post_id": str(object_id)})
 
@@ -15083,17 +15093,24 @@ async def _sync_community_author_profile(user_record: dict) -> None:
 
 
 
-def _can_delete_community_post(record: dict, user: dict) -> bool:
-
-    if user.get("is_admin"):
-
-        return True
-
-    return str(record.get("author_id") or "") == str(user.get("_id") or "")
-
-
-
-
+def _can_delete_community_post(record: dict, user: dict) -> bool:
+
+    if user.get("is_admin"):
+
+        return True
+
+    return str(record.get("author_id") or "") == str(user.get("_id") or "")
+
+
+def _delete_community_post_media(record: dict) -> None:
+
+    _delete_image_from_s3(record.get("image_url"))
+
+    _delete_image_from_s3(record.get("video_url"))
+
+
+
+
 
 def _ensure_community_post_access(record: dict, user: dict) -> None:
 
