@@ -8,8 +8,10 @@ ALLOWED_CHALLENGE_DURATIONS = {3, 5, 7, 14, 21}
 
 
 class RegisterRequest(BaseModel):
-    name: str = Field(min_length=2, max_length=100)
+    name: str = Field(min_length=1, max_length=80)
+    surname: str = Field(min_length=1, max_length=80)
     email: EmailStr
+    mobile: str = Field(min_length=3, max_length=30)
     password: str = Field(min_length=8, max_length=128)
 
 

@@ -2076,7 +2076,7 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
 
     firebase_uid = str(profile.get("sub") or profile.get("user_id") or profile.get("localId") or "").strip()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc)
 
 
 
@@ -3236,7 +3236,11 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
 
 
 
-    code = create_verification_code()
+    code = create_verification_code()
+    first_name = payload.name.strip()
+    last_name = payload.surname.strip()
+    full_name = f"{first_name} {last_name}".strip()
+    mobile = payload.mobile.strip()
 
     now = datetime.now(timezone.utc)
 
@@ -3244,9 +3248,12 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
 
         "$set": {
 
-            "name": payload.name.strip(),
+            "name": full_name,
+            "first_name": first_name,
+            "last_name": last_name,
 
-            "email": email,
+            "email": email,
+            "contact_number": mobile,
 
             "password_hash": hash_password(payload.password),
 
@@ -7658,11 +7665,11 @@ async def _store_membership_plan_progress(
 
     next_status = "COMPLETED" if progress_days_completed >= duration_days else "ACTIVE"
 
-    now = datetime.now(timezone.utc)
-
-
-
-    update_doc = {
+    now = datetime.now(timezone.utc)
+
+
+
+    update_doc = {
 
         "plan_progress": next_plan_progress,
 
