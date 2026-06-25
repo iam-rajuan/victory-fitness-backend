@@ -336,9 +336,11 @@ from .models import (
 
     OnboardingContentResponse,
 
-    OnboardingSlideResponse,
-
-    RefreshRequest,
+    OnboardingSlideResponse,
+
+    LogoutRequest,
+
+    RefreshRequest,
 
     RegisterRequest,
 
@@ -3646,13 +3648,17 @@ async def refresh(
 
 
 
-    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
-
-    if not user:
-
-        raise HTTPException(status_code=401, detail="Invalid session token")
-
-    logger.info("auth_refresh_success user_id=%s", str(user["_id"]))
+    user = await users_collection.find_one({"_id": user_id, "is_verified": True})
+
+    if not user:
+
+        raise HTTPException(status_code=401, detail="Invalid session token")
+
+    if not _token_matches_auth_session(data, user):
+
+        raise HTTPException(status_code=401, detail="Session expired")
+
+    logger.info("auth_refresh_success user_id=%s", str(user["_id"]))
 
     return await _issue_tokens(user, response, issue_cookies=not _is_app_client_request(x_victory_client))
 
@@ -3666,9 +3672,46 @@ async def logout(
 
     response: Response,
 
+    payload: LogoutRequest | None = None,
+
+    authorization: str | None = Header(default=None),
+
+    session_token: str | None = Cookie(default=None),
+
     x_victory_client: str | None = Header(default=None, alias="X-Victory-Client"),
 
 ) -> dict[str, str]:
+
+    user: dict | None = None
+
+    access_token = str(authorization or "").replace("Bearer ", "", 1).strip()
+    if access_token:
+        try:
+            access_payload = decode_token(access_token, "access")
+            user_id = ObjectId(access_payload["sub"])
+            candidate = await users_collection.find_one({"_id": user_id, "is_verified": True})
+            if candidate and _token_matches_auth_session(access_payload, candidate):
+                user = candidate
+        except Exception:
+            user = None
+
+    request_session_token = payload.session_token if payload and payload.session_token else None
+    effective_session_token = request_session_token or session_token
+    if user is None and effective_session_token:
+        try:
+            session_payload = decode_token(effective_session_token, "session")
+            user_id = ObjectId(session_payload["sub"])
+            candidate = await users_collection.find_one({"_id": user_id, "is_verified": True})
+            if candidate and _token_matches_auth_session(session_payload, candidate):
+                user = candidate
+        except Exception:
+            user = None
+
+    if user is not None:
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"auth_session_version": _get_auth_session_version(user) + 1}},
+        )
 
     if _is_app_client_request(x_victory_client):
 
@@ -15550,31 +15593,67 @@ def _is_app_client_request(client_name: str | None) -> bool:
 
 
 
+def _get_auth_session_version(user: dict) -> int:
+
+    try:
+
+        return max(int(user.get("auth_session_version") or 0), 0)
+
+    except (TypeError, ValueError):
+
+        return 0
+
+
+
+
+
+def _token_matches_auth_session(payload: dict[str, Any], user: dict) -> bool:
+
+    try:
+
+        token_version = max(int(payload.get("ver") or 0), 0)
+
+    except (TypeError, ValueError):
+
+        token_version = 0
+
+    return token_version == _get_auth_session_version(user)
+
+
+
+
+
 async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies: bool = True) -> TokenResponse:
-
-    user_id = str(user["_id"])
-
-    profile_summary = await _serialize_me_record(user)
-
-    access_token = create_token(
-
-        user_id,
-
-        "access",
-
-        timedelta(minutes=settings.access_token_expire_minutes),
-
-    )
+
+    user_id = str(user["_id"])
+
+    profile_summary = await _serialize_me_record(user)
+
+    auth_session_version = _get_auth_session_version(user)
+
+    access_token = create_token(
+
+        user_id,
+
+        "access",
+
+        timedelta(minutes=settings.access_token_expire_minutes),
+
+        extra_claims={"ver": auth_session_version},
+
+    )
 
     session_token = create_token(
 
-        user_id,
-
-        "session",
-
-        timedelta(days=settings.session_token_expire_days),
-
-    )
+        user_id,
+
+        "session",
+
+        timedelta(days=settings.session_token_expire_days),
+
+        extra_claims={"ver": auth_session_version},
+
+    )
 
 
 

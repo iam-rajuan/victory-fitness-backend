@@ -40,6 +40,20 @@ SUBSCRIPTION_ACCESS = {
     ],
 }
 
+def _get_auth_session_version(user: dict) -> int:
+    try:
+        return max(int(user.get("auth_session_version") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _token_matches_auth_session(payload: dict, user: dict) -> bool:
+    try:
+        token_version = max(int(payload.get("ver") or 0), 0)
+    except (TypeError, ValueError):
+        token_version = 0
+    return token_version == _get_auth_session_version(user)
+
 
 async def get_verified_user(authorization: str | None) -> dict:
     token = (authorization or "").replace("Bearer ", "", 1).strip()
@@ -63,6 +77,8 @@ async def get_verified_user_from_access_token(token: str) -> dict:
     user = await users_collection.find_one({"_id": user_id, "is_verified": True})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid access token")
+    if not _token_matches_auth_session(data, user):
+        raise HTTPException(status_code=401, detail="Session expired")
 
     return user
 

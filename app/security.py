@@ -23,7 +23,13 @@ def create_verification_code() -> str:
     return f"{secrets.randbelow(10000):04d}"
 
 
-def create_token(subject: str, token_type: str, expires_delta: timedelta) -> str:
+def create_token(
+    subject: str,
+    token_type: str,
+    expires_delta: timedelta,
+    *,
+    extra_claims: dict[str, Any] | None = None,
+) -> str:
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "sub": subject,
@@ -31,6 +37,8 @@ def create_token(subject: str, token_type: str, expires_delta: timedelta) -> str
         "iat": int(now.timestamp()),
         "exp": int((now + expires_delta).timestamp()),
     }
+    if extra_claims:
+        payload.update(extra_claims)
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 
 
