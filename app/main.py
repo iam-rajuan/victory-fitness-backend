@@ -36,7 +36,7 @@ from urllib.request import Request as UrlRequest, urlopen
 
 from bson import ObjectId
 
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, HTTPException, Request, Response, Security, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, Security, UploadFile, WebSocket, WebSocketDisconnect, status
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -3532,7 +3532,15 @@ async def reset_password(payload: ResetPasswordRequest) -> dict[str, str]:
 
 @app.post("/auth/login", response_model=TokenResponse)
 
-async def login(payload: LoginRequest, response: Response) -> TokenResponse:
+async def login(
+
+    payload: LoginRequest,
+
+    response: Response,
+
+    x_victory_client: str | None = Header(default=None, alias="X-Victory-Client"),
+
+) -> TokenResponse:
 
     logger.info("auth_login_attempt email=%s", payload.email.lower())
 
@@ -3548,7 +3556,7 @@ async def login(payload: LoginRequest, response: Response) -> TokenResponse:
 
     logger.info("auth_login_success email=%s", payload.email.lower())
 
-    return await _issue_tokens(user, response)
+    return await _issue_tokens(user, response, issue_cookies=not _is_app_client_request(x_victory_client))
 
 
 
@@ -3594,19 +3602,23 @@ async def google_login(payload: GoogleAuthRequest, response: Response) -> TokenR
 
 @app.post("/auth/refresh", response_model=TokenResponse)
 
-async def refresh(
-
-    response: Response,
-
-    payload: RefreshRequest | None = None,
-
-    session_token: str | None = Cookie(default=None),
-
-) -> TokenResponse:
+async def refresh(
+
+    response: Response,
+
+    payload: RefreshRequest | None = None,
+
+    session_token: str | None = Cookie(default=None),
+
+    x_victory_client: str | None = Header(default=None, alias="X-Victory-Client"),
+
+) -> TokenResponse:
 
     logger.info("auth_refresh_attempt")
 
-    token = session_token or (payload.session_token if payload else None)
+    request_session_token = payload.session_token if payload and payload.session_token else None
+
+    token = request_session_token or session_token
 
     if not token:
 
@@ -3642,7 +3654,7 @@ async def refresh(
 
     logger.info("auth_refresh_success user_id=%s", str(user["_id"]))
 
-    return await _issue_tokens(user, response)
+    return await _issue_tokens(user, response, issue_cookies=not _is_app_client_request(x_victory_client))
 
 
 
@@ -3650,9 +3662,19 @@ async def refresh(
 
 @app.post("/auth/logout")
 
-async def logout(response: Response) -> dict[str, str]:
-
-    response.delete_cookie(
+async def logout(
+
+    response: Response,
+
+    x_victory_client: str | None = Header(default=None, alias="X-Victory-Client"),
+
+) -> dict[str, str]:
+
+    if _is_app_client_request(x_victory_client):
+
+        return {"message": "Logged out"}
+
+    response.delete_cookie(
 
         "access_token",
 
@@ -15520,7 +15542,15 @@ async def _archive_thread_messages_if_needed(
 
 
 
-async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
+def _is_app_client_request(client_name: str | None) -> bool:
+
+    return str(client_name or "").strip().lower() == "app"
+
+
+
+
+
+async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies: bool = True) -> TokenResponse:
 
     user_id = str(user["_id"])
 
@@ -15548,7 +15578,7 @@ async def _issue_tokens(user: dict, response: Response | None) -> TokenResponse:
 
 
 
-    if response:
+    if response and issue_cookies:
 
         response.set_cookie(
 
