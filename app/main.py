@@ -332,10 +332,11 @@ from .models import (
 
     NutritionPlanResponse,
 
-    NutritionPlanSaveResponse,
-
-    OnboardingContentResponse,
-
+    NutritionPlanSaveResponse,
+
+    OnboardingContentResponse,
+    OnboardingStateResponse,
+
     OnboardingSlideResponse,
 
     LogoutRequest,
@@ -352,11 +353,12 @@ from .models import (
 
     UpdateAboutUsRequest,
 
-    UpdateBodyMetricsRequest,
-
-    UpdateMeRequest,
-
-    UpdatePrivacyPolicyRequest,
+    UpdateBodyMetricsRequest,
+
+    UpdateMeRequest,
+    UpdateOnboardingStateRequest,
+
+    UpdatePrivacyPolicyRequest,
 
     UpdateTermsConditionRequest,
 
@@ -3760,11 +3762,68 @@ async def validate_authorization(user: dict = Depends(_require_access_user)) -> 
 
 
 
-@app.get("/me", response_model=MeResponse)
-
-async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
-
-    return MeResponse(**(await _serialize_me_record(user)))
+@app.get("/me", response_model=MeResponse)
+
+async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
+
+    return MeResponse(**(await _serialize_me_record(user)))
+
+
+def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
+    state = dict(record.get("onboarding_state") or {})
+    personal_profile = dict(state.get("personalProfile") or {})
+    anamnese = dict(state.get("anamnese") or {})
+    suggestion = state.get("suggestion")
+    metrics = dict(record.get("body_metrics") or {})
+
+    normalized_suggestion: dict[str, Any] | None = None
+    if isinstance(suggestion, dict):
+        normalized_suggestion = {
+            "tier": str(suggestion.get("tier") or "GOLD").strip().upper() or "GOLD",
+            "title": str(suggestion.get("title") or "").strip(),
+            "reason": str(suggestion.get("reason") or "").strip(),
+            "note": str(suggestion.get("note") or "").strip() or None,
+        }
+
+    updated_at = state.get("updatedAt")
+    if updated_at and not isinstance(updated_at, datetime):
+        updated_at = None
+
+    try:
+        current_step = max(int(state.get("currentStep") or 0), 0)
+    except (TypeError, ValueError):
+        current_step = 0
+
+    return {
+        "userId": str(record["_id"]),
+        "currentStep": current_step,
+        "language": str(state.get("language") or "").strip(),
+        "personalProfile": {
+            "age": str(personal_profile.get("age") or metrics.get("age") or "").strip(),
+            "gender": str(personal_profile.get("gender") or metrics.get("gender") or "").strip(),
+            "height": str(personal_profile.get("height") or metrics.get("height") or "").strip(),
+            "heightUnit": "cm",
+            "weight": str(personal_profile.get("weight") or metrics.get("weight") or "").strip(),
+            "weightUnit": "lb" if str(personal_profile.get("weightUnit") or "kg").strip().lower() == "lb" else "kg",
+        },
+        "anamnese": {
+            "primaryGoal": str(anamnese.get("primaryGoal") or "").strip(),
+            "activityLevel": str(anamnese.get("activityLevel") or "").strip(),
+            "healthConcerns": [str(item).strip() for item in anamnese.get("healthConcerns", []) if str(item).strip()],
+            "healthNotes": str(anamnese.get("healthNotes") or "").strip(),
+            "daysPerWeek": str(anamnese.get("daysPerWeek") or "").strip(),
+            "timePerSession": str(anamnese.get("timePerSession") or "").strip(),
+            "equipmentAccess": str(anamnese.get("equipmentAccess") or "").strip(),
+        },
+        "suggestion": normalized_suggestion,
+        "updatedAt": updated_at,
+        "completed": bool(record.get("onboarding_completed", False)),
+    }
+
+
+@app.get("/me/onboarding", response_model=OnboardingStateResponse)
+async def get_me_onboarding(user: dict = Depends(_require_access_user)) -> OnboardingStateResponse:
+    return OnboardingStateResponse(**_serialize_onboarding_state(user))
 
 
 
@@ -3844,9 +3903,65 @@ async def update_me(
 
 
 
-    await _sync_community_author_profile(updated_user)
-
-    return MeResponse(**(await _serialize_me_record(updated_user)))
+    await _sync_community_author_profile(updated_user)
+
+    return MeResponse(**(await _serialize_me_record(updated_user)))
+
+
+@app.patch("/me/onboarding", response_model=OnboardingStateResponse)
+async def update_me_onboarding(
+    payload: UpdateOnboardingStateRequest,
+    user: dict = Depends(_require_access_user),
+) -> OnboardingStateResponse:
+    user_id = user["_id"]
+    next_state = _serialize_onboarding_state(user)
+    update_doc: dict[str, Any] = {}
+    next_metrics = dict(user.get("body_metrics") or {})
+
+    if payload.currentStep is not None:
+        next_state["currentStep"] = payload.currentStep
+
+    if payload.language is not None:
+        next_state["language"] = payload.language.strip()
+
+    if payload.personalProfile is not None:
+        personal_profile_update = payload.personalProfile.model_dump()
+        next_state["personalProfile"] = {
+            **dict(next_state.get("personalProfile") or {}),
+            **personal_profile_update,
+        }
+        for field_name in ("age", "gender", "height", "weight"):
+            field_value = personal_profile_update.get(field_name)
+            if field_value is not None:
+                next_metrics[field_name] = str(field_value).strip()
+
+    if payload.anamnese is not None:
+        next_state["anamnese"] = payload.anamnese.model_dump()
+
+    if payload.suggestion is not None:
+        next_state["suggestion"] = payload.suggestion.model_dump()
+
+    if payload.completed is not None:
+        update_doc["onboarding_completed"] = payload.completed
+        next_state["completed"] = payload.completed
+
+    next_state["updatedAt"] = datetime.now(timezone.utc)
+    update_doc["onboarding_state"] = {
+        "userId": next_state["userId"],
+        "currentStep": next_state["currentStep"],
+        "language": next_state["language"],
+        "personalProfile": next_state["personalProfile"],
+        "anamnese": next_state["anamnese"],
+        "suggestion": next_state["suggestion"],
+        "updatedAt": next_state["updatedAt"],
+    }
+    update_doc["body_metrics"] = next_metrics
+
+    await users_collection.update_one({"_id": user_id}, {"$set": update_doc})
+    updated_user = await users_collection.find_one({"_id": user_id})
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return OnboardingStateResponse(**_serialize_onboarding_state(updated_user))
 
 
 

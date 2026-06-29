@@ -110,6 +110,52 @@ class UpdateMeRequest(BaseModel):
     onboarding_completed: bool | None = None
 
 
+class OnboardingPersonalProfileResponse(BaseModel):
+    age: str = ""
+    gender: str = ""
+    height: str = ""
+    heightUnit: str = "cm"
+    weight: str = ""
+    weightUnit: str = "kg"
+
+
+class OnboardingAnamneseResponse(BaseModel):
+    primaryGoal: str = ""
+    activityLevel: str = ""
+    healthConcerns: list[str] = Field(default_factory=list)
+    healthNotes: str = ""
+    daysPerWeek: str = ""
+    timePerSession: str = ""
+    equipmentAccess: str = ""
+
+
+class OnboardingSuggestionResponse(BaseModel):
+    tier: str = "GOLD"
+    title: str = ""
+    reason: str = ""
+    note: str | None = None
+
+
+class OnboardingStateResponse(BaseModel):
+    userId: str
+    currentStep: int = 0
+    language: str = ""
+    personalProfile: OnboardingPersonalProfileResponse = Field(default_factory=OnboardingPersonalProfileResponse)
+    anamnese: OnboardingAnamneseResponse = Field(default_factory=OnboardingAnamneseResponse)
+    suggestion: OnboardingSuggestionResponse | None = None
+    updatedAt: datetime | None = None
+    completed: bool = False
+
+
+class UpdateOnboardingStateRequest(BaseModel):
+    currentStep: int | None = Field(default=None, ge=0)
+    language: str | None = Field(default=None, max_length=10)
+    personalProfile: OnboardingPersonalProfileResponse | None = None
+    anamnese: OnboardingAnamneseResponse | None = None
+    suggestion: OnboardingSuggestionResponse | None = None
+    completed: bool | None = None
+
+
 class UpdateSubscriptionRequest(BaseModel):
     subscription_tier: str = Field(pattern=r"^(NONE|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
     billing_cycle: str = Field(default="yearly", pattern=r"^(monthly|yearly)$")
