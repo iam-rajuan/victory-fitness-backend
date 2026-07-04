@@ -17091,13 +17091,15 @@ def _serialize_admin_workout_record(record: dict) -> dict:
 
         "videoUrl": str(record.get("video_url") or ""),
 
-        "videoSource": str(record.get("video_source") or "VIMEO"),
-
-        "tag": str(record.get("tag") or ""),
-
-        "visibility": str(record.get("visibility") or "Draft"),
-
-        "thumbnail": str(record.get("thumbnail") or ""),
+        "videoSource": str(record.get("video_source") or "VIMEO"),
+
+        "tag": str(record.get("tag") or ""),
+
+        "visibility": str(record.get("visibility") or "Draft"),
+
+        "providerVisibility": str(record.get("vimeo_provider_visibility") or "Published"),
+
+        "thumbnail": str(record.get("thumbnail") or ""),
 
         "dateAdded": created_at,
 

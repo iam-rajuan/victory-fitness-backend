@@ -1364,6 +1364,7 @@ class AdminWorkoutItem(BaseModel):
     videoSource: str = "VIMEO"
     tag: str
     visibility: str
+    providerVisibility: str = "Published"
     thumbnail: str
     dateAdded: datetime
     updatedAt: datetime
