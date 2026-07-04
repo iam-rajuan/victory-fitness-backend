@@ -10539,6 +10539,8 @@ async def admin_sync_workouts(
 
         videosDiscovered=summary.videos_discovered,
 
+        syncedVideos=summary.synced_videos or [],
+
     )
 
 

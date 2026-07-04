@@ -42,6 +42,7 @@ class VimeoSyncSummary:
     synced_count: int = 0
     modules_synced: int = 0
     videos_discovered: int = 0
+    synced_videos: list[dict[str, Any]] | None = None
 
 
 def get_vimeo_status() -> str:
@@ -210,7 +211,7 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
         raise VimeoSyncError("Vimeo access token is not configured")
     from .database import workouts_collection
 
-    summary = VimeoSyncSummary()
+    summary = VimeoSyncSummary(synced_videos=[])
     now = datetime.now(timezone.utc)
     workout_documents_by_video_id: dict[str, dict[str, Any]] = {}
 
@@ -274,6 +275,16 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
             upsert=True,
         )
         summary.synced_count += 1
+        summary.synced_videos.append(
+            {
+                "title": str(document.get("title") or "").strip(),
+                "vimeoId": video_id,
+                "tag": str(document.get("tag") or "").strip(),
+                "visibility": str(document.get("visibility") or "Draft").strip() or "Draft",
+                "providerVisibility": str(document.get("vimeo_provider_visibility") or "Draft").strip() or "Draft",
+                "alreadyInLibrary": existing_workout is not None,
+            }
+        )
 
     logger.info(
         "vimeo_sync_complete synced_count=%s modules_synced=%s videos_discovered=%s",

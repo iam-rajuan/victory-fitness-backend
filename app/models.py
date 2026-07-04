@@ -1402,12 +1402,22 @@ class AdminDirectUploadResponse(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
 
 
+class AdminWorkoutSyncVideoResponse(BaseModel):
+    title: str
+    vimeoId: str = ""
+    tag: str = ""
+    visibility: str = "Draft"
+    providerVisibility: str = "Draft"
+    alreadyInLibrary: bool = False
+
+
 class AdminWorkoutSyncResponse(BaseModel):
     status: str = "success"
     message: str
     syncedCount: int = 0
     modulesSynced: int = 0
     videosDiscovered: int = 0
+    syncedVideos: list[AdminWorkoutSyncVideoResponse] = Field(default_factory=list)
 
 
 class WorkoutLibraryItem(BaseModel):
