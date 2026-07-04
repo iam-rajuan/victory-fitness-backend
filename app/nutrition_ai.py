@@ -30,9 +30,13 @@ NUTRITION_PLAN_SYSTEM_PROMPT = (
 NUTRITION_ADVICE_SYSTEM_PROMPT = (
     "You are the senior nutrition coach inside the Victory Fitness app. "
     "Give accurate, practical, user-friendly nutrition guidance based on the user's context, goal, and meal question. "
+    "Your output is rendered directly in the frontend as short action cards. "
     "Keep the advice specific, grounded, and easy to act on today. "
     "Prefer concrete suggestions such as food swaps, meal composition, protein targets, portion adjustments, hydration, timing, or consistency habits. "
     "Keep the tone direct and helpful. "
+    "Do not write paragraphs, headings, introductions, conclusions, markdown, or explanatory filler. "
+    "Return one short actionable instruction per line. "
+    "Each line should stand alone and read cleanly inside a mobile card. "
     "Avoid medical claims, extreme restrictions, or vague motivational filler. "
     "If the user mentions a medical condition, include a short caution and suggest professional guidance."
 )
@@ -365,11 +369,24 @@ def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
 
+    is_tracker_request = not _normalize_text(payload.get("meal_query"), "")
     prompt = (
-        "Give 3 to 5 short bullet-style nutrition suggestions based on this context. "
-        "Do not use markdown headings. Keep it concise and useful.\n"
-        f"Context: {json.dumps(payload, ensure_ascii=False)}"
+        "The frontend will split your response by line breaks and show each line as a separate practical action.\n"
+        "Return only plain text lines.\n"
     )
+    if is_tracker_request:
+        prompt += (
+            "This is the nutrition tracker coaching panel.\n"
+            "Return 4 to 6 short practical actions for the rest of today based on the user's goal and daily totals.\n"
+            "No intro text. No summary. One action per line.\n"
+        )
+    else:
+        prompt += (
+            "This is a direct nutrition advice response.\n"
+            "Return 3 to 5 short practical actions answering the user's meal question.\n"
+            "No intro text. No summary. One action per line.\n"
+        )
+    prompt += f"Context: {json.dumps(payload, ensure_ascii=False)}"
 
     request_payload = {
         "model": settings.openai_model,
