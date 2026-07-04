@@ -14,3 +14,5 @@ langchain-openai==1.2.1
 langchain-anthropic==1.4.3
 Pillow==11.2.1
 jose
+pypdf==5.9.0
+python-docx==1.1.2

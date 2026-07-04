@@ -983,9 +983,17 @@ class JournalLatestAnalysisResponse(BaseModel):
 
 
 class MealImageAnalysisRequest(BaseModel):
-    image_base64: str = Field(min_length=32, max_length=20000000)
-    mime_type: str = Field(default="image/jpeg", max_length=120)
+    image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
+    document_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    text_content: str | None = Field(default=None, min_length=1, max_length=200000)
+    mime_type: str = Field(default="application/octet-stream", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_analysis_source(self):
+        if self.image_base64 or self.document_base64 or self.text_content:
+            return self
+        raise ValueError("One of image_base64, document_base64, or text_content is required")
 
 
 class MealImageAnalysisResponse(BaseModel):

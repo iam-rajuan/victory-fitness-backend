@@ -34,7 +34,9 @@ from urllib.request import Request as UrlRequest, urlopen
 
 
 
-from bson import ObjectId
+from docx import Document as DocxDocument
+from pypdf import PdfReader
+from bson import ObjectId
 
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, Security, UploadFile, WebSocket, WebSocketDisconnect, status
 
@@ -458,9 +460,11 @@ from .nutrition_ai import (
 
     NutritionPlanRefusalError,
 
-    build_nutrition_plan_signature,
-
-    generate_meal_image_analysis,
+    build_nutrition_plan_signature,
+
+    generate_meal_document_analysis,
+
+    generate_meal_image_analysis,
 
     generate_nutrition_advice,
 
@@ -10910,7 +10914,71 @@ async def analyze_latest_journal_entry(
 
 
 
-@app.post("/ai/meal-analysis", response_model=MealImageAnalysisResponse)
+def _decode_meal_analysis_base64(raw_value: str) -> bytes:
+    normalized = str(raw_value or "").strip()
+    if not normalized:
+        raise ValueError("No document content was provided")
+    try:
+        return base64.b64decode(normalized, validate=True)
+    except Exception as exc:
+        raise ValueError("The uploaded file could not be decoded") from exc
+
+
+def _decode_text_bytes(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "latin-1"):
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        if text.strip():
+            return text
+    return ""
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    reader = PdfReader(BytesIO(data))
+    return "\n".join((page.extract_text() or "").strip() for page in reader.pages).strip()
+
+
+def _extract_docx_text(data: bytes) -> str:
+    document = DocxDocument(BytesIO(data))
+    lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text and paragraph.text.strip()]
+    return "\n".join(lines).strip()
+
+
+def _extract_rtf_text(data: bytes) -> str:
+    text = _decode_text_bytes(data)
+    if not text:
+        return ""
+    text = re.sub(r"\\'[0-9a-fA-F]{2}", " ", text)
+    text = re.sub(r"\\[a-zA-Z]+\d* ?", " ", text)
+    text = text.replace("{", " ").replace("}", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_meal_analysis_document_text(document_base64: str, mime_type: str, file_name: str | None) -> str:
+    data = _decode_meal_analysis_base64(document_base64)
+    normalized_mime = str(mime_type or "").strip().lower()
+    suffix = Path(str(file_name or "")).suffix.lower()
+
+    if normalized_mime.startswith("text/") or suffix in {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log"}:
+        return _decode_text_bytes(data).strip()
+    if normalized_mime == "application/rtf" or suffix == ".rtf":
+        return _extract_rtf_text(data)
+    if normalized_mime == "application/pdf" or suffix == ".pdf":
+        return _extract_pdf_text(data)
+    if normalized_mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or suffix == ".docx":
+        return _extract_docx_text(data)
+    if normalized_mime.startswith("application/msword") or suffix == ".doc":
+        raise ValueError("Legacy .doc files are not supported yet. Save the file as .docx, .pdf, or .txt and try again.")
+
+    extracted = _decode_text_bytes(data).strip()
+    if extracted:
+        return extracted
+    raise ValueError("This file type could not be read for meal analysis. Upload an image, txt, pdf, docx, or rtf file.")
+
+
+@app.post("/ai/meal-analysis", response_model=MealImageAnalysisResponse)
 
 async def analyze_meal_image(
 
@@ -10922,13 +10990,31 @@ async def analyze_meal_image(
 
     user_id = str(user["_id"])
 
-    logger.info("meal_image_analyze_attempt user_id=%s file_name=%s", user_id, payload.file_name or "")
-
-    try:
-
-        result = generate_meal_image_analysis(payload.model_dump())
-
-    except RuntimeError as exc:
+    logger.info("meal_image_analyze_attempt user_id=%s file_name=%s", user_id, payload.file_name or "")
+
+    try:
+        payload_data = payload.model_dump()
+        if payload.image_base64:
+            result = generate_meal_image_analysis(payload_data)
+        else:
+            extracted_text = payload.text_content
+            if not extracted_text and payload.document_base64:
+                extracted_text = _extract_meal_analysis_document_text(
+                    payload.document_base64,
+                    payload.mime_type,
+                    payload.file_name,
+                )
+            if not extracted_text or not extracted_text.strip():
+                raise HTTPException(status_code=422, detail="The uploaded document did not contain readable meal text.")
+
+            result = generate_meal_document_analysis({
+                "text_content": extracted_text.strip(),
+                "file_name": payload.file_name,
+            })
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    except RuntimeError as exc:
 
         raise HTTPException(status_code=502, detail=f"Meal image analysis unavailable: {exc}") from exc
 

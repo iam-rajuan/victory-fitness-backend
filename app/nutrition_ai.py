@@ -45,6 +45,14 @@ MEAL_IMAGE_ANALYSIS_SYSTEM_PROMPT = (
     "Return only valid JSON that matches the required schema exactly, with no markdown, no commentary, and no extra keys."
 )
 
+MEAL_DOCUMENT_ANALYSIS_SYSTEM_PROMPT = (
+    "You are the senior nutrition coach inside the Victory Fitness app. "
+    "Analyze the provided meal document, meal notes, typed description, nutrition label text, or food log. "
+    "Infer what the person likely ate, estimate rough macros conservatively, and keep the summary practical. "
+    "If the text is incomplete, messy, or ambiguous, say so clearly and keep the estimate cautious. "
+    "Return only valid JSON that matches the required schema exactly, with no markdown, no commentary, and no extra keys."
+)
+
 OPENAI_REQUEST_TIMEOUT_SECONDS = 300
 OPENAI_REQUEST_RETRIES = 2
 PLAN_DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -429,6 +437,64 @@ def generate_meal_image_analysis(payload: dict) -> MealImageAnalysisResult:
         result_text = _extract_response_text(data).strip()
     except (KeyError, IndexError, AttributeError, TypeError) as exc:
         raise RuntimeError("OpenAI meal analysis response was missing text") from exc
+
+    parsed = _parse_json_object(result_text)
+    normalized = {
+        "meal_name_guess": _normalize_text(parsed.get("meal_name_guess"), "Meal"),
+        "summary": _normalize_text(parsed.get("summary"), "A practical meal estimate could not be generated."),
+        "estimated_calories": _normalize_int(parsed.get("estimated_calories"), 0, 0, 3000),
+        "estimated_protein": _normalize_int(parsed.get("estimated_protein"), 0, 0, 300),
+        "estimated_carbs": _normalize_int(parsed.get("estimated_carbs"), 0, 0, 500),
+        "estimated_fat": _normalize_int(parsed.get("estimated_fat"), 0, 0, 200),
+        "confidence": _normalize_text(parsed.get("confidence"), "medium"),
+        "notes": _normalize_string_list(parsed.get("notes")),
+    }
+
+    return MealImageAnalysisResult(data=normalized)
+
+
+def generate_meal_document_analysis(payload: dict) -> MealImageAnalysisResult:
+    if not settings.openai_api_key:
+        raise RuntimeError("OPENAI_API_KEY is not configured")
+
+    text_content = _normalize_text(payload.get("text_content"), "")
+    file_name = _normalize_text(payload.get("file_name"), "")
+    if not text_content:
+        raise RuntimeError("Meal document analysis requires extracted text")
+
+    request_payload = {
+        "model": settings.openai_meal_analysis_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": MEAL_DOCUMENT_ANALYSIS_SYSTEM_PROMPT}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Analyze this meal document or meal notes and estimate the dish, macros, and practical nutrition notes. "
+                            "Be careful and conservative. "
+                            "If the text is partial, derive the most likely meal estimate from what is present. "
+                            f"Source file: {file_name or 'unknown'}\n\n"
+                            f"Meal document text:\n{text_content}\n\n"
+                            "Return only the JSON object requested by the schema."
+                        ),
+                    },
+                ],
+            },
+        ],
+        "text": {"format": MEAL_IMAGE_ANALYSIS_JSON_SCHEMA},
+        "max_output_tokens": 1000,
+    }
+
+    data = _openai_responses_json_with_retry(request_payload)
+    try:
+        result_text = _extract_response_text(data).strip()
+    except (KeyError, IndexError, AttributeError, TypeError) as exc:
+        raise RuntimeError("OpenAI meal document analysis response was missing text") from exc
 
     parsed = _parse_json_object(result_text)
     normalized = {
