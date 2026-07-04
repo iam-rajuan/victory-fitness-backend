@@ -153,7 +153,7 @@ class Settings:
         self.admin_name = _get_str("ADMIN_NAME", "Victory Admin")
         self.admin_email = _get_str("ADMIN_EMAIL", "admin@victoryfitness.com").lower()
         self.admin_password = _get_secret("ADMIN_PASSWORD")
-        self.admin_seed_sync_password = _get_bool("ADMIN_SEED_SYNC_PASSWORD", False)
+        self.admin_seed_sync_password = _get_bool("ADMIN_SEED_SYNC_PASSWORD", True)
 
         self.wearable_token_encryption_key = _get_secret("WEARABLE_TOKEN_ENCRYPTION_KEY")
         self.encryption_key = _get_secret("ENCRYPTION_KEY", self.wearable_token_encryption_key)
