@@ -32,6 +32,7 @@ Update `.env` before running:
 - `AWS_S3_PREFIX`: S3 key prefix for archived Coach Victor message batches.
 - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_PROJECT_ID`, `FIREBASE_PROJECT_ID`, `FIREBASE_AUTH_PROVIDER_CERT_URL`: Google OAuth and Firebase auth settings.
 - `ADMIN_SEED_ENABLED`, `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`: startup seed settings for a verified admin account. On startup, if the admin email does not exist yet, the backend inserts it automatically.
+- `ADMIN_SEED_SYNC_PASSWORD`: optional boolean. When `true`, startup also resets the existing seeded admin account password to `ADMIN_PASSWORD`, which guarantees dashboard login after deploy if the stored hash was stale.
 
 ## Run
 

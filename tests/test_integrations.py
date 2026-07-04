@@ -572,6 +572,74 @@ class ChallengeStartTests(unittest.TestCase):
         self.assertEqual(response.json()["membership_id"], "membership-1")
 
 
+class AdminSeedTests(unittest.IsolatedAsyncioTestCase):
+    async def test_seed_admin_user_logs_login_not_ready_without_password_sync(self) -> None:
+        existing_user = {
+            "_id": "user-1",
+            "email": "admin@example.com",
+            "name": "Existing Admin",
+            "password_hash": backend_module.hash_password("OldPassword123!"),
+            "is_verified": True,
+            "is_admin": True,
+            "role": "admin",
+        }
+        find_one = AsyncMock(return_value=existing_user)
+        update_one = AsyncMock()
+
+        with patch.object(
+            backend_module,
+            "users_collection",
+            SimpleNamespace(find_one=find_one, update_one=update_one),
+        ), patch.object(
+            backend_module,
+            "settings",
+            SimpleNamespace(
+                admin_seed_enabled=True,
+                admin_name="Victory Admin",
+                admin_email="admin@example.com",
+                admin_password="Secret123!",
+                admin_seed_sync_password=False,
+            ),
+        ):
+            await backend_module._seed_admin_user()
+
+        update_doc = update_one.await_args.args[1]
+        self.assertEqual(update_doc["$set"]["password_hash"], existing_user["password_hash"])
+
+    async def test_seed_admin_user_syncs_password_when_enabled(self) -> None:
+        existing_user = {
+            "_id": "user-2",
+            "email": "admin@example.com",
+            "name": "Existing Admin",
+            "password_hash": backend_module.hash_password("OldPassword123!"),
+            "is_verified": True,
+            "is_admin": True,
+            "role": "admin",
+        }
+        find_one = AsyncMock(return_value=existing_user)
+        update_one = AsyncMock()
+
+        with patch.object(
+            backend_module,
+            "users_collection",
+            SimpleNamespace(find_one=find_one, update_one=update_one),
+        ), patch.object(
+            backend_module,
+            "settings",
+            SimpleNamespace(
+                admin_seed_enabled=True,
+                admin_name="Victory Admin",
+                admin_email="admin@example.com",
+                admin_password="Secret123!",
+                admin_seed_sync_password=True,
+            ),
+        ):
+            await backend_module._seed_admin_user()
+
+        update_doc = update_one.await_args.args[1]
+        self.assertTrue(backend_module.verify_password("Secret123!", update_doc["$set"]["password_hash"]))
+
+
 class FaviconRouteTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:

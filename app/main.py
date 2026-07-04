@@ -15961,7 +15961,7 @@ async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies:
 
 
 
-async def _seed_admin_user() -> None:
+async def _seed_admin_user() -> None:
 
     if not settings.admin_seed_enabled:
 
@@ -15979,26 +15979,39 @@ async def _seed_admin_user() -> None:
 
 
 
-    now = datetime.now(timezone.utc)
-
-    existing_user = await users_collection.find_one({"email": settings.admin_email})
-
-    if existing_user:
-
-        await users_collection.update_one(
-
-            {"_id": existing_user["_id"]},
-
+    now = datetime.now(timezone.utc)
+
+    existing_user = await users_collection.find_one({"email": settings.admin_email})
+
+    if existing_user:
+        current_password_hash = str(existing_user.get("password_hash") or "").strip()
+        password_matches_seed = bool(current_password_hash) and verify_password(settings.admin_password, current_password_hash)
+        should_sync_password = settings.admin_seed_sync_password and not password_matches_seed
+
+        logger.info(
+            "admin_seed_validation email=%s exists=true password_hash_present=%s password_matches_seed=%s sync_password=%s",
+            settings.admin_email,
+            bool(current_password_hash),
+            password_matches_seed,
+            should_sync_password,
+        )
+
+        await users_collection.update_one(
+
+            {"_id": existing_user["_id"]},
+
             {
 
                 "$set": {
-
-                    "name": existing_user.get("name") or settings.admin_name,
-
-                    "role": "admin",
-
-                    "is_admin": True,
-
+
+                    "name": existing_user.get("name") or settings.admin_name,
+
+                    "email": settings.admin_email,
+
+                    "role": "admin",
+
+                    "is_admin": True,
+
                     "is_verified": True,
 
                     "subscription_tier": "INNER_CIRCLE",
@@ -16008,14 +16021,16 @@ async def _seed_admin_user() -> None:
                     "subscription_status": "ACTIVE",
 
                     "subscription_billing_cycle": "yearly",
-
-                    "subscription_is_purchased": True,
-
-                    "subscription_purchase_source": "admin_seed",
-
-                    "updated_at": now,
-
-                },
+
+                    "subscription_is_purchased": True,
+
+                    "subscription_purchase_source": "admin_seed",
+
+                    "password_hash": hash_password(settings.admin_password) if should_sync_password else current_password_hash,
+
+                    "updated_at": now,
+
+                },
 
                 "$unset": {
 
@@ -16024,17 +16039,21 @@ async def _seed_admin_user() -> None:
                     "verification_code_expires_at": "",
 
                 },
-
-            },
-
-        )
-
-        logger.info("admin_seed_exists email=%s", settings.admin_email)
-
-        return
-
-
-
+
+            },
+
+        )
+
+        logger.info(
+            "admin_seed_exists email=%s login_ready=%s",
+            settings.admin_email,
+            password_matches_seed or should_sync_password,
+        )
+
+        return
+
+
+
     await users_collection.insert_one(
 
         {
@@ -16068,10 +16087,14 @@ async def _seed_admin_user() -> None:
             "updated_at": now,
 
         }
-
-    )
-
-    logger.info("admin_seed_created email=%s", settings.admin_email)
+
+    )
+
+    logger.info(
+        "admin_seed_validation email=%s exists=false password_hash_present=true password_matches_seed=true sync_password=true",
+        settings.admin_email,
+    )
+    logger.info("admin_seed_created email=%s", settings.admin_email)
 
 
 
