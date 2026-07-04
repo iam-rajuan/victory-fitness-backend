@@ -1406,6 +1406,8 @@ class AdminWorkoutSyncResponse(BaseModel):
     status: str = "success"
     message: str
     syncedCount: int = 0
+    modulesSynced: int = 0
+    videosDiscovered: int = 0
 
 
 class WorkoutLibraryItem(BaseModel):

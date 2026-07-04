@@ -494,17 +494,18 @@ from .utils.datetime import as_utc as shared_as_utc
 
 from .utils.html import html_to_plain_text as shared_html_to_plain_text
 
-from .workout_plan_ai import (
-
-    StrengthWorkoutPlanInput,
-
-    VideoWorkoutPlanInput,
-
-    generate_strength_workout_plan,
-
-    generate_video_workout_plan,
-
-)
+from .workout_plan_ai import (
+
+    StrengthWorkoutPlanInput,
+
+    VideoWorkoutPlanInput,
+
+    generate_strength_workout_plan,
+
+    generate_video_workout_plan,
+
+)
+from .vimeo_sync import VimeoSyncError, get_vimeo_status, sync_vimeo_workouts
 
 from .security import (
 
@@ -9824,7 +9825,7 @@ async def admin_dashboard_overview(
 
         readyChallenges=ready_challenges,
 
-        vimeoApiStatus=_get_vimeo_status(),
+        vimeoApiStatus=get_vimeo_status(),
 
         userChart=user_chart,
 
@@ -10512,23 +10513,33 @@ async def admin_delete_workout(
 
 
 
-@app.post("/admin/workouts/sync", response_model=AdminWorkoutSyncResponse)
-
-async def admin_sync_workouts(
-
-    _: dict = Depends(_require_admin_user),
-
-) -> AdminWorkoutSyncResponse:
-
-    count = await workouts_collection.count_documents({})
-
-    return AdminWorkoutSyncResponse(
-
-        message="Workout sync is ready for Vimeo integration. Existing library has been refreshed.",
-
-        syncedCount=count,
-
-    )
+@app.post("/admin/workouts/sync", response_model=AdminWorkoutSyncResponse)
+
+async def admin_sync_workouts(
+
+    _: dict = Depends(_require_admin_user),
+
+) -> AdminWorkoutSyncResponse:
+
+    try:
+
+        summary = await sync_vimeo_workouts()
+
+    except VimeoSyncError as exc:
+
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return AdminWorkoutSyncResponse(
+
+        message="Vimeo workout library synced successfully.",
+
+        syncedCount=summary.synced_count,
+
+        modulesSynced=summary.modules_synced,
+
+        videosDiscovered=summary.videos_discovered,
+
+    )
 
 
 
@@ -16100,15 +16111,7 @@ async def _seed_admin_user() -> None:
 
 
 
-def _get_vimeo_status() -> str:
-
-    return "CONFIGURED" if settings.vimeo_access_token else "MISSING"
-
-
-
-
-
-def _normalize_admin_user_status(record: dict) -> str:
+def _normalize_admin_user_status(record: dict) -> str:
 
     status = str(record.get("status") or "").strip().upper()
 
