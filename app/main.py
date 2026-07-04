@@ -2270,33 +2270,33 @@ def _resolve_google_profile(payload: GoogleAuthRequest) -> tuple[dict[str, Any],
 
 @app.on_event("startup")
 
-async def startup() -> None:
-
-    logger.info("startup_begin")
-
-    if settings.using_default_jwt_secret:
-
-        logger.warning("security_warning using default JWT secret; set JWT_SECRET_KEY before production deployment")
-
-    if not settings.startup_jobs_enabled:
-
-        logger.info("startup_jobs_skipped reason=disabled")
-
-        return
-
-    if not settings.mongodb_configured:
-
-        logger.info("startup_jobs_skipped reason=database_not_configured")
-
-        return
-
-    await ensure_indexes()
-
-    await backfill_current_health_metrics_from_history()
-
-    await _seed_admin_user()
-
-    await start_integration_queue()
+async def startup() -> None:
+
+    logger.info("startup_begin")
+
+    if settings.using_default_jwt_secret:
+
+        logger.warning("security_warning using default JWT secret; set JWT_SECRET_KEY before production deployment")
+
+    if not settings.mongodb_configured:
+
+        logger.info("startup_jobs_skipped reason=database_not_configured")
+
+        return
+
+    await _seed_admin_user()
+
+    if not settings.startup_jobs_enabled:
+
+        logger.info("startup_jobs_skipped reason=disabled")
+
+        return
+
+    await ensure_indexes()
+
+    await backfill_current_health_metrics_from_history()
+
+    await start_integration_queue()
 
     await start_wearables_scheduler()
 
