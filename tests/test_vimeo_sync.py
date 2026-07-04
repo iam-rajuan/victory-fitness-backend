@@ -24,6 +24,7 @@ class VimeoSyncHelpersTests(unittest.TestCase):
             module_name="Strength",
             source_type="PROJECT",
             source_uri="/me/projects/42",
+            existing_workout=None,
             now=vimeo_sync_module.datetime.now(vimeo_sync_module.timezone.utc),
         )
 
@@ -32,7 +33,8 @@ class VimeoSyncHelpersTests(unittest.TestCase):
         self.assertEqual(document["vimeo_id"], "123456789")
         self.assertEqual(document["tag"], "Strength")
         self.assertEqual(document["video_source"], "VIMEO")
-        self.assertEqual(document["visibility"], "Published")
+        self.assertEqual(document["visibility"], "Draft")
+        self.assertEqual(document["vimeo_provider_visibility"], "Published")
         self.assertEqual(document["thumbnail"], "https://example.com/thumb-large.jpg")
 
     def test_resolve_workout_visibility_marks_private_video_as_draft(self) -> None:
@@ -40,6 +42,13 @@ class VimeoSyncHelpersTests(unittest.TestCase):
             {"status": "available", "privacy": {"view": "password"}}
         )
         self.assertEqual(visibility, "Draft")
+
+    def test_resolve_synced_visibility_preserves_admin_publish_state(self) -> None:
+        visibility = vimeo_sync_module._resolve_synced_visibility(
+            {"visibility": "Published"},
+            {"status": "available", "privacy": {"view": "disable"}},
+        )
+        self.assertEqual(visibility, "Published")
 
 
 if __name__ == "__main__":

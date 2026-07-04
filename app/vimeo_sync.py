@@ -165,12 +165,21 @@ def _resolve_workout_visibility(video: dict[str, Any]) -> str:
     return "Published"
 
 
+def _resolve_synced_visibility(existing_workout: dict[str, Any] | None, video: dict[str, Any]) -> str:
+    if existing_workout:
+        current_visibility = str(existing_workout.get("visibility") or "").strip()
+        if current_visibility in {"Published", "Draft"}:
+            return current_visibility
+    return "Draft"
+
+
 def _build_workout_document(
     *,
     video: dict[str, Any],
     module_name: str,
     source_type: str,
     source_uri: str,
+    existing_workout: dict[str, Any] | None,
     now: datetime,
 ) -> dict[str, Any] | None:
     video_id = _extract_vimeo_video_id(video)
@@ -184,9 +193,10 @@ def _build_workout_document(
         "video_url": _build_vimeo_embed_url(video_id),
         "video_source": "VIMEO",
         "tag": _normalize_vimeo_module_name(module_name, "Vimeo"),
-        "visibility": _resolve_workout_visibility(video),
+        "visibility": _resolve_synced_visibility(existing_workout, video),
         "thumbnail": _pick_vimeo_thumbnail(video),
         "description": str(video.get("description") or "").strip(),
+        "vimeo_provider_visibility": _resolve_workout_visibility(video),
         "vimeo_source_type": source_type,
         "vimeo_source_uri": str(source_uri or "").strip(),
         "vimeo_video_uri": str(video.get("uri") or "").strip(),
@@ -223,6 +233,7 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
                 module_name=module_name,
                 source_type=source_type,
                 source_uri=container_uri,
+                existing_workout=None,
                 now=now,
             )
             if not document:
@@ -236,6 +247,7 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
             module_name="Vimeo",
             source_type="VIDEO",
             source_uri="/me/videos",
+            existing_workout=None,
             now=now,
         )
         if not document:
@@ -244,9 +256,20 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
 
     summary.videos_discovered = len(workout_documents_by_video_id)
 
-    for document in workout_documents_by_video_id.values():
+    existing_workouts = await workouts_collection.find(
+        {"vimeo_id": {"$in": list(workout_documents_by_video_id.keys())}}
+    ).to_list(length=len(workout_documents_by_video_id))
+    existing_workouts_by_video_id = {
+        str(record.get("vimeo_id") or "").strip(): record
+        for record in existing_workouts
+        if str(record.get("vimeo_id") or "").strip()
+    }
+
+    for video_id, document in list(workout_documents_by_video_id.items()):
+        existing_workout = existing_workouts_by_video_id.get(video_id)
+        document["visibility"] = _resolve_synced_visibility(existing_workout, document)
         await workouts_collection.update_one(
-            {"vimeo_id": document["vimeo_id"]},
+            {"vimeo_id": video_id},
             {"$set": document, "$setOnInsert": {"created_at": now}},
             upsert=True,
         )
