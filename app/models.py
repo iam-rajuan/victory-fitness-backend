@@ -1420,6 +1420,25 @@ class AdminWorkoutSyncResponse(BaseModel):
     syncedVideos: list[AdminWorkoutSyncVideoResponse] = Field(default_factory=list)
 
 
+class AdminWorkoutSyncDebugItem(BaseModel):
+    id: str
+    title: str
+    vimeoId: str = ""
+    tag: str = ""
+    visibility: str = "Draft"
+    providerVisibility: str = "Draft"
+    videoSource: str = "VIMEO"
+    vimeoSourceType: str = ""
+    vimeoSourceUri: str = ""
+    vimeoSyncedAt: datetime | None = None
+    updatedAt: datetime | None = None
+
+
+class AdminWorkoutSyncDebugResponse(BaseModel):
+    total: int = 0
+    workouts: list[AdminWorkoutSyncDebugItem] = Field(default_factory=list)
+
+
 class WorkoutLibraryItem(BaseModel):
     id: str
     title: str

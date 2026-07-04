@@ -246,13 +246,15 @@ from .models import (
 
     AdminUserUpdateRequest,
 
-    AdminWorkoutItem,
-
-    AdminWorkoutListResponse,
-
-    AdminWorkoutRequest,
-
-    AdminWorkoutSyncResponse,
+    AdminWorkoutItem,
+
+    AdminWorkoutListResponse,
+
+    AdminWorkoutRequest,
+
+    AdminWorkoutSyncDebugResponse,
+
+    AdminWorkoutSyncResponse,
 
     DashboardOverviewRecentUser,
 
@@ -10529,6 +10531,14 @@ async def admin_sync_workouts(
 
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
+    logger.info(
+        "admin_workout_sync_result synced_count=%s videos_discovered=%s modules_synced=%s synced_vimeo_ids=%s",
+        summary.synced_count,
+        summary.videos_discovered,
+        summary.modules_synced,
+        [str(item.get("vimeoId") or "").strip() for item in (summary.synced_videos or []) if isinstance(item, dict)],
+    )
+
     return AdminWorkoutSyncResponse(
 
         message="Vimeo workout library synced successfully.",
@@ -10542,6 +10552,40 @@ async def admin_sync_workouts(
         syncedVideos=summary.synced_videos or [],
 
     )
+
+
+@app.get("/admin/workouts/sync/debug", response_model=AdminWorkoutSyncDebugResponse)
+async def admin_debug_synced_workouts(
+    limit: int = 50,
+    _: dict = Depends(_require_admin_user),
+) -> AdminWorkoutSyncDebugResponse:
+    capped_limit = max(1, min(int(limit or 50), 200))
+    records = await workouts_collection.find(
+        {
+            "video_source": "VIMEO",
+            "vimeo_id": {"$exists": True, "$ne": ""},
+        },
+        sort=[("vimeo_synced_at", -1), ("updated_at", -1), ("_id", -1)],
+    ).to_list(length=capped_limit)
+
+    workouts = [
+        {
+            "id": str(record["_id"]),
+            "title": str(record.get("title") or ""),
+            "vimeoId": str(record.get("vimeo_id") or ""),
+            "tag": str(record.get("tag") or ""),
+            "visibility": str(record.get("visibility") or "Draft"),
+            "providerVisibility": str(record.get("vimeo_provider_visibility") or "Draft"),
+            "videoSource": str(record.get("video_source") or "VIMEO"),
+            "vimeoSourceType": str(record.get("vimeo_source_type") or ""),
+            "vimeoSourceUri": str(record.get("vimeo_source_uri") or ""),
+            "vimeoSyncedAt": _as_utc(record.get("vimeo_synced_at")) if record.get("vimeo_synced_at") else None,
+            "updatedAt": _as_utc(record.get("updated_at")) if record.get("updated_at") else None,
+        }
+        for record in records
+    ]
+
+    return AdminWorkoutSyncDebugResponse(total=len(workouts), workouts=workouts)
 
 
 
