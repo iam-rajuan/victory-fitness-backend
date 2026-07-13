@@ -1187,11 +1187,14 @@ class TrialConversionUser(BaseModel):
 
 
 class TrialConversionResponse(BaseModel):
+    totalUsers: int = 0
+    totalSubscriptions: int = 0
     trialUsers: int = 0
     activeTrials: int = 0
     continuedAfterTrial: int = 0
     trialEndedNotContinued: int = 0
     conversionRate: float = 0
+    chart: list[dict[str, int | str]] = Field(default_factory=list)
     users: list[TrialConversionUser] = Field(default_factory=list)
 
 

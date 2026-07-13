@@ -19792,7 +19792,8 @@ def _trial_datetime(value: Any) -> datetime | None:
 @app.get("/admin/analytics/trial-conversion", response_model=TrialConversionResponse)
 async def admin_trial_conversion(_: dict = Depends(_require_admin_user)) -> TrialConversionResponse:
     now = datetime.now(timezone.utc)
-    records = await users_collection.find({"is_admin": {"$ne": True}, "subscription_started_at": {"$ne": None}}).to_list(length=None)
+    all_records = await users_collection.find({"is_admin": {"$ne": True}}).to_list(length=None)
+    records = [record for record in all_records if record.get("subscription_started_at") is not None]
     users: list[TrialConversionUser] = []
     active_trials = continued = ended = 0
     for record in records:
@@ -19814,4 +19815,19 @@ async def admin_trial_conversion(_: dict = Depends(_require_admin_user)) -> Tria
         users.append(TrialConversionUser(id=str(record.get("_id")), fullName=str(record.get("name") or "User"), email=str(record.get("email") or "unknown@example.com"), trialStartedAt=started, trialEndsAt=ends, status=state, subscriptionTier=str(record.get("subscription_tier") or "NONE"), subscriptionStatus=str(record.get("subscription_status") or "NONE"), subscriptionIsPurchased=purchased))
     users.sort(key=lambda item: item.trialStartedAt, reverse=True)
     total_decided = continued + ended
-    return TrialConversionResponse(trialUsers=len(users), activeTrials=active_trials, continuedAfterTrial=continued, trialEndedNotContinued=ended, conversionRate=round((continued / total_decided * 100) if total_decided else 0, 1), users=users)
+    total_subscriptions = sum(
+        1 for record in all_records
+        if bool(record.get("subscription_is_purchased"))
+        or str(record.get("subscription_status") or "").upper() == "ACTIVE"
+    )
+    return TrialConversionResponse(
+        totalUsers=len(all_records), totalSubscriptions=total_subscriptions,
+        trialUsers=len(users), activeTrials=active_trials, continuedAfterTrial=continued,
+        trialEndedNotContinued=ended, conversionRate=round((continued / total_decided * 100) if total_decided else 0, 1),
+        chart=[
+            {"name": "Active trial", "users": active_trials},
+            {"name": "Continued", "users": continued},
+            {"name": "Not continued", "users": ended},
+            {"name": "Subscriptions", "users": total_subscriptions},
+        ], users=users,
+    )
