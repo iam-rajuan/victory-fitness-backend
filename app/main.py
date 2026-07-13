@@ -5997,9 +5997,11 @@ async def create_community_post(
 
     file_name: str | None = None
 
-    image_url = ""
-
-    video_url = ""
+    image_url = ""
+
+    video_url = ""
+
+    audio_url = ""
 
 
 
@@ -6613,7 +6615,7 @@ async def admin_create_community_post(
 
             raise HTTPException(status_code=500, detail=f"Community image upload failed: {exc}") from exc
 
-    elif payload.video_base64:
+    elif payload.video_base64:
 
         try:
 
@@ -6637,7 +6639,17 @@ async def admin_create_community_post(
 
             raise HTTPException(status_code=500, detail=f"Community video upload failed: {exc}") from exc
 
-    elif external_video_url:
+    elif payload.audio_base64:
+        try:
+            audio_url = _upload_community_audio_to_s3(
+                str(admin_user["_id"]), payload.audio_base64, payload.mime_type, payload.file_name,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Community audio upload failed: {exc}") from exc
+
+    elif external_video_url:
 
         video_url = external_video_url
 
@@ -6653,7 +6665,9 @@ async def admin_create_community_post(
 
         "image_url": image_url,
 
-        "video_url": video_url,
+        "video_url": video_url,
+
+        "audio_url": audio_url,
 
         "like_count": 0,
 
@@ -15028,9 +15042,11 @@ def _serialize_community_post_record(record: dict, author_record: dict | None = 
 
         "content": str(record.get("content") or ""),
 
-        "image_url": str(record.get("image_url") or ""),
-
-        "video_url": str(record.get("video_url") or ""),
+        "image_url": str(record.get("image_url") or ""),
+
+        "video_url": str(record.get("video_url") or ""),
+
+        "audio_url": str(record.get("audio_url") or ""),
 
         "like_count": int(record.get("like_count") or 0),
 
@@ -19928,3 +19944,10 @@ async def admin_trial_conversion(_: dict = Depends(_require_admin_user)) -> Tria
             {"name": "Subscriptions", "users": total_subscriptions},
         ], users=users,
     )
+def _upload_community_audio_to_s3(
+    user_id: str,
+    audio_base64: str,
+    mime_type: str,
+    file_name: str | None,
+) -> str:
+    return _upload_audio_to_s3("community-audio", user_id, audio_base64, mime_type, file_name)

@@ -560,6 +560,7 @@ class CommunityPostResponse(BaseModel):
     content: str
     image_url: str = ""
     video_url: str = ""
+    audio_url: str = ""
     like_count: int = 0
     comment_count: int = 0
     viewer_has_liked: bool = False
@@ -897,6 +898,7 @@ class AdminCommunityPostCreateRequest(BaseModel):
     audience: str = Field(default="ALL", pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    audio_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     external_video_url: str | None = Field(default=None, max_length=2000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
@@ -907,6 +909,7 @@ class AdminCommunityPostUpdateRequest(BaseModel):
     audience: str | None = Field(default=None, pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
+    audio_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     external_video_url: str | None = Field(default=None, max_length=2000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
