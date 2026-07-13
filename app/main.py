@@ -19827,7 +19827,17 @@ def _decode_homepage_quotes(record: dict | None) -> list[dict[str, Any]]:
 
 
 async def _load_homepage_quotes() -> list[dict[str, Any]]:
-    return _decode_homepage_quotes(await app_content_collection.find_one({"key": HOMEPAGE_QUOTES_KEY}))
+    items = _decode_homepage_quotes(await app_content_collection.find_one({"key": HOMEPAGE_QUOTES_KEY}))
+    if items:
+        return items
+    defaults = [
+        {"id": "quote-wisdom-listens", "text": "WISDOM LISTENS BEFORE IT LEADS.", "author": "Victor Akko", "active": True},
+        {"id": "quote-only-limit", "text": "YOUR ONLY LIMIT IS YOUR MIND.", "author": "Focus", "active": True},
+        {"id": "quote-victory-persevering", "text": "VICTORY BELONGS TO THE MOST PERSEVERING.", "author": "Napoleon", "active": True},
+        {"id": "quote-strength-winning", "text": "STRENGTH DOES NOT COME FROM WINNING.", "author": "Arnold", "active": True},
+    ]
+    await _save_homepage_quotes(defaults)
+    return defaults
 
 
 async def _save_homepage_quotes(items: list[dict[str, Any]]) -> None:
