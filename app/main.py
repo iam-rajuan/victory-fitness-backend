@@ -208,9 +208,6 @@ from .models import (
     HomepageQuote,
 
 
-    HomepageQuoteBulkRequest,
-
-
     HomepageQuoteListResponse,
 
 
@@ -19858,14 +19855,6 @@ async def admin_list_homepage_quotes(_: dict = Depends(_require_admin_user)) -> 
 async def admin_add_homepage_quote(payload: HomepageQuoteRequest, _: dict = Depends(_require_admin_user)) -> HomepageQuoteListResponse:
     items = await _load_homepage_quotes()
     items.append({"id": str(uuid4()), "text": payload.text.strip(), "author": payload.author.strip(), "active": payload.active})
-    await _save_homepage_quotes(items)
-    return HomepageQuoteListResponse(items=[HomepageQuote(**item) for item in items])
-
-
-@app.post("/admin/homepage/quotes/bulk", response_model=HomepageQuoteListResponse)
-async def admin_bulk_add_homepage_quotes(payload: HomepageQuoteBulkRequest, _: dict = Depends(_require_admin_user)) -> HomepageQuoteListResponse:
-    items = await _load_homepage_quotes()
-    items.extend({"id": str(uuid4()), "text": item.text.strip(), "author": item.author.strip(), "active": item.active} for item in payload.items)
     await _save_homepage_quotes(items)
     return HomepageQuoteListResponse(items=[HomepageQuote(**item) for item in items])
 

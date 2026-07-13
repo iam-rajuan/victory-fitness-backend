@@ -1170,10 +1170,6 @@ class HomepageQuoteListResponse(BaseModel):
     items: list[HomepageQuote] = Field(default_factory=list)
 
 
-class HomepageQuoteBulkRequest(BaseModel):
-    items: list[HomepageQuoteRequest] = Field(min_length=1, max_length=5000)
-
-
 class TrialConversionUser(BaseModel):
     id: str
     fullName: str
