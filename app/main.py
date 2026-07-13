@@ -3263,6 +3263,8 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
 
             "email": email,
             "contact_number": mobile,
+            "marketing_consent": payload.marketing_consent,
+            "marketing_consent_at": now if payload.marketing_consent else None,
 
             "password_hash": hash_password(payload.password),
 

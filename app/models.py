@@ -13,6 +13,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     mobile: str = Field(min_length=3, max_length=30)
     password: str = Field(min_length=8, max_length=128)
+    marketing_consent: bool = False
 
 
 class LoginRequest(BaseModel):
