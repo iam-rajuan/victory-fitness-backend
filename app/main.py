@@ -19727,7 +19727,21 @@ def _build_challenge_progress_report_png(
     entries = _build_report_completed_entries(thread, membership_with_points)
     completed_days = max(int(membership.get("progress_days_completed") or 0), 0)
     viewer_points = _calculate_challenge_points_earned(plan_days, membership_with_points, challenge_points)
-    challenge_name = str(thread.get("title") or "Challenge")
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+    completed_day_numbers = {
+        int(day_number)
+        for day_number, day_progress in raw_progress.items()
+        if str(day_number).isdigit() and isinstance(day_progress, dict) and (
+            bool(day_progress.get("completed"))
+            or bool(day_progress.get("completed_section_ids"))
+            or bool(day_progress.get("completed_exercise_ids"))
+        )
+    }
+    latest_completed_day = next(
+        (day for day in reversed(plan_days) if int(day.get("day_number") or 0) in completed_day_numbers),
+        None,
+    )
+    challenge_name = str((latest_completed_day or {}).get("title") or thread.get("title") or "Challenge")
     width, height = 900, 1500
     image = Image.new("RGB", (width, height), "#03192A")
     draw = ImageDraw.Draw(image)
