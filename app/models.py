@@ -1153,6 +1153,48 @@ class FAQRequest(BaseModel):
     answer: str = Field(min_length=1, max_length=10000)
 
 
+class HomepageQuote(BaseModel):
+    id: str
+    text: str = Field(min_length=1, max_length=1000)
+    author: str = Field(min_length=1, max_length=200)
+    active: bool = True
+
+
+class HomepageQuoteRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    author: str = Field(min_length=1, max_length=200)
+    active: bool = True
+
+
+class HomepageQuoteListResponse(BaseModel):
+    items: list[HomepageQuote] = Field(default_factory=list)
+
+
+class HomepageQuoteBulkRequest(BaseModel):
+    items: list[HomepageQuoteRequest] = Field(min_length=1, max_length=5000)
+
+
+class TrialConversionUser(BaseModel):
+    id: str
+    fullName: str
+    email: EmailStr
+    trialStartedAt: datetime
+    trialEndsAt: datetime
+    status: str
+    subscriptionTier: str = "NONE"
+    subscriptionStatus: str = "NONE"
+    subscriptionIsPurchased: bool = False
+
+
+class TrialConversionResponse(BaseModel):
+    trialUsers: int = 0
+    activeTrials: int = 0
+    continuedAfterTrial: int = 0
+    trialEndedNotContinued: int = 0
+    conversionRate: float = 0
+    users: list[TrialConversionUser] = Field(default_factory=list)
+
+
 class AdminNotificationItem(BaseModel):
     id: str
     title: str

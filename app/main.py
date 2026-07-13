@@ -202,7 +202,25 @@ from .models import (
 
     FAQListResponse,
 
-    FAQRequest,
+    FAQRequest,
+
+
+    HomepageQuote,
+
+
+    HomepageQuoteBulkRequest,
+
+
+    HomepageQuoteListResponse,
+
+
+    HomepageQuoteRequest,
+
+
+    TrialConversionResponse,
+
+
+    TrialConversionUser,
 
     AdminMasterclassItem,
 
@@ -19691,3 +19709,109 @@ async def _get_verified_user_from_access_token(token: str) -> dict:
 
     return await dependency_get_verified_user_from_access_token(token)
 
+HOMEPAGE_QUOTES_KEY = "homepage_quotes"
+
+
+def _decode_homepage_quotes(record: dict | None) -> list[dict[str, Any]]:
+    if not record:
+        return []
+    try:
+        raw = json.loads(str(record.get("html_content") or "[]"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [
+        {"id": str(item.get("id") or uuid4()), "text": str(item.get("text") or "").strip(), "author": str(item.get("author") or "").strip(), "active": bool(item.get("active", True))}
+        for item in raw
+        if isinstance(item, dict) and str(item.get("text") or "").strip() and str(item.get("author") or "").strip()
+    ]
+
+
+async def _load_homepage_quotes() -> list[dict[str, Any]]:
+    return _decode_homepage_quotes(await app_content_collection.find_one({"key": HOMEPAGE_QUOTES_KEY}))
+
+
+async def _save_homepage_quotes(items: list[dict[str, Any]]) -> None:
+    now = datetime.now(timezone.utc)
+    await app_content_collection.update_one(
+        {"key": HOMEPAGE_QUOTES_KEY},
+        {"$set": {"key": HOMEPAGE_QUOTES_KEY, "title": "Homepage quotes", "html_content": json.dumps(items), "updated_at": now}, "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+
+
+@app.get("/admin/homepage/quotes", response_model=HomepageQuoteListResponse)
+async def admin_list_homepage_quotes(_: dict = Depends(_require_admin_user)) -> HomepageQuoteListResponse:
+    return HomepageQuoteListResponse(items=[HomepageQuote(**item) for item in await _load_homepage_quotes()])
+
+
+@app.post("/admin/homepage/quotes", response_model=HomepageQuoteListResponse)
+async def admin_add_homepage_quote(payload: HomepageQuoteRequest, _: dict = Depends(_require_admin_user)) -> HomepageQuoteListResponse:
+    items = await _load_homepage_quotes()
+    items.append({"id": str(uuid4()), "text": payload.text.strip(), "author": payload.author.strip(), "active": payload.active})
+    await _save_homepage_quotes(items)
+    return HomepageQuoteListResponse(items=[HomepageQuote(**item) for item in items])
+
+
+@app.post("/admin/homepage/quotes/bulk", response_model=HomepageQuoteListResponse)
+async def admin_bulk_add_homepage_quotes(payload: HomepageQuoteBulkRequest, _: dict = Depends(_require_admin_user)) -> HomepageQuoteListResponse:
+    items = await _load_homepage_quotes()
+    items.extend({"id": str(uuid4()), "text": item.text.strip(), "author": item.author.strip(), "active": item.active} for item in payload.items)
+    await _save_homepage_quotes(items)
+    return HomepageQuoteListResponse(items=[HomepageQuote(**item) for item in items])
+
+
+@app.put("/admin/homepage/quotes", response_model=HomepageQuoteListResponse)
+async def admin_replace_homepage_quotes(payload: HomepageQuoteListResponse, _: dict = Depends(_require_admin_user)) -> HomepageQuoteListResponse:
+    items = [item.model_dump() for item in payload.items]
+    await _save_homepage_quotes(items)
+    return HomepageQuoteListResponse(items=[HomepageQuote(**item) for item in items])
+
+
+@app.get("/content/homepage/quote", response_model=HomepageQuote | None)
+async def get_homepage_quote() -> HomepageQuote | None:
+    active_items = [item for item in await _load_homepage_quotes() if item.get("active")]
+    if not active_items:
+        return None
+    return HomepageQuote(**active_items[datetime.now(timezone.utc).date().toordinal() % len(active_items)])
+
+
+def _trial_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+@app.get("/admin/analytics/trial-conversion", response_model=TrialConversionResponse)
+async def admin_trial_conversion(_: dict = Depends(_require_admin_user)) -> TrialConversionResponse:
+    now = datetime.now(timezone.utc)
+    records = await users_collection.find({"is_admin": {"$ne": True}, "subscription_started_at": {"$ne": None}}).to_list(length=None)
+    users: list[TrialConversionUser] = []
+    active_trials = continued = ended = 0
+    for record in records:
+        started = _trial_datetime(record.get("subscription_started_at"))
+        if not started:
+            continue
+        ends = started + timedelta(days=5)
+        purchased = bool(record.get("subscription_is_purchased"))
+        is_paid = purchased or str(record.get("subscription_status") or "").upper() == "ACTIVE"
+        if now < ends:
+            state = "ACTIVE_TRIAL"
+            active_trials += 1
+        elif is_paid:
+            state = "CONTINUED_AFTER_TRIAL"
+            continued += 1
+        else:
+            state = "TRIAL_ENDED_NOT_CONTINUED"
+            ended += 1
+        users.append(TrialConversionUser(id=str(record.get("_id")), fullName=str(record.get("name") or "User"), email=str(record.get("email") or "unknown@example.com"), trialStartedAt=started, trialEndsAt=ends, status=state, subscriptionTier=str(record.get("subscription_tier") or "NONE"), subscriptionStatus=str(record.get("subscription_status") or "NONE"), subscriptionIsPurchased=purchased))
+    users.sort(key=lambda item: item.trialStartedAt, reverse=True)
+    total_decided = continued + ended
+    return TrialConversionResponse(trialUsers=len(users), activeTrials=active_trials, continuedAfterTrial=continued, trialEndedNotContinued=ended, conversionRate=round((continued / total_decided * 100) if total_decided else 0, 1), users=users)
