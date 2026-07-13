@@ -19705,9 +19705,92 @@ async def _get_verified_user(authorization: str | None) -> dict:
 
 
 
-async def _get_verified_user_from_access_token(token: str) -> dict:
+async def _get_verified_user_from_access_token(token: str) -> dict:
 
-    return await dependency_get_verified_user_from_access_token(token)
+    return await dependency_get_verified_user_from_access_token(token)
+
+
+def _build_challenge_progress_report_png(
+    thread: dict,
+    membership: dict,
+    user_name: str,
+) -> tuple[bytes, str]:
+    """Render the downloadable report as the same victory postcard shown in the app."""
+    _require_pillow()
+    plan_days = _normalize_challenge_plan_days(
+        thread.get("plan_days") if isinstance(thread.get("plan_days"), list) else [],
+        duration_days=max(int(thread.get("duration_days") or 0), 1),
+    )
+    challenge_points = max(int(thread.get("points") or 0), 0)
+    membership_with_points = dict(membership)
+    membership_with_points["challenge_points"] = challenge_points
+    entries = _build_report_completed_entries(thread, membership_with_points)
+    completed_days = max(int(membership.get("progress_days_completed") or 0), 0)
+    viewer_points = _calculate_challenge_points_earned(plan_days, membership_with_points, challenge_points)
+    challenge_name = str(thread.get("title") or "Challenge")
+    width, height = 900, 1500
+    image = Image.new("RGB", (width, height), "#1A344E")
+    draw = ImageDraw.Draw(image)
+    cyan, white, muted, pink = "#11D8F5", "#F7FAFC", "#A9B8C8", "#FF4D75"
+    dark, panel = "#041524", "#12191B"
+    title_font = _load_report_font(48, bold=True)
+    heading_font = _load_report_font(34, bold=True)
+    section_font = _load_report_font(22, bold=True)
+    body_font = _load_report_font(18)
+    small_font = _load_report_font(15)
+
+    draw.rounded_rectangle((36, 120, width - 36, height - 28), radius=24, fill=dark, outline="#314A60", width=2)
+    draw.rounded_rectangle((112, 176, width - 112, 1115), radius=32, outline=cyan, width=8)
+    for x in range(140, width - 140, 48):
+        for y in range(205, 1090, 48):
+            draw.ellipse((x, y, x + 3, y + 3), fill="#12627A")
+
+    def center_text(y: int, text: str, font, fill: str) -> None:
+        box = draw.textbbox((0, 0), text, font=font)
+        draw.text(((width - (box[2] - box[0])) / 2, y), text, font=font, fill=fill)
+
+    draw.rounded_rectangle((width // 2 - 31, 300, width // 2 + 31, 362), radius=4, outline="#758896", width=1)
+    center_text(320, "VF", _load_report_font(25, bold=True), cyan)
+    center_text(408, "YOUR VICTORY", title_font, white)
+    center_text(492, "WORKOUT COMPLETED", section_font, cyan)
+    draw.rounded_rectangle((150, 540, width - 150, 930), radius=24, fill=panel, outline="#5B6870", width=2)
+
+    title_lines = _wrap_report_text(draw, challenge_name.upper(), heading_font, 550)[:3]
+    title_y = 585
+    for line in title_lines:
+        center_text(title_y, line, heading_font, white)
+        title_y += 48
+    draw.line((188, title_y + 20, width - 188, title_y + 20), fill="#46504F", width=2)
+    content = entries[:5] or [{"title": "Challenge day completed", "detail": "Keep building your streak"}]
+    row_y = title_y + 48
+    for entry in content:
+        draw.ellipse((190, row_y + 5, 202, row_y + 17), fill=cyan)
+        draw.text((222, row_y), str(entry.get("title") or "Completed"), font=body_font, fill=white)
+        row_y += 34
+
+    metric_top = 970
+    for x, label, value, color in ((174, "STREAK", str(completed_days), cyan), (468, "INTENSITY", "Good", pink)):
+        draw.rounded_rectangle((x, metric_top, x + 258, metric_top + 106), radius=18, fill="#080D0D", outline="#29343C", width=2)
+        box = draw.textbbox((0, 0), label, font=small_font)
+        draw.text((x + (258 - (box[2] - box[0])) / 2, metric_top + 18), label, font=small_font, fill=white)
+        value_box = draw.textbbox((0, 0), value, font=heading_font)
+        draw.text((x + (258 - (value_box[2] - value_box[0])) / 2, metric_top + 42), value, font=heading_font, fill=color)
+    center_text(1118, "SHARE & INSPIRE OTHERS", section_font, white)
+    for index, color in enumerate(("#D62976", "#050505", "#FFE500", "#050505", "#25A7E0", "#22D66B")):
+        x = 170 + index * 112
+        draw.ellipse((x, 1170, x + 62, 1232), fill=color, outline="#172B40", width=2)
+    draw.rounded_rectangle((140, 1280, width - 140, 1370), radius=28, fill="#46586A")
+    center_text(1303, "DONE", heading_font, white)
+    center_text(1410, "VICTORY-FITNESS.APP", section_font, "#B1BDCA")
+
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    share_message = "\n".join([
+        "Victory Fitness",
+        f"{challenge_name} completed by {user_name or 'Victory Member'}",
+        f"Streak: {completed_days} | Points: {viewer_points}/{challenge_points}",
+    ])
+    return output.getvalue(), share_message
 
 HOMEPAGE_QUOTES_KEY = "homepage_quotes"
 
