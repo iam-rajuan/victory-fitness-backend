@@ -19729,10 +19729,10 @@ def _build_challenge_progress_report_png(
     viewer_points = _calculate_challenge_points_earned(plan_days, membership_with_points, challenge_points)
     challenge_name = str(thread.get("title") or "Challenge")
     width, height = 900, 1500
-    image = Image.new("RGB", (width, height), "#1A344E")
+    image = Image.new("RGB", (width, height), "#03192A")
     draw = ImageDraw.Draw(image)
-    cyan, white, muted, pink = "#11D8F5", "#F7FAFC", "#A9B8C8", "#FF4D75"
-    dark, panel = "#041524", "#12191B"
+    cyan, white, muted, pink = "#00D9F5", "#F7F7F7", "#A9B8C8", "#FF4B70"
+    dark, panel = "#031523", "#151918"
     title_font = _load_report_font(48, bold=True)
     heading_font = _load_report_font(34, bold=True)
     section_font = _load_report_font(22, bold=True)
@@ -19740,10 +19740,10 @@ def _build_challenge_progress_report_png(
     small_font = _load_report_font(15)
 
     draw.rounded_rectangle((36, 120, width - 36, height - 28), radius=24, fill=dark, outline="#314A60", width=2)
-    draw.rounded_rectangle((112, 176, width - 112, 1115), radius=32, outline=cyan, width=8)
+    draw.rounded_rectangle((112, 176, width - 112, 1115), radius=32, outline="#00D9F5", width=8)
     for x in range(140, width - 140, 48):
         for y in range(205, 1090, 48):
-            draw.ellipse((x, y, x + 3, y + 3), fill="#12627A")
+            draw.ellipse((x, y, x + 3, y + 3), fill="#075477")
 
     def center_text(y: int, text: str, font, fill: str) -> None:
         box = draw.textbbox((0, 0), text, font=font)
@@ -19770,7 +19770,7 @@ def _build_challenge_progress_report_png(
 
     metric_top = 970
     for x, label, value, color in ((174, "STREAK", str(completed_days), cyan), (468, "INTENSITÄT", "Gut", pink)):
-        draw.rounded_rectangle((x, metric_top, x + 258, metric_top + 106), radius=18, fill="#080D0D", outline="#29343C", width=2)
+        draw.rounded_rectangle((x, metric_top, x + 258, metric_top + 106), radius=18, fill="#030606", outline="#27343A", width=2)
         box = draw.textbbox((0, 0), label, font=small_font)
         draw.text((x + (258 - (box[2] - box[0])) / 2, metric_top + 18), label, font=small_font, fill=white)
         value_box = draw.textbbox((0, 0), value, font=heading_font)
@@ -19779,7 +19779,7 @@ def _build_challenge_progress_report_png(
     button_font = _load_report_font(22, bold=True)
     while draw.textbbox((0, 0), button_text, font=button_font)[2] > 390 and button_font.size > 14:
         button_font = _load_report_font(button_font.size - 2, bold=True)
-    draw.rounded_rectangle((140, 1140, width - 140, 1230), radius=28, fill="#12C8F1")
+    draw.rounded_rectangle((140, 1140, width - 140, 1230), radius=28, fill="#00C5F0")
     box = draw.textbbox((0, 0), button_text, font=button_font)
     draw.text(((width - (box[2] - box[0])) / 2, 1165), button_text, font=button_font, fill="#06131D")
     center_text(1300, "VICTORY-FITNESS.APP", section_font, "#B1BDCA")
