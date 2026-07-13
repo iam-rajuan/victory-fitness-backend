@@ -19751,8 +19751,8 @@ def _build_challenge_progress_report_png(
 
     draw.rounded_rectangle((width // 2 - 31, 300, width // 2 + 31, 362), radius=4, outline="#758896", width=1)
     center_text(320, "VF", _load_report_font(25, bold=True), cyan)
-    center_text(408, "YOUR VICTORY", title_font, white)
-    center_text(492, "WORKOUT COMPLETED", section_font, cyan)
+    center_text(408, "DEINE VICTORY", title_font, white)
+    center_text(492, "WORKOUT ABGESCHLOSSEN", section_font, cyan)
     draw.rounded_rectangle((150, 540, width - 150, 930), radius=24, fill=panel, outline="#5B6870", width=2)
 
     title_lines = _wrap_report_text(draw, challenge_name.upper(), heading_font, 550)[:3]
@@ -19769,19 +19769,20 @@ def _build_challenge_progress_report_png(
         row_y += 34
 
     metric_top = 970
-    for x, label, value, color in ((174, "STREAK", str(completed_days), cyan), (468, "INTENSITY", "Good", pink)):
+    for x, label, value, color in ((174, "STREAK", str(completed_days), cyan), (468, "INTENSITÄT", "Gut", pink)):
         draw.rounded_rectangle((x, metric_top, x + 258, metric_top + 106), radius=18, fill="#080D0D", outline="#29343C", width=2)
         box = draw.textbbox((0, 0), label, font=small_font)
         draw.text((x + (258 - (box[2] - box[0])) / 2, metric_top + 18), label, font=small_font, fill=white)
         value_box = draw.textbbox((0, 0), value, font=heading_font)
         draw.text((x + (258 - (value_box[2] - value_box[0])) / 2, metric_top + 42), value, font=heading_font, fill=color)
-    center_text(1118, "SHARE & INSPIRE OTHERS", section_font, white)
-    for index, color in enumerate(("#D62976", "#050505", "#FFE500", "#050505", "#25A7E0", "#22D66B")):
-        x = 170 + index * 112
-        draw.ellipse((x, 1170, x + 62, 1232), fill=color, outline="#172B40", width=2)
-    draw.rounded_rectangle((140, 1280, width - 140, 1370), radius=28, fill="#46586A")
-    center_text(1303, "DONE", heading_font, white)
-    center_text(1410, "VICTORY-FITNESS.APP", section_font, "#B1BDCA")
+    button_text = str(user_name or "Victory Member").upper()
+    button_font = _load_report_font(22, bold=True)
+    while draw.textbbox((0, 0), button_text, font=button_font)[2] > 390 and button_font.size > 14:
+        button_font = _load_report_font(button_font.size - 2, bold=True)
+    draw.rounded_rectangle((140, 1140, width - 140, 1230), radius=28, fill="#12C8F1")
+    box = draw.textbbox((0, 0), button_text, font=button_font)
+    draw.text(((width - (box[2] - box[0])) / 2, 1165), button_text, font=button_font, fill="#06131D")
+    center_text(1300, "VICTORY-FITNESS.APP", section_font, "#B1BDCA")
 
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)
