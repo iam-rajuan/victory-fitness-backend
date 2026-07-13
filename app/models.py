@@ -59,6 +59,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     expires_in: int
     user: dict
+    returning_user: dict | None = None
 
 
 class SubscriptionSummaryResponse(BaseModel):
@@ -100,6 +101,7 @@ class MeResponse(BaseModel):
     subscription_purchase_source: str = ""
     subscription_access: list[str] = Field(default_factory=list)
     subscription: SubscriptionSummaryResponse = Field(default_factory=SubscriptionSummaryResponse)
+    marketing_consent: bool = False
     onboarding_completed: bool = False
 
 

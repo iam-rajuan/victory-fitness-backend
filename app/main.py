@@ -15921,11 +15921,44 @@ def _token_matches_auth_session(payload: dict[str, Any], user: dict) -> bool:
 
 
 
+async def _consume_returning_user_recognition(user: dict) -> dict | None:
+    """Return a one-time welcome-back prompt only for consented former trial users."""
+    if not bool(user.get("marketing_consent")):
+        return None
+
+    started_at = _trial_datetime(user.get("subscription_started_at"))
+    if not started_at:
+        return None
+
+    subscription = _build_subscription_summary(user)
+    if bool(subscription.get("is_purchased")) or str(subscription.get("status") or "").upper() in {"ACTIVE", "PAID"}:
+        return None
+    if _trial_datetime(user.get("winback_last_shown_at")):
+        return None
+
+    now = datetime.now(timezone.utc)
+    if now < started_at + timedelta(days=5):
+        return None
+
+    await users_collection.update_one(
+        {"_id": user["_id"], "marketing_consent": True, "winback_last_shown_at": {"$exists": False}},
+        {"$set": {"winback_last_shown_at": now}},
+    )
+    return {
+        "title": "Welcome back to Victory Fitness",
+        "message": "You have already started your fitness journey with us. Ready to commit to your next step?",
+        "action_label": "Choose your subscription",
+        "action_route": "/plan",
+        "trial_started_at": started_at,
+    }
+
+
 async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies: bool = True) -> TokenResponse:
 
     user_id = str(user["_id"])
 
     profile_summary = await _serialize_me_record(user)
+    returning_user = await _consume_returning_user_recognition(user)
 
     auth_session_version = _get_auth_session_version(user)
 
@@ -15991,7 +16024,8 @@ async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies:
 
 
 
-    return TokenResponse(
+    return TokenResponse(
+        returning_user=returning_user,
 
         access_token=access_token,
 
@@ -16041,7 +16075,8 @@ async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies:
 
             "subscription_access": profile_summary.get("subscription_access", []),
 
-            "subscription": profile_summary.get("subscription", {}),
+            "subscription": profile_summary.get("subscription", {}),
+            "marketing_consent": bool(user.get("marketing_consent")),
 
         },
 
@@ -16686,7 +16721,8 @@ async def _serialize_me_record(record: dict) -> dict:
 
         "subscription_access": subscription_summary["access"],
 
-        "subscription": subscription_summary,
+        "subscription": subscription_summary,
+        "marketing_consent": bool(record.get("marketing_consent")),
 
     }
 
