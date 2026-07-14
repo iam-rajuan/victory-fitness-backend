@@ -61,3 +61,19 @@ def send_password_reset_email(to_email: str, code: str) -> None:
         if settings.smtp_username and settings.smtp_password:
             smtp.login(settings.smtp_username, settings.smtp_password)
         smtp.send_message(message)
+
+
+def send_trial_campaign_email(to_email: str, name: str, day: int, title: str, body: str) -> None:
+    if not to_email or not settings.smtp_host or not settings.smtp_from_email:
+        return
+    message = EmailMessage()
+    message["From"] = f"{settings.smtp_from_name} <{settings.smtp_from_email}>"
+    message["To"] = to_email
+    message["Subject"] = f"Victory Fitness — {title}"
+    message.set_content(f"Hi {name},\n\n{body}\n\nOpen Victory Fitness to continue your Gold trial.\n\nDay {day} of your 5-day trial")
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+        if settings.smtp_use_tls:
+            smtp.starttls()
+        if settings.smtp_username and settings.smtp_password:
+            smtp.login(settings.smtp_username, settings.smtp_password)
+        smtp.send_message(message)

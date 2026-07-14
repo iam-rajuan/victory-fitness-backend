@@ -114,6 +114,7 @@ from .models import AppNotificationItem, AppNotificationListResponse, PushTokenR
 
 
 from .push_service import notify_users_of_published_workout
+from .trial_campaign import process_trial_campaign
 
 
 from .models import (
@@ -3874,6 +3875,17 @@ async def list_app_notifications(user: dict = Depends(_require_access_user)) -> 
     records = [item for item in (user.get("app_notifications") or []) if isinstance(item, dict)]
     records.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return AppNotificationListResponse(items=[AppNotificationItem(**item) for item in records[:50]])
+
+
+@app.post("/jobs/trial-campaign")
+async def run_trial_campaign(
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    expected = str(getattr(settings, "cron_secret", "") or "").strip()
+    supplied = str(authorization or "").replace("Bearer ", "", 1).strip()
+    if not expected or supplied != expected:
+        raise HTTPException(status_code=401, detail="Invalid cron authorization")
+    return await process_trial_campaign(users_collection)
 
 
 @app.get("/me/onboarding", response_model=OnboardingStateResponse)

@@ -159,6 +159,7 @@ class Settings:
         self.encryption_key = _get_secret("ENCRYPTION_KEY", self.wearable_token_encryption_key)
         self.health_native_upload_secret = _get_secret("HEALTH_NATIVE_UPLOAD_SECRET")
         self.webhook_signing_secret = _get_secret("WEBHOOK_SIGNING_SECRET")
+        self.cron_secret = _get_secret("CRON_SECRET")
         self.wearable_scheduler_enabled = _get_bool("WEARABLE_SCHEDULER_ENABLED", True)
         self.wearable_scheduler_interval_minutes = _get_int("WEARABLE_SCHEDULER_INTERVAL_MINUTES", 30)
         self.wearable_scheduler_lookback_days = _get_int("WEARABLE_SCHEDULER_LOOKBACK_DAYS", 1)
