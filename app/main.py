@@ -9394,9 +9394,30 @@ async def admin_generate_challenge_plan(
 
 
 
-@app.post("/admin/challenges", response_model=AdminChallengeItem, status_code=status.HTTP_201_CREATED)
-
-async def admin_create_challenge(
+async def _notify_users_of_new_challenge(challenge: dict) -> None:
+    challenge_id = str(challenge.get("_id") or "")
+    if not challenge_id:
+        return
+    users = await users_collection.find({"is_admin": {"$ne": True}, "is_verified": True}).to_list(length=None)
+    for user in users:
+        marked = await users_collection.update_one(
+            {"_id": user["_id"], "challenge_availability_notification_ids": {"$ne": challenge_id}},
+            {"$addToSet": {"challenge_availability_notification_ids": challenge_id}},
+        )
+        if marked.modified_count:
+            duration_days = max(int(challenge.get("duration_days") or 0), 0)
+            await notify_user(
+                users_collection,
+                user,
+                "New challenge available",
+                f"{str(challenge.get('title') or 'A new challenge')} is ready. Start today and complete each day to keep your points.",
+                "challenge_available",
+                {"type": "challenge", "challengeId": challenge_id, "durationDays": duration_days, "route": f"/challenges/{challenge_id}"},
+            )
+
+
+@app.post("/admin/challenges", response_model=AdminChallengeItem, status_code=status.HTTP_201_CREATED)
+async def admin_create_challenge(
 
     payload: AdminChallengeRequest,
 
@@ -9472,9 +9493,11 @@ async def admin_create_challenge(
 
     document["_id"] = insert_result.inserted_id
 
-    await _sync_workout_library_from_challenge_plan(plan_days, payload.category)
-
-    return AdminChallengeItem(**_serialize_admin_challenge_record(document))
+    await _sync_workout_library_from_challenge_plan(plan_days, payload.category)
+    if str(payload.status or "").upper() in {"ACTIVE", "UPCOMING"}:
+        await _notify_users_of_new_challenge(document)
+
+    return AdminChallengeItem(**_serialize_admin_challenge_record(document))
 
 
 
@@ -9584,13 +9607,18 @@ async def admin_update_challenge(
 
 
 
-    updated = await challenges_collection.find_one({"_id": object_id})
-
-    if not updated:
-
-        raise HTTPException(status_code=404, detail="Challenge not found")
-
-    stats = await _load_challenge_stats_map([challenge_id])
+    updated = await challenges_collection.find_one({"_id": object_id})
+
+    if not updated:
+
+        raise HTTPException(status_code=404, detail="Challenge not found")
+
+    was_available = str(existing.get("status") or "").upper() in {"ACTIVE", "UPCOMING"}
+    is_available = str(updated.get("status") or "").upper() in {"ACTIVE", "UPCOMING"}
+    if is_available and not was_available:
+        await _notify_users_of_new_challenge(updated)
+
+    stats = await _load_challenge_stats_map([challenge_id])
 
     return AdminChallengeItem(**_serialize_admin_challenge_record(updated, stats))
 

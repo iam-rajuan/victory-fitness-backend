@@ -75,6 +75,13 @@ async def process_trial_campaign(users_collection, challenge_memberships_collect
             challenge = await challenges_collection.find_one({"_id": ObjectId(challenge_id)}) if ObjectId.is_valid(challenge_id) else None
             if not user or not challenge:
                 continue
+            total_days = max(int(challenge.get("duration_days") or 0), 1)
+            if current_day > total_days:
+                await challenge_memberships_collection.update_one(
+                    {"_id": membership.get("_id")},
+                    {"$set": {"status": "COMPLETED", "completed_at": now, "updated_at": now}},
+                )
+                continue
             reminder_key = f"{challenge_id}:{today_key}"
             marked = await users_collection.update_one({"_id": user["_id"], "challenge_reminder_dates": {"$ne": reminder_key}}, {"$addToSet": {"challenge_reminder_dates": reminder_key}})
             if marked.modified_count:
