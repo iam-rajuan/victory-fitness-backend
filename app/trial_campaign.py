@@ -23,6 +23,9 @@ async def process_trial_campaign(users_collection) -> dict[str, int]:
     processed = skipped = 0
     users = await users_collection.find({"marketing_consent": True, "subscription_started_at": {"$ne": None}}).to_list(length=None)
     for user in users:
+        if bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID", "CANCELLED"}:
+            skipped += 1
+            continue
         started = user.get("subscription_started_at")
         if not isinstance(started, datetime):
             continue
@@ -30,6 +33,10 @@ async def process_trial_campaign(users_collection) -> dict[str, int]:
             started = started.replace(tzinfo=timezone.utc)
         day = int((now - started).total_seconds() // 86400)
         if day < 0 or day > 5 or day in set(user.get("trial_campaign_sent_days") or []):
+            skipped += 1
+            continue
+        due_at = started + timedelta(days=day)
+        if now < due_at:
             skipped += 1
             continue
         title, message = CAMPAIGN[day]
