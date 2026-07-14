@@ -110,7 +110,10 @@ from .journal_ai import generate_journal_analysis
 
 from .longevity_ai import generate_longevity_weekly_plan
 
-from .models import PushTokenRequest
+from .models import AppNotificationItem, AppNotificationListResponse, PushTokenRequest
+
+
+from .push_service import notify_users_of_published_workout
 
 
 from .models import (
@@ -3864,6 +3867,13 @@ async def register_push_token(
         {"$set": {"push_tokens": updated_tokens[-10:]}},
     )
     return {"registered": True}
+
+
+@app.get("/me/notifications", response_model=AppNotificationListResponse)
+async def list_app_notifications(user: dict = Depends(_require_access_user)) -> AppNotificationListResponse:
+    records = [item for item in (user.get("app_notifications") or []) if isinstance(item, dict)]
+    records.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return AppNotificationListResponse(items=[AppNotificationItem(**item) for item in records[:50]])
 
 
 @app.get("/me/onboarding", response_model=OnboardingStateResponse)
@@ -10403,13 +10413,15 @@ async def admin_create_workout(
 
 @app.patch("/admin/workouts/{workout_id}", response_model=AdminWorkoutItem)
 
-async def admin_update_workout(
+async def admin_update_workout(
 
     workout_id: str,
 
     payload: AdminWorkoutRequest,
 
-    admin_user: dict = Depends(_require_admin_user),
+    background_tasks: BackgroundTasks,
+
+    admin_user: dict = Depends(_require_admin_user),
 
 ) -> AdminWorkoutItem:
 
@@ -10521,9 +10533,12 @@ async def admin_update_workout(
 
     updated_workout = await workouts_collection.find_one({"_id": object_id})
 
-    if not updated_workout:
+    if not updated_workout:
 
-        raise HTTPException(status_code=404, detail="Workout not found")
+        raise HTTPException(status_code=404, detail="Workout not found")
+
+    if str(existing_workout.get("visibility") or "Draft") != "Published" and payload.visibility == "Published":
+        background_tasks.add_task(notify_users_of_published_workout, users_collection, updated_workout)
 
 
 

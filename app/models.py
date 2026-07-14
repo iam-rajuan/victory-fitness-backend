@@ -118,6 +118,20 @@ class PushTokenRequest(BaseModel):
     platform: str = Field(default="unknown", max_length=20)
 
 
+class AppNotificationItem(BaseModel):
+    id: str
+    type: str = "system"
+    title: str
+    message: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    read: bool = False
+
+
+class AppNotificationListResponse(BaseModel):
+    items: list[AppNotificationItem] = Field(default_factory=list)
+
+
 class OnboardingPersonalProfileResponse(BaseModel):
     age: str = ""
     gender: str = ""
