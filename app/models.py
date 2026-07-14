@@ -113,6 +113,11 @@ class UpdateMeRequest(BaseModel):
     onboarding_completed: bool | None = None
 
 
+class PushTokenRequest(BaseModel):
+    token: str = Field(min_length=10, max_length=500)
+    platform: str = Field(default="unknown", max_length=20)
+
+
 class OnboardingPersonalProfileResponse(BaseModel):
     age: str = ""
     gender: str = ""

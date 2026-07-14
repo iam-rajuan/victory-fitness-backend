@@ -110,9 +110,12 @@ from .journal_ai import generate_journal_analysis
 
 from .longevity_ai import generate_longevity_weekly_plan
 
-from .models import (
+from .models import PushTokenRequest
+
+
+from .models import (
 
-    AdminCoachingApplicationUpdateRequest,
+    AdminCoachingApplicationUpdateRequest,
 
     AdminChangePasswordRequest,
 
@@ -3843,6 +3846,24 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
         "updatedAt": updated_at,
         "completed": bool(record.get("onboarding_completed", False)),
     }
+
+
+@app.post("/me/push-token")
+async def register_push_token(
+    payload: PushTokenRequest,
+    user: dict = Depends(_require_access_user),
+) -> dict[str, bool]:
+    token = payload.token.strip()
+    platform = payload.platform.strip().lower() or "unknown"
+    now = datetime.now(timezone.utc)
+    existing_tokens = [item for item in (user.get("push_tokens") or []) if isinstance(item, dict)]
+    updated_tokens = [item for item in existing_tokens if item.get("token") != token]
+    updated_tokens.append({"token": token, "platform": platform, "updated_at": now})
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"push_tokens": updated_tokens[-10:]}},
+    )
+    return {"registered": True}
 
 
 @app.get("/me/onboarding", response_model=OnboardingStateResponse)
