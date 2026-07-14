@@ -236,7 +236,8 @@ from .models import (
 
     AdminNotificationListResponse,
 
-    AdminNotificationUpdateRequest,
+    AdminNotificationUpdateRequest,
+    AdminTestNotificationRequest,
 
     AdminSubscriberItem,
 
@@ -5214,9 +5215,29 @@ async def admin_list_notifications(
 
 
 
-@app.patch("/admin/notifications/{notification_id}", response_model=AdminNotificationItem)
-
-async def admin_update_notification(
+@app.post("/admin/notifications/test")
+async def admin_send_test_notification(
+    payload: AdminTestNotificationRequest,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, object]:
+    email = payload.email.strip().lower()
+    user = await users_collection.find_one({"email": email, "is_admin": {"$ne": True}})
+    if not user:
+        raise HTTPException(status_code=404, detail="App user not found for that email")
+    tokens = [item for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("token") or "").strip()]
+    await notify_user(
+        users_collection,
+        user,
+        "Victory Fitness test notification",
+        "Push notifications are connected successfully.",
+        "test_notification",
+        {"type": "test_notification", "route": "/notifications"},
+    )
+    return {"status": "sent", "email": email, "registeredDevices": len(tokens)}
+
+
+@app.patch("/admin/notifications/{notification_id}", response_model=AdminNotificationItem)
+async def admin_update_notification(
 
     notification_id: str,
 
