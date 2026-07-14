@@ -7,6 +7,14 @@ from urllib.request import Request, urlopen
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
 
+async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> None:
+    notification = {"id": str(uuid4()), "type": notification_type, "title": title, "message": message, "data": data, "created_at": datetime.now(timezone.utc), "read": False}
+    await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
+    tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
+    if tokens:
+        await asyncio.to_thread(_send_expo_push, list(dict.fromkeys(tokens)), title, message, data)
+
+
 def _send_expo_push(tokens: list[str], title: str, body: str, data: dict) -> None:
     if not tokens:
         return

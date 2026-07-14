@@ -113,7 +113,7 @@ from .longevity_ai import generate_longevity_weekly_plan
 from .models import AppNotificationItem, AppNotificationListResponse, PushTokenRequest
 
 
-from .push_service import notify_users_of_published_workout
+from .push_service import notify_user, notify_users_of_published_workout
 from .trial_campaign import process_trial_campaign
 
 
@@ -3885,7 +3885,7 @@ async def run_trial_campaign(
     supplied = str(authorization or "").replace("Bearer ", "", 1).strip()
     if not expected or supplied != expected:
         raise HTTPException(status_code=401, detail="Invalid cron authorization")
-    return await process_trial_campaign(users_collection)
+    return await process_trial_campaign(users_collection, challenge_memberships_collection, challenges_collection)
 
 
 @app.get("/me/onboarding", response_model=OnboardingStateResponse)
@@ -7935,9 +7935,18 @@ async def _store_membership_plan_progress(
 
         }
 
-        await challenge_chat_messages_collection.insert_one(message_document)
-
-        await _broadcast_challenge_chat_event("message_created", str(challenge["_id"]), message_document)
+        await challenge_chat_messages_collection.insert_one(message_document)
+
+        await _broadcast_challenge_chat_event("message_created", str(challenge["_id"]), message_document)
+
+        await notify_user(
+            users_collection,
+            user,
+            "Challenge complete!",
+            f"You completed day {day_number} of {str(challenge.get('title') or 'your challenge')}. Your points are safe today.",
+            "challenge_completed",
+            {"type": "challenge", "challengeId": str(challenge["_id"]), "day": day_number},
+        )
 
 
 

@@ -2,9 +2,11 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+from bson import ObjectId
 
 from .email_service import send_trial_campaign_email
 from .push_service import _send_expo_push
+from .push_service import notify_user
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +20,7 @@ CAMPAIGN = {
 }
 
 
-async def process_trial_campaign(users_collection) -> dict[str, int]:
+async def process_trial_campaign(users_collection, challenge_memberships_collection=None, challenges_collection=None) -> dict[str, int]:
     now = datetime.now(timezone.utc)
     processed = skipped = 0
     users = await users_collection.find({"marketing_consent": True, "subscription_started_at": {"$ne": None}}).to_list(length=None)
@@ -53,4 +55,29 @@ async def process_trial_campaign(users_collection) -> dict[str, int]:
         except Exception:
             logger.exception("trial_campaign_email_failed user_id=%s day=%s", user.get("_id"), day)
         processed += 1
-    return {"processed": processed, "skipped": skipped}
+    challenge_reminders = 0
+    if challenge_memberships_collection is not None and challenges_collection is not None:
+        memberships = await challenge_memberships_collection.find({"status": "ACTIVE"}).to_list(length=None)
+        today_key = now.date().isoformat()
+        for membership in memberships:
+            user_id = str(membership.get("user_id") or "")
+            challenge_id = str(membership.get("challenge_id") or "")
+            if not ObjectId.is_valid(user_id) or not challenge_id:
+                continue
+            progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+            started_at = membership.get("started_at")
+            current_day = 1
+            if isinstance(started_at, datetime):
+                current_day = max((now.date() - started_at.date()).days + 1, 1)
+            if bool((progress.get(str(current_day)) or {}).get("completed")):
+                continue
+            user = await users_collection.find_one({"_id": ObjectId(user_id), "is_admin": {"$ne": True}})
+            challenge = await challenges_collection.find_one({"_id": ObjectId(challenge_id)}) if ObjectId.is_valid(challenge_id) else None
+            if not user or not challenge:
+                continue
+            reminder_key = f"{challenge_id}:{today_key}"
+            marked = await users_collection.update_one({"_id": user["_id"], "challenge_reminder_dates": {"$ne": reminder_key}}, {"$addToSet": {"challenge_reminder_dates": reminder_key}})
+            if marked.modified_count:
+                await notify_user(users_collection, user, "Finish today’s challenge", f"Complete day {current_day} of {str(challenge.get('title') or 'your challenge')} today or risk losing your points.", "challenge_reminder", {"type": "challenge", "challengeId": challenge_id, "day": current_day})
+                challenge_reminders += 1
+    return {"processed": processed, "skipped": skipped, "challenge_reminders": challenge_reminders}
