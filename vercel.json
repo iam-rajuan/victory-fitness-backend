@@ -15,7 +15,7 @@
   "crons": [
     {
       "path": "/jobs/trial-campaign",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
