@@ -1,31 +1,64 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from uuid import uuid4
 from bson import ObjectId
 
 from .email_service import send_trial_campaign_email
-from .push_service import _send_expo_push
 from .push_service import notify_user
 
 logger = logging.getLogger(__name__)
 
 CAMPAIGN = {
-    0: ("Welcome to Victory Gold", "Your trial is active. Ask Coach Victor one question right now to get your first win."),
+    0: ("Welcome to Victory Gold", "Hi {name}, your Gold trial is active. Ask Coach Victor one question right now to get your first win."),
     1: ("Have you set up your meal plan?", "Your personalized Nutrition Planner takes about two minutes to set up."),
     2: ("See what Gold can do", "Watch your mid-trial Victory Fitness video and choose one feature to try today."),
-    3: ("Keep your momentum going", "Check in with Coach Victor or your Nutrition Planner today to keep your progress moving."),
+    3: ("Keep your momentum going", "{engagement_message}"),
     4: ("Your trial ends tomorrow", "Review what you have used so far and get ready to choose your Gold plan."),
     5: ("Your Gold trial is complete", "Your trial has ended. Keep your coaching, nutrition, and workout tools by choosing a plan."),
 }
 
+WINBACK_CAMPAIGN = {
+    7: ("Still thinking about Gold?", "Your Victory Fitness trial has ended. Come back and keep building your routine."),
+    14: ("Your next step is waiting", "Return to Victory Fitness and choose the Gold plan when you are ready to continue."),
+}
 
-async def process_trial_campaign(users_collection, challenge_memberships_collection=None, challenges_collection=None) -> dict[str, int]:
+
+async def _engagement_message(user: dict, coach_threads_collection=None, nutrition_plans_collection=None) -> str:
+    user_id = str(user.get("_id") or "")
+    coach_messages = 0
+    has_nutrition_plan = False
+
+    if coach_threads_collection is not None and user_id:
+        threads = await coach_threads_collection.find({"user_id": user_id}, {"messages": 1}).to_list(length=None)
+        for thread in threads:
+            messages = thread.get("messages") if isinstance(thread, dict) else None
+            if isinstance(messages, list):
+                coach_messages += sum(1 for message in messages if isinstance(message, dict) and str(message.get("role") or "").lower() == "user")
+
+    if nutrition_plans_collection is not None and user_id:
+        has_nutrition_plan = bool(await nutrition_plans_collection.find_one({"user_id": user_id}, {"_id": 1}))
+
+    if coach_messages and has_nutrition_plan:
+        return f"You have sent {coach_messages} message{'s' if coach_messages != 1 else ''} to Coach Victor and set up your nutrition plan. Keep going today."
+    if coach_messages:
+        return f"You have already sent {coach_messages} message{'s' if coach_messages != 1 else ''} to Coach Victor. Keep going and set up your Nutrition Planner today."
+    if has_nutrition_plan:
+        return "You have started your Nutrition Planner. Open Coach Victor today to keep your progress moving."
+    return "You have not tried Coach Victor or the Nutrition Planner yet. Open one today before your trial gets away from you."
+
+
+async def process_trial_campaign(
+    users_collection,
+    challenge_memberships_collection=None,
+    challenges_collection=None,
+    coach_threads_collection=None,
+    nutrition_plans_collection=None,
+) -> dict[str, int]:
     now = datetime.now(timezone.utc)
     processed = skipped = 0
     users = await users_collection.find({"marketing_consent": True, "subscription_started_at": {"$ne": None}}).to_list(length=None)
     for user in users:
-        if bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID", "CANCELLED"}:
+        if bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"}:
             skipped += 1
             continue
         started = user.get("subscription_started_at")
@@ -34,22 +67,32 @@ async def process_trial_campaign(users_collection, challenge_memberships_collect
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
         day = int((now - started).total_seconds() // 86400)
-        if day < 0 or day > 5 or day in set(user.get("trial_campaign_sent_days") or []):
+        if day < 0 or day not in set(CAMPAIGN) | set(WINBACK_CAMPAIGN) or day in set(user.get("trial_campaign_sent_days") or []):
             skipped += 1
             continue
         due_at = started + timedelta(days=day)
         if now < due_at:
             skipped += 1
             continue
-        title, message = CAMPAIGN[day]
-        item = {"id": str(uuid4()), "type": f"trial_day_{day}", "title": title, "message": message, "data": {"route": "/notifications", "trialDay": day}, "created_at": now, "read": False}
+        if day in CAMPAIGN:
+            title, message_template = CAMPAIGN[day]
+            engagement_message = await _engagement_message(user, coach_threads_collection, nutrition_plans_collection) if day == 3 else ""
+            message = message_template.format(name=str(user.get("name") or "there"), engagement_message=engagement_message)
+            notification_type = f"trial_day_{day}"
+            data = {"route": "/notifications", "trialDay": day}
+            if day in {2, 5}:
+                data.update({"contentType": "video", "videoRoute": "/workoutplan/video-plan"})
+            if day == 5:
+                data["channels"] = ["push", "email", "video"]
+        else:
+            title, message = WINBACK_CAMPAIGN[day]
+            notification_type = f"trial_winback_day_{day}"
+            data = {"route": "/notifications", "trialDay": day, "winback": True}
         await users_collection.update_one(
             {"_id": user["_id"], "marketing_consent": True},
-            {"$push": {"app_notifications": {"$each": [item], "$slice": -50}, "trial_campaign_sent_days": day}},
+            {"$addToSet": {"trial_campaign_sent_days": day}},
         )
-        tokens = [str(token.get("token")) for token in (user.get("push_tokens") or []) if isinstance(token, dict) and str(token.get("platform") or "").lower() != "web" and str(token.get("token") or "").startswith("ExponentPushToken[")]
-        if tokens:
-            await asyncio.to_thread(_send_expo_push, list(dict.fromkeys(tokens)), title, message, item["data"])
+        await notify_user(users_collection, user, title, message, notification_type, data)
         try:
             await asyncio.to_thread(send_trial_campaign_email, str(user.get("email") or ""), str(user.get("name") or "there"), day, title, message)
         except Exception:

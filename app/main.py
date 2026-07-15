@@ -3920,7 +3920,13 @@ async def run_trial_campaign(
     supplied = str(authorization or "").replace("Bearer ", "", 1).strip()
     if not expected or supplied != expected:
         raise HTTPException(status_code=401, detail="Invalid cron authorization")
-    return await process_trial_campaign(users_collection, challenge_memberships_collection, challenges_collection)
+    return await process_trial_campaign(
+        users_collection,
+        challenge_memberships_collection,
+        challenges_collection,
+        coach_victor_threads_collection,
+        nutrition_plans_collection,
+    )
 
 
 @app.get("/me/onboarding", response_model=OnboardingStateResponse)
