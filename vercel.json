@@ -19,7 +19,7 @@
     },
     {
       "path": "/jobs/nutrition",
-      "schedule": "*/2 * * * *"
+      "schedule": "0 1 * * *"
     }
   ]
 }
