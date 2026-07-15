@@ -195,6 +195,20 @@ class Settings:
         self.google_client_secret = _get_secret("GOOGLE_CLIENT_SECRET")
         self.google_project_id = _get_str("GOOGLE_PROJECT_ID")
         self.firebase_project_id = _get_str("FIREBASE_PROJECT_ID", self.google_project_id)
+        # Deployment-safe Firebase credentials. Vercel cannot read a developer's
+        # local Windows path, so environment variables always take precedence.
+        self.firebase_client_email = _get_str("FIREBASE_CLIENT_EMAIL")
+        self.firebase_private_key = _get_secret("FIREBASE_PRIVATE_KEY")
+        inline_service_account = _get_secret("FIREBASE_SERVICE_ACCOUNT_JSON")
+        if inline_service_account and (not self.firebase_client_email or not self.firebase_private_key):
+            try:
+                service_account = json.loads(inline_service_account)
+                self.firebase_client_email = self.firebase_client_email or str(service_account.get("client_email") or "").strip()
+                self.firebase_private_key = self.firebase_private_key or str(service_account.get("private_key") or "").strip()
+            except json.JSONDecodeError:
+                pass
+
+        # Optional local-development fallback only. Do not configure this on Vercel.
         service_account_path = _get_str("FIREBASE_SERVICE_ACCOUNT_JSON_PATH")
         service_account: dict = {}
         if service_account_path:
@@ -203,11 +217,8 @@ class Settings:
             except (OSError, json.JSONDecodeError):
                 service_account = {}
         if service_account:
-            self.firebase_client_email = str(service_account.get("client_email") or "").strip()
-            self.firebase_private_key = str(service_account.get("private_key") or "").strip()
-        else:
-            self.firebase_client_email = _get_str("FIREBASE_CLIENT_EMAIL")
-            self.firebase_private_key = _get_secret("FIREBASE_PRIVATE_KEY")
+            self.firebase_client_email = self.firebase_client_email or str(service_account.get("client_email") or "").strip()
+            self.firebase_private_key = self.firebase_private_key or str(service_account.get("private_key") or "").strip()
         self.firebase_auth_provider_cert_url = _get_str(
             "FIREBASE_AUTH_PROVIDER_CERT_URL",
             "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com",
