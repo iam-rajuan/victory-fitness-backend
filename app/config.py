@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -194,6 +195,19 @@ class Settings:
         self.google_client_secret = _get_secret("GOOGLE_CLIENT_SECRET")
         self.google_project_id = _get_str("GOOGLE_PROJECT_ID")
         self.firebase_project_id = _get_str("FIREBASE_PROJECT_ID", self.google_project_id)
+        service_account_path = _get_str("FIREBASE_SERVICE_ACCOUNT_JSON_PATH")
+        service_account: dict = {}
+        if service_account_path:
+            try:
+                service_account = json.loads(Path(service_account_path).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                service_account = {}
+        if service_account:
+            self.firebase_client_email = str(service_account.get("client_email") or "").strip()
+            self.firebase_private_key = str(service_account.get("private_key") or "").strip()
+        else:
+            self.firebase_client_email = _get_str("FIREBASE_CLIENT_EMAIL")
+            self.firebase_private_key = _get_secret("FIREBASE_PRIVATE_KEY")
         self.firebase_auth_provider_cert_url = _get_str(
             "FIREBASE_AUTH_PROVIDER_CERT_URL",
             "https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com",
