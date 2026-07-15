@@ -1,7 +1,9 @@
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from uuid import uuid4
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from jose import jwt
@@ -13,6 +15,7 @@ FIREBASE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 FIREBASE_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 _firebase_access_token: str | None = None
 _firebase_access_token_expires_at = 0.0
+logger = logging.getLogger(__name__)
 
 
 async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> None:
@@ -26,7 +29,12 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
     if web_tokens:
         tasks.append(asyncio.to_thread(_send_firebase_web_push, list(dict.fromkeys(web_tokens)), title, message, data))
     if tasks:
-        await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                # The notification is already stored in the app inbox. A provider
+                # failure must not turn the admin action into a 500.
+                logger.error("Push provider delivery failed: %s", result, exc_info=result)
 
 
 def _send_expo_push(tokens: list[str], title: str, body: str, data: dict) -> None:
@@ -67,8 +75,12 @@ def _get_firebase_access_token() -> str:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
-    with urlopen(request, timeout=15) as response:
-        token_data = json.loads(response.read().decode("utf-8"))
+    try:
+        with urlopen(request, timeout=15) as response:
+            token_data = json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")[:500]
+        raise RuntimeError(f"Firebase token exchange failed ({error.code}): {details}") from error
     _firebase_access_token = str(token_data["access_token"])
     _firebase_access_token_expires_at = now + int(token_data.get("expires_in") or 3600)
     return _firebase_access_token
@@ -99,8 +111,12 @@ def _send_firebase_web_push(tokens: list[str], title: str, body: str, data: dict
             },
             method="POST",
         )
-        with urlopen(request, timeout=15) as response:
-            response.read()
+        try:
+            with urlopen(request, timeout=15) as response:
+                response.read()
+        except HTTPError as error:
+            details = error.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Firebase web push failed ({error.code}): {details}") from error
 
 
 async def notify_users_of_published_workout(users_collection, workout: dict) -> None:
