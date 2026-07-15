@@ -14,6 +14,7 @@ class RegisterRequest(BaseModel):
     mobile: str = Field(min_length=3, max_length=30)
     password: str = Field(min_length=8, max_length=128)
     marketing_consent: bool = False
+    signup_source: str = Field(default="organic", max_length=120)
 
     @field_validator("name", "surname", "mobile")
     @classmethod
@@ -1407,6 +1408,39 @@ class AdminUserSummaryResponse(BaseModel):
 class AdminUserManagementOverviewResponse(BaseModel):
     summary: AdminUserSummaryResponse
     table: AdminUserListResponse
+
+
+class AdminTrialCohortItem(BaseModel):
+    cohort: str
+    signupSource: str = "organic"
+    totalUsers: int = 0
+    convertedUsers: int = 0
+    dropoutUsers: int = 0
+    conversionRate: float = 0
+    engagedUsersByDay: dict[str, int] = Field(default_factory=dict)
+
+
+class AdminTrialCohortResponse(BaseModel):
+    cohorts: list[AdminTrialCohortItem] = Field(default_factory=list)
+
+
+class AdminTrialDropoutItem(BaseModel):
+    id: str
+    fullName: str
+    email: EmailStr
+    signupSource: str = "organic"
+    cohort: str
+    trialStartedAt: datetime
+    marketingConsent: bool = False
+    lastEngagedDay: int | None = None
+    coachMessages: int = 0
+    nutritionPlanCreated: bool = False
+    campaignDaysSent: list[int] = Field(default_factory=list)
+
+
+class AdminTrialDropoutResponse(BaseModel):
+    total: int = 0
+    users: list[AdminTrialDropoutItem] = Field(default_factory=list)
 
 
 class AdminSubscriberItem(BaseModel):
