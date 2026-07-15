@@ -956,6 +956,8 @@ class AdminCommunityPostUpdateRequest(BaseModel):
     file_name: str | None = Field(default=None, max_length=255)
     clear_image: bool = False
     clear_media: bool = False
+    flagged: bool | None = None
+    flag_reason: str | None = Field(default=None, max_length=500)
 
 
 class UserOut(BaseModel):

@@ -6636,7 +6636,7 @@ async def toggle_community_post_reaction(
 
 
 
-@app.get("/admin/community/posts", response_model=CommunityPostListResponse)
+@app.get("/admin/community/posts", response_model=CommunityPostListResponse)
 
 async def admin_get_community_posts(_: dict = Depends(_require_admin_user)) -> CommunityPostListResponse:
 
@@ -6652,11 +6652,17 @@ async def admin_get_community_posts(_: dict = Depends(_require_admin_user)) -> C
 
     posts = await _serialize_community_post_records(records, None, comment_limit_per_post=200, include_reactions=True)
 
-    return CommunityPostListResponse(
-
-        posts=[CommunityPostResponse(**post) for post in posts]
-
-    )
+    return CommunityPostListResponse(
+
+        posts=[CommunityPostResponse(**post) for post in posts]
+
+    )
+
+
+@app.get("/admin/community/feed", response_model=CommunityPostListResponse)
+async def admin_get_community_feed(_: dict = Depends(_require_admin_user)) -> CommunityPostListResponse:
+    """Feed section endpoint kept separate from broadcast and analytics sections."""
+    return await admin_get_community_posts(_)
 
 
 
@@ -6802,7 +6808,16 @@ async def admin_create_community_post(
 
 
 
-@app.patch("/admin/community/posts/{post_id}", response_model=CommunityPostResponse)
+@app.post("/admin/community/broadcast", response_model=CommunityPostResponse, status_code=status.HTTP_201_CREATED)
+async def admin_send_community_broadcast(
+    payload: AdminCommunityPostCreateRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> CommunityPostResponse:
+    """Broadcast section endpoint for publishing a tier-targeted community post."""
+    return await admin_create_community_post(payload, admin_user)
+
+
+@app.patch("/admin/community/posts/{post_id}", response_model=CommunityPostResponse)
 
 async def admin_update_community_post(
 
@@ -6870,9 +6885,13 @@ async def admin_update_community_post(
 
         update_doc["content"] = payload.content.strip()
 
-    if payload.audience is not None:
-
-        update_doc["audience"] = payload.audience.strip()
+    if payload.audience is not None:
+
+        update_doc["audience"] = payload.audience.strip()
+
+    if payload.flagged is not None:
+        update_doc["flagged"] = payload.flagged
+        update_doc["flag_reason"] = payload.flag_reason.strip() if payload.flag_reason else ""
 
     if payload.clear_image or payload.clear_media:
 
@@ -17405,7 +17424,49 @@ def _build_admin_user_query(query: str | None) -> dict:
 
 
 
-def _serialize_admin_workout_record(record: dict) -> dict:
+@app.get("/admin/community/top-contributors")
+async def admin_get_community_top_contributors(_: dict = Depends(_require_admin_user)) -> dict[str, Any]:
+    records = await community_posts_collection.find({}, sort=[("created_at", -1)]).to_list(length=500)
+    posts = await _serialize_community_post_records(records, None, comment_limit_per_post=0, include_reactions=False)
+    contributors: dict[str, dict[str, Any]] = {}
+    for post in posts:
+        author_id = str(post.get("author_id") or "")
+        if not author_id:
+            continue
+        item = contributors.setdefault(author_id, {"userId": author_id, "name": str(post.get("author_name") or "Community member"), "profileImage": str(post.get("author_profile_image") or ""), "postCount": 0, "likeCount": 0})
+        item["postCount"] += 1
+        item["likeCount"] += max(int(post.get("like_count") or 0), 0)
+    return {"contributors": sorted(contributors.values(), key=lambda item: (item["likeCount"], item["postCount"]), reverse=True)[:10]}
+
+
+@app.get("/admin/community/trending")
+async def admin_get_community_trending(_: dict = Depends(_require_admin_user)) -> dict[str, Any]:
+    records = await community_posts_collection.find({}, {"content": 1}).to_list(length=500)
+    counts: dict[str, int] = {}
+    for record in records:
+        for tag in re.findall(r"#[A-Za-z0-9_]+", str(record.get("content") or "").lower()):
+            counts[tag] = counts.get(tag, 0) + 1
+    return {"hashtags": [{"tag": tag, "postCount": count} for tag, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:20]]}
+
+
+@app.get("/admin/community/flags")
+async def admin_get_community_flags(_: dict = Depends(_require_admin_user)) -> dict[str, Any]:
+    records = await community_posts_collection.find({"flagged": True}, sort=[("updated_at", -1)]).to_list(length=200)
+    posts = await _serialize_community_post_records(records, None, comment_limit_per_post=0, include_reactions=False)
+    return {"total": len(posts), "posts": posts}
+
+
+@app.get("/admin/community/shortcuts")
+async def admin_get_community_shortcuts(_: dict = Depends(_require_admin_user)) -> dict[str, Any]:
+    flagged_count = await community_posts_collection.count_documents({"flagged": True})
+    return {"items": [
+        {"key": "flagged_posts", "label": "Review Flagged Posts", "route": "/community", "count": flagged_count},
+        {"key": "pinned_announcements", "label": "Pinned Announcements", "route": "/community/announcements"},
+        {"key": "community_guidelines", "label": "Community Guidelines", "route": "/community/guidelines"},
+    ]}
+
+
+def _serialize_admin_workout_record(record: dict) -> dict:
 
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
 
