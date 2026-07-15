@@ -16197,13 +16197,17 @@ async def _consume_returning_user_recognition(user: dict) -> dict | None:
     if now < started_at + timedelta(days=5):
         return None
 
-    await users_collection.update_one(
+    claimed = await users_collection.update_one(
         {"_id": user["_id"], "marketing_consent": True, "winback_last_shown_at": {"$exists": False}},
         {"$set": {"winback_last_shown_at": now}},
     )
+    if not claimed.modified_count:
+        return None
+    name = str(user.get("name") or "there").strip()
+    started_label = started_at.strftime("%b %d, %Y")
     return {
         "title": "Welcome back to Victory Fitness",
-        "message": "You have already started your fitness journey with us. Ready to commit to your next step?",
+        "message": f"Welcome back, {name}. You started your Gold trial on {started_label}. Ready to commit to your next step?",
         "action_label": "Choose your subscription",
         "action_route": "/plan",
         "trial_started_at": started_at,
