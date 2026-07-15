@@ -11784,13 +11784,13 @@ async def nutrition_plan_job_status(
 
 
 
-@app.get("/ai/nutrition/plan/latest", response_model=NutritionPlanResponse)
+@app.get("/ai/nutrition/plan/latest", response_model=NutritionPlanResponse | None)
 
-async def nutrition_latest_plan(
+async def nutrition_latest_plan(
 
     user: dict = Depends(_require_meal_plan_access_user),
 
-) -> NutritionPlanResponse:
+) -> NutritionPlanResponse | None:
 
     logger.info("nutrition_latest_attempt user_id=%s", str(user["_id"]))
 
@@ -11802,9 +11802,8 @@ async def nutrition_latest_plan(
 
     )
 
-    if not record or not record.get("plan"):
-
-        raise HTTPException(status_code=404, detail="Nutrition plan not found")
+    if not record or not record.get("plan"):
+        return None
 
 
 
