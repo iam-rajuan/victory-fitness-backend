@@ -3965,6 +3965,48 @@ async def run_trial_campaign(
     )
 
 
+@app.post("/jobs/nutrition")
+async def run_nutrition_job_queue(
+    authorization: str | None = Header(default=None),
+    limit: int = Query(default=2, ge=1, le=10),
+) -> dict[str, Any]:
+    """Process durable MongoDB-backed nutrition jobs from a scheduler/cron call."""
+    expected = str(getattr(settings, "cron_secret", "") or "").strip()
+    supplied = str(authorization or "").replace("Bearer ", "", 1).strip()
+    if not expected or supplied != expected:
+        raise HTTPException(status_code=401, detail="Invalid cron authorization")
+
+    processed = 0
+    failed = 0
+    for _ in range(limit):
+        standard = await nutrition_plan_jobs_collection.find_one_and_update(
+            {"status": "queued"},
+            {"$set": {"status": "processing", "updated_at": datetime.now(timezone.utc)}},
+            sort=[("created_at", 1)],
+        )
+        if standard:
+            try:
+                await _process_nutrition_plan_job(str(standard["_id"]), str(standard["user_id"]), standard.get("payload") or {}, str(standard.get("profile_hash") or ""))
+                processed += 1
+            except Exception:
+                failed += 1
+            continue
+
+        progressive = await nutrition_progressive_plan_jobs_collection.find_one_and_update(
+            {"status": "queued"},
+            {"$set": {"status": "generating_monday", "updated_at": datetime.now(timezone.utc)}},
+            sort=[("created_at", 1)],
+        )
+        if not progressive:
+            break
+        try:
+            await _process_progressive_nutrition_plan_job(str(progressive["_id"]), str(progressive["user_id"]), progressive.get("payload") or {}, str(progressive.get("profile_hash") or ""))
+            processed += 1
+        except Exception:
+            failed += 1
+    return {"processed": processed, "failed": failed}
+
+
 @app.get("/me/onboarding", response_model=OnboardingStateResponse)
 async def get_me_onboarding(user: dict = Depends(_require_access_user)) -> OnboardingStateResponse:
     return OnboardingStateResponse(**_serialize_onboarding_state(user))
@@ -11923,11 +11965,7 @@ async def nutrition_plan_job(
 
 
 
-    asyncio.create_task(_process_nutrition_plan_job(job_id, str(user["_id"]), payload_data, profile_hash))
-
-
-
-    logger.info("nutrition_plan_job_queued user_id=%s job_id=%s", str(user["_id"]), job_id)
+    logger.info("nutrition_plan_job_queued user_id=%s job_id=%s", str(user["_id"]), job_id)
 
     return NutritionPlanJobResponse(
 
@@ -12478,11 +12516,7 @@ async def progressive_nutrition_plan_job(
 
 
 
-    asyncio.create_task(_process_progressive_nutrition_plan_job(job_id, user_id, payload_data, profile_hash))
-
-
-
-    return NutritionPlanJobResponse(
+    return NutritionPlanJobResponse(
 
         job_id=job_id,
 

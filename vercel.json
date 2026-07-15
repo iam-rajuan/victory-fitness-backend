@@ -16,6 +16,10 @@
     {
       "path": "/jobs/trial-campaign",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/jobs/nutrition",
+      "schedule": "*/2 * * * *"
     }
   ]
 }
