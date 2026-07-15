@@ -468,7 +468,9 @@ from .database import (
 
     community_posts_collection,
 
-    community_reactions_collection,
+    community_reactions_collection,
+
+    admin_audit_logs_collection,
 
     longevity_os_profiles_collection,
 
@@ -585,7 +587,19 @@ app = FastAPI(title=settings.app_name)
 
 app.include_router(wearables_router)
 
-logger = logging.getLogger("victory_fitness.api")
+logger = logging.getLogger("victory_fitness.api")
+
+
+async def _record_admin_audit(admin_user: dict, action: str, resource: str, resource_id: str = "", details: dict | None = None) -> None:
+    await admin_audit_logs_collection.insert_one({
+        "admin_id": str(admin_user.get("_id") or ""),
+        "admin_email": str(admin_user.get("email") or ""),
+        "action": action,
+        "resource": resource,
+        "resource_id": resource_id,
+        "details": details or {},
+        "created_at": datetime.now(timezone.utc),
+    })
 
 MEDIA_ROOT = Path("/tmp/victory-fitness-media") if settings.is_vercel else Path(__file__).resolve().parents[1] / "media"
 
@@ -5267,14 +5281,14 @@ async def admin_list_notifications(
 @app.post("/admin/notifications/test")
 async def admin_send_test_notification(
     payload: AdminTestNotificationRequest,
-    _: dict = Depends(_require_admin_user),
+    admin_user: dict = Depends(_require_admin_user),
 ) -> dict[str, object]:
     email = payload.email.strip().lower()
     user = await users_collection.find_one({"email": email, "is_admin": {"$ne": True}})
     if not user:
         raise HTTPException(status_code=404, detail="App user not found for that email")
     tokens = [item for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("token") or "").strip()]
-    await notify_user(
+    delivery = await notify_user(
         users_collection,
         user,
         "Victory Fitness test notification",
@@ -5282,7 +5296,7 @@ async def admin_send_test_notification(
         "test_notification",
         {"type": "test_notification", "route": "/notifications"},
     )
-    return {"status": "sent", "email": email, "registeredDevices": len(tokens)}
+    return {"status": delivery.get("status", "sent"), "email": email, "registeredDevices": len(tokens), "delivery": delivery}
 
 
 @app.patch("/admin/notifications/{notification_id}", response_model=AdminNotificationItem)
@@ -6814,18 +6828,20 @@ async def admin_send_community_broadcast(
     admin_user: dict = Depends(_require_admin_user),
 ) -> CommunityPostResponse:
     """Broadcast section endpoint for publishing a tier-targeted community post."""
-    return await admin_create_community_post(payload, admin_user)
+    result = await admin_create_community_post(payload, admin_user)
+    await _record_admin_audit(admin_user, "broadcast_created", "community_post", result.id, {"audience": payload.audience})
+    return result
 
 
 @app.patch("/admin/community/posts/{post_id}", response_model=CommunityPostResponse)
 
-async def admin_update_community_post(
-
-    post_id: str,
-
-    payload: AdminCommunityPostUpdateRequest,
-
-    _: dict = Depends(_require_admin_user),
+async def admin_update_community_post(
+
+    post_id: str,
+
+    payload: AdminCommunityPostUpdateRequest,
+
+    admin_user: dict = Depends(_require_admin_user),
 
 ) -> CommunityPostResponse:
 
@@ -6969,7 +6985,8 @@ async def admin_update_community_post(
 
         raise HTTPException(status_code=500, detail="Community post could not be updated")
 
-    serialized = await _serialize_community_post_records([updated_record], None, comment_limit_per_post=200, include_reactions=True)
+    serialized = await _serialize_community_post_records([updated_record], None, comment_limit_per_post=200, include_reactions=True)
+    await _record_admin_audit(admin_user, "community_post_updated", "community_post", post_id, {"flagged": payload.flagged, "flag_reason": payload.flag_reason})
 
     return CommunityPostResponse(**serialized[0])
 
@@ -17464,6 +17481,24 @@ async def admin_get_community_shortcuts(_: dict = Depends(_require_admin_user)) 
         {"key": "pinned_announcements", "label": "Pinned Announcements", "route": "/community/announcements"},
         {"key": "community_guidelines", "label": "Community Guidelines", "route": "/community/guidelines"},
     ]}
+
+
+@app.get("/admin/audit-logs")
+async def admin_list_audit_logs(
+    limit: int = 50,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, Any]:
+    safe_limit = max(1, min(limit, 200))
+    records = await admin_audit_logs_collection.find({}, sort=[("created_at", -1)]).to_list(length=safe_limit)
+    return {"items": [{
+        "id": str(record.get("_id") or ""),
+        "adminEmail": str(record.get("admin_email") or ""),
+        "action": str(record.get("action") or ""),
+        "resource": str(record.get("resource") or ""),
+        "resourceId": str(record.get("resource_id") or ""),
+        "details": record.get("details") or {},
+        "createdAt": record.get("created_at"),
+    } for record in records]}
 
 
 def _serialize_admin_workout_record(record: dict) -> dict:

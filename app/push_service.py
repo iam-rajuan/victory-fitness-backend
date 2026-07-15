@@ -18,23 +18,39 @@ _firebase_access_token_expires_at = 0.0
 logger = logging.getLogger(__name__)
 
 
-async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> None:
-    notification = {"id": str(uuid4()), "type": notification_type, "title": title, "message": message, "data": data, "created_at": datetime.now(timezone.utc), "read": False}
+async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> dict:
+    notification = {"id": str(uuid4()), "type": notification_type, "title": title, "message": message, "data": data, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
     await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
     expo_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
     web_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() == "web" and str(item.get("token") or "").strip()]
     tasks = []
+    providers = []
     if expo_tokens:
+        providers.append("expo")
         tasks.append(asyncio.to_thread(_send_expo_push, list(dict.fromkeys(expo_tokens)), title, message, data))
     if web_tokens:
+        providers.append("firebase")
         tasks.append(asyncio.to_thread(_send_firebase_web_push, list(dict.fromkeys(web_tokens)), title, message, data))
+    delivery_status = "inbox_only" if not tasks else "sent"
+    failed_providers = []
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for result in results:
+        for provider, result in zip(providers, results):
             if isinstance(result, Exception):
                 # The notification is already stored in the app inbox. A provider
                 # failure must not turn the admin action into a 500.
                 logger.error("Push provider delivery failed: %s", result, exc_info=result)
+                failed_providers.append(provider)
+        if failed_providers and len(failed_providers) == len(providers):
+            delivery_status = "failed"
+        elif failed_providers:
+            delivery_status = "partial"
+    delivery = {"status": delivery_status, "providers": providers, "failedProviders": failed_providers, "updatedAt": datetime.now(timezone.utc)}
+    await users_collection.update_one(
+        {"_id": user["_id"], "app_notifications.id": notification["id"]},
+        {"$set": {"app_notifications.$.delivery": delivery}},
+    )
+    return delivery
 
 
 def _send_expo_push(tokens: list[str], title: str, body: str, data: dict) -> None:

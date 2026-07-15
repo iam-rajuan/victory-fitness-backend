@@ -66,6 +66,7 @@ if settings.mongodb_configured:
     sync_jobs_collection = db["sync_jobs"]
     sync_errors_collection = db["sync_errors"]
     integration_audit_logs_collection = db["integration_audit_logs"]
+    admin_audit_logs_collection = db["admin_audit_logs"]
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -101,6 +102,7 @@ else:
     sync_jobs_collection = _UnconfiguredCollection()
     sync_errors_collection = _UnconfiguredCollection()
     integration_audit_logs_collection = _UnconfiguredCollection()
+    admin_audit_logs_collection = _UnconfiguredCollection()
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
