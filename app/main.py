@@ -1731,7 +1731,7 @@ async def unhandled_exception_handler(
 
 ) -> JSONResponse:
 
-    detail = str(exc).strip() or "Internal server error"
+    detail = str(exc).strip() or "Internal server error"
 
     logger.exception(
 
@@ -1745,7 +1745,7 @@ async def unhandled_exception_handler(
 
     )
 
-    return _cors_json_response(request, status_code=500, content={"detail": detail})
+    return _cors_json_response(request, status_code=500, content={"detail": "Internal server error"})
 
 
 
