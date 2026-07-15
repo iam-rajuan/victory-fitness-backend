@@ -38,7 +38,7 @@ from docx import Document as DocxDocument
 from pypdf import PdfReader
 from bson import ObjectId
 
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Request, Response, Security, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security, UploadFile, WebSocket, WebSocketDisconnect, status
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -3935,6 +3935,19 @@ async def list_app_notifications(user: dict = Depends(_require_access_user)) -> 
     return AppNotificationListResponse(items=[AppNotificationItem(**item) for item in records[:50]])
 
 
+@app.delete("/me/push-token")
+async def unregister_push_token(
+    payload: PushTokenRequest,
+    user: dict = Depends(_require_access_user),
+) -> dict[str, bool]:
+    token = payload.token.strip()
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"push_tokens": [item for item in (user.get("push_tokens") or []) if isinstance(item, dict) and item.get("token") != token]}},
+    )
+    return {"removed": True}
+
+
 @app.post("/jobs/trial-campaign")
 async def run_trial_campaign(
     authorization: str | None = Header(default=None),
@@ -6076,25 +6089,32 @@ async def admin_update_support_message(
 
 @app.get("/community/posts", response_model=CommunityPostListResponse)
 
-async def get_community_posts(user: dict = Depends(_require_community_access_user)) -> CommunityPostListResponse:
+async def get_community_posts(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    user: dict = Depends(_require_community_access_user),
+) -> CommunityPostListResponse:
 
     allowed_audiences = _get_allowed_community_audiences(user)
 
-    records = await community_posts_collection.find(
-
-        {"audience": {"$in": allowed_audiences}},
+    query = {"audience": {"$in": allowed_audiences}}
+    total = await community_posts_collection.count_documents(query)
+    records = await community_posts_collection.find(
+
+        query,
 
         sort=[("created_at", -1), ("_id", -1)],
 
-        limit=100,
+        skip=(page - 1) * limit,
+        limit=limit,
 
-    ).to_list(length=100)
+    ).to_list(length=limit)
 
     posts = await _serialize_community_post_records(records, user, include_reactions=False)
 
     return CommunityPostListResponse(
 
-        posts=[CommunityPostResponse(**post) for post in posts]
+        posts=[CommunityPostResponse(**post) for post in posts], page=page, limit=limit, total=total, has_more=page * limit < total
 
     )
 
@@ -6652,31 +6672,49 @@ async def toggle_community_post_reaction(
 
 @app.get("/admin/community/posts", response_model=CommunityPostListResponse)
 
-async def admin_get_community_posts(_: dict = Depends(_require_admin_user)) -> CommunityPostListResponse:
+async def admin_get_community_posts(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str = Query(default="", max_length=160),
+    _: dict = Depends(_require_admin_user),
+) -> CommunityPostListResponse:
 
-    records = await community_posts_collection.find(
-
-        {},
+    query: dict[str, Any] = {}
+    if search.strip():
+        query["$or"] = [
+            {"content": {"$regex": search.strip(), "$options": "i"}},
+            {"author_name": {"$regex": search.strip(), "$options": "i"}},
+        ]
+    total = await community_posts_collection.count_documents(query)
+    records = await community_posts_collection.find(
+
+        query,
 
         sort=[("created_at", -1), ("_id", -1)],
 
-        limit=200,
+        skip=(page - 1) * limit,
+        limit=limit,
 
-    ).to_list(length=200)
+    ).to_list(length=limit)
 
     posts = await _serialize_community_post_records(records, None, comment_limit_per_post=200, include_reactions=True)
 
     return CommunityPostListResponse(
 
-        posts=[CommunityPostResponse(**post) for post in posts]
+        posts=[CommunityPostResponse(**post) for post in posts], page=page, limit=limit, total=total, has_more=page * limit < total
 
     )
 
 
 @app.get("/admin/community/feed", response_model=CommunityPostListResponse)
-async def admin_get_community_feed(_: dict = Depends(_require_admin_user)) -> CommunityPostListResponse:
+async def admin_get_community_feed(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    search: str = Query(default="", max_length=160),
+    admin_user: dict = Depends(_require_admin_user),
+) -> CommunityPostListResponse:
     """Feed section endpoint kept separate from broadcast and analytics sections."""
-    return await admin_get_community_posts(_)
+    return await admin_get_community_posts(page=page, limit=limit, search=search, _=admin_user)
 
 
 
@@ -6908,6 +6946,11 @@ async def admin_update_community_post(
     if payload.flagged is not None:
         update_doc["flagged"] = payload.flagged
         update_doc["flag_reason"] = payload.flag_reason.strip() if payload.flag_reason else ""
+
+    if payload.moderation_status is not None:
+        update_doc["moderation_status"] = payload.moderation_status
+    if payload.moderator_notes is not None:
+        update_doc["moderator_notes"] = payload.moderator_notes.strip()
 
     if payload.clear_image or payload.clear_media:
 
@@ -15353,9 +15396,17 @@ def _serialize_community_post_record(record: dict, author_record: dict | None = 
 
         "reactions": [],
 
-        "created_at": created_at,
-
-        "updated_at": updated_at,
+        "created_at": created_at,
+
+        "updated_at": updated_at,
+
+        "flagged": bool(record.get("flagged", False)),
+
+        "flag_reason": str(record.get("flag_reason") or ""),
+
+        "moderation_status": str(record.get("moderation_status") or ("reviewing" if record.get("flagged") else "published")),
+
+        "moderator_notes": str(record.get("moderator_notes") or ""),
 
 }
 

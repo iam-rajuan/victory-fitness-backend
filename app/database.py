@@ -202,6 +202,10 @@ async def _collapse_health_snapshot_collection(collection, *, preserve_existing:
 
 async def ensure_indexes() -> None:
     _require_database_configured()
+    await users_collection.create_index("email", unique=True, sparse=True)
+    await users_collection.create_index([("created_at", -1)])
+    await users_collection.create_index([("subscription_tier", 1), ("created_at", -1)])
+    await users_collection.create_index([("marketing_consent", 1), ("subscription_started_at", -1)])
     await client.admin.command("ping")
     await _collapse_health_snapshot_collection(health_metric_current_collection)
     await _collapse_health_snapshot_collection(health_samples_collection)
@@ -254,6 +258,7 @@ async def ensure_indexes() -> None:
     await community_posts_collection.create_index([("created_at", -1)])
     await community_posts_collection.create_index([("author_id", 1), ("created_at", -1)])
     await community_posts_collection.create_index([("audience", 1), ("created_at", -1)])
+    await community_posts_collection.create_index([("flagged", 1), ("updated_at", -1)])
     await community_comments_collection.create_index([("post_id", 1), ("created_at", 1)])
     await community_comments_collection.create_index([("author_id", 1), ("created_at", -1)])
     await community_reactions_collection.create_index([("post_id", 1), ("created_at", -1)])
@@ -275,6 +280,8 @@ async def ensure_indexes() -> None:
     await sync_errors_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])
     await sync_errors_collection.create_index([("job_id", 1), ("created_at", -1)])
     await integration_audit_logs_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])
+    await admin_audit_logs_collection.create_index([("created_at", -1)])
+    await admin_audit_logs_collection.create_index([("resource", 1), ("resource_id", 1), ("created_at", -1)])
 
 
 async def close_database_connection() -> None:

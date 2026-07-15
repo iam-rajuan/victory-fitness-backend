@@ -610,10 +610,18 @@ class CommunityPostResponse(BaseModel):
     reactions: list[CommunityReactionUserResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+    flagged: bool = False
+    flag_reason: str = ""
+    moderation_status: str = "published"
+    moderator_notes: str = ""
 
 
 class CommunityPostListResponse(BaseModel):
     posts: list[CommunityPostResponse] = Field(default_factory=list)
+    page: int = 1
+    limit: int = 100
+    total: int = 0
+    has_more: bool = False
 
 
 class CommunityPostCreateRequest(BaseModel):
@@ -958,6 +966,8 @@ class AdminCommunityPostUpdateRequest(BaseModel):
     clear_media: bool = False
     flagged: bool | None = None
     flag_reason: str | None = Field(default=None, max_length=500)
+    moderation_status: str | None = Field(default=None, pattern=r"^(published|reviewing|approved|removed)$")
+    moderator_notes: str | None = Field(default=None, max_length=1000)
 
 
 class UserOut(BaseModel):
