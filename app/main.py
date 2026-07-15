@@ -370,7 +370,10 @@ from .models import (
 
     RefreshRequest,
 
-    RegisterRequest,
+    RegisterRequest,
+
+
+    ResendVerificationRequest,
 
     ResetPasswordRequest,
 
@@ -3339,7 +3342,37 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
 
     logger.info("auth_register_code_sent email=%s", email)
 
-    return {"message": "Verification code sent", "email": email}
+    return {"message": "Verification code sent", "email": email}
+
+
+@app.post("/auth/resend-verification", status_code=status.HTTP_202_ACCEPTED)
+async def resend_verification(payload: ResendVerificationRequest) -> dict[str, str]:
+    email = payload.email.lower()
+    user = await users_collection.find_one({"email": email})
+
+    if not user:
+        raise HTTPException(status_code=404, detail="No pending registration found for this email")
+    if user.get("is_verified"):
+        raise HTTPException(status_code=409, detail="Email is already registered")
+
+    code = create_verification_code()
+    now = datetime.now(timezone.utc)
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {
+            "verification_code_hash": hash_password(code),
+            "verification_code_expires_at": now + timedelta(minutes=10),
+            "updated_at": now,
+        }},
+    )
+
+    try:
+        send_verification_email(email, code)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    logger.info("auth_register_code_resent email=%s", email)
+    return {"message": "Verification code sent", "email": email}
 
 
 
@@ -3371,7 +3404,8 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
 
         raise HTTPException(status_code=400, detail="Verification code expired")
 
-    if not verify_password(payload.code, user["verification_code_hash"]):
+    code_hash = str(user.get("verification_code_hash") or "").strip()
+    if not code_hash or not verify_password(payload.code, code_hash):
 
         raise HTTPException(status_code=400, detail="Invalid verification code")
 

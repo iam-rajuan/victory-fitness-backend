@@ -15,6 +15,21 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     marketing_consent: bool = False
 
+    @field_validator("name", "surname", "mobile")
+    @classmethod
+    def require_non_blank_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def require_non_blank_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -24,6 +39,10 @@ class LoginRequest(BaseModel):
 class VerifyEmailRequest(BaseModel):
     email: EmailStr
     code: str = Field(pattern=r"^\d{4}$")
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
 
 
 class ForgotPasswordRequest(BaseModel):
