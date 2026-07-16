@@ -4286,7 +4286,7 @@ async def upload_profile_image(
 
 @app.patch("/me/subscription", response_model=MeResponse)
 
-async def update_subscription(
+async def update_subscription(
 
     payload: UpdateSubscriptionRequest,
 
@@ -4302,13 +4302,27 @@ async def update_subscription(
 
     updated_user = await users_collection.find_one({"_id": user["_id"]})
 
-    if not updated_user:
+    if not updated_user:
 
-        raise HTTPException(status_code=404, detail="User not found")
-
-
-
-    return MeResponse(**(await _serialize_me_record(updated_user)))
+        raise HTTPException(status_code=404, detail="User not found")
+
+    previous_tier = _normalize_subscription_tier(user.get("subscription_tier"))
+    updated_tier = _normalize_subscription_tier(updated_user.get("subscription_tier"))
+    previous_status = _normalize_subscription_status(user.get("subscription_status"), previous_tier)
+    updated_status = _normalize_subscription_status(updated_user.get("subscription_status"), updated_tier)
+    if (previous_tier, previous_status) != (updated_tier, updated_status) and updated_status == "ACTIVE":
+        await notify_user(
+            users_collection,
+            updated_user,
+            f"{updated_tier.title().replace('_', ' ')} plan activated",
+            "Your Victory Fitness plan is active and your included features are ready.",
+            "subscription_activated",
+            {"type": "subscription", "tier": updated_tier, "route": "/profile"},
+        )
+
+
+
+    return MeResponse(**(await _serialize_me_record(updated_user)))
 
 
 
@@ -7649,13 +7663,50 @@ async def challenge_chat_socket(
 
 
 
-@app.post("/challenges/{challenge_id}/chat/messages", response_model=ChallengeChatMessageResponse, status_code=status.HTTP_201_CREATED)
+async def _notify_challenge_chat_participants(
+    challenge_id: str,
+    author_id: str,
+    challenge_title: str,
+    content: str,
+) -> None:
+    memberships = await challenge_memberships_collection.find({"challenge_id": challenge_id}).to_list(length=None)
+    participant_ids = {
+        str(item.get("user_id") or "").strip()
+        for item in memberships
+        if isinstance(item, dict) and str(item.get("user_id") or "").strip() != author_id
+    }
+    object_ids = [ObjectId(item) for item in participant_ids if ObjectId.is_valid(item)]
+    if not object_ids:
+        return
+    recipients = await users_collection.find({"_id": {"$in": object_ids}, "is_admin": {"$ne": True}}).to_list(length=None)
+    preview = " ".join(str(content or "").split())[:120] or "Sent an image in the challenge chat."
+    results = await asyncio.gather(*[
+        notify_user(
+            users_collection,
+            recipient,
+            f"New message in {challenge_title or 'your challenge'}",
+            preview,
+            "challenge_chat_message",
+            {"type": "challenge_chat", "challengeId": challenge_id, "route": f"/challenges/{challenge_id}"},
+        )
+        for recipient in recipients
+    ], return_exceptions=True)
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning("challenge_chat_notification_failed challenge_id=%s error=%s", challenge_id, result)
+
+
+@app.post("/challenges/{challenge_id}/chat/messages", response_model=ChallengeChatMessageResponse, status_code=status.HTTP_201_CREATED)
 
 async def create_challenge_chat_message(
 
     challenge_id: str,
 
-    payload: ChallengeChatMessageCreateRequest,
+    payload: ChallengeChatMessageCreateRequest,
+
+
+
+    background_tasks: BackgroundTasks,
 
     user: dict = Depends(_require_challenge_access_user),
 
@@ -7753,9 +7804,17 @@ async def create_challenge_chat_message(
 
     )
 
-    await _broadcast_challenge_chat_event("message_created", challenge_id, document)
-
-    if _challenge_message_mentions_coach(content):
+    await _broadcast_challenge_chat_event("message_created", challenge_id, document)
+
+    background_tasks.add_task(
+        _notify_challenge_chat_participants,
+        challenge_id,
+        str(user["_id"]),
+        str(challenge.get("title") or "Your challenge"),
+        content or "Sent an image in the challenge chat.",
+    )
+
+    if _challenge_message_mentions_coach(content):
 
         await _create_challenge_coach_reply(
 
@@ -19580,7 +19639,15 @@ async def _create_challenge_coach_reply(
 
     )
 
-    return reply_document
+    await notify_user(
+        users_collection,
+        user,
+        "Coach Victor replied",
+        "Coach Victor replied to your challenge message.",
+        "challenge_coach_reply",
+        {"type": "challenge_chat", "challengeId": str(challenge.get("_id") or ""), "route": f"/challenges/{challenge.get('_id')}"},
+    )
+    return reply_document
 
 
 
