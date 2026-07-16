@@ -3947,6 +3947,18 @@ async def delete_app_notification(
     return {"deleted": bool(result.modified_count)}
 
 
+@app.patch("/me/notifications/{notification_id}/read")
+async def mark_app_notification_read(
+    notification_id: str,
+    user: dict = Depends(_require_access_user),
+) -> dict[str, bool]:
+    result = await users_collection.update_one(
+        {"_id": user["_id"], "app_notifications.id": notification_id},
+        {"$set": {"app_notifications.$.read": True}},
+    )
+    return {"read": bool(result.modified_count)}
+
+
 @app.get("/me/activity-notifications/dismissed")
 async def list_dismissed_activity_notifications(
     user: dict = Depends(_require_access_user),
