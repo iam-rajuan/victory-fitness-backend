@@ -3935,6 +3935,18 @@ async def list_app_notifications(user: dict = Depends(_require_access_user)) -> 
     return AppNotificationListResponse(items=[AppNotificationItem(**item) for item in records[:50]])
 
 
+@app.delete("/me/notifications/{notification_id}")
+async def delete_app_notification(
+    notification_id: str,
+    user: dict = Depends(_require_access_user),
+) -> dict[str, bool]:
+    result = await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$pull": {"app_notifications": {"id": notification_id}}},
+    )
+    return {"deleted": bool(result.modified_count)}
+
+
 @app.delete("/me/push-token")
 async def unregister_push_token(
     payload: PushTokenRequest,

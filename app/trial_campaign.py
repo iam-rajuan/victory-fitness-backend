@@ -66,38 +66,42 @@ async def process_trial_campaign(
             continue
         if started.tzinfo is None:
             started = started.replace(tzinfo=timezone.utc)
-        day = int((now - started).total_seconds() // 86400)
-        if day < 0 or day not in set(CAMPAIGN) | set(WINBACK_CAMPAIGN) or day in set(user.get("trial_campaign_sent_days") or []):
+        current_day = int((now - started).total_seconds() // 86400)
+        if current_day < 0:
             skipped += 1
             continue
-        due_at = started + timedelta(days=day)
-        if now < due_at:
+        sent_days = {int(day) for day in (user.get("trial_campaign_sent_days") or []) if str(day).lstrip("-").isdigit()}
+        due_days = sorted(day for day in (set(CAMPAIGN) | set(WINBACK_CAMPAIGN)) if day <= current_day and day not in sent_days)
+        if not due_days:
             skipped += 1
             continue
-        if day in CAMPAIGN:
-            title, message_template = CAMPAIGN[day]
-            engagement_message = await _engagement_message(user, coach_threads_collection, nutrition_plans_collection) if day == 3 else ""
-            message = message_template.format(name=str(user.get("name") or "there"), engagement_message=engagement_message)
-            notification_type = f"trial_day_{day}"
-            data = {"route": "/notifications", "trialDay": day}
-            if day in {2, 5}:
-                data.update({"contentType": "video", "videoRoute": "/workoutplan/video-plan"})
-            if day == 5:
-                data["channels"] = ["push", "email", "video"]
-        else:
-            title, message = WINBACK_CAMPAIGN[day]
-            notification_type = f"trial_winback_day_{day}"
-            data = {"route": "/notifications", "trialDay": day, "winback": True}
-        await users_collection.update_one(
-            {"_id": user["_id"], "marketing_consent": True},
-            {"$addToSet": {"trial_campaign_sent_days": day}},
-        )
-        await notify_user(users_collection, user, title, message, notification_type, data)
-        try:
-            await asyncio.to_thread(send_trial_campaign_email, str(user.get("email") or ""), str(user.get("name") or "there"), day, title, message)
-        except Exception:
-            logger.exception("trial_campaign_email_failed user_id=%s day=%s", user.get("_id"), day)
-        processed += 1
+        for day in due_days:
+            if day in CAMPAIGN:
+                title, message_template = CAMPAIGN[day]
+                engagement_message = await _engagement_message(user, coach_threads_collection, nutrition_plans_collection) if day == 3 else ""
+                message = message_template.format(name=str(user.get("name") or "there"), engagement_message=engagement_message)
+                notification_type = f"trial_day_{day}"
+                data = {"route": "/notifications", "trialDay": day, "fallback": "in_app"}
+                if day in {2, 5}:
+                    data.update({"contentType": "video", "videoRoute": "/workoutplan/video-plan", "videoFallback": "Open the workout plan from your notification inbox."})
+                if day == 5:
+                    data["channels"] = ["push", "email", "video"]
+            else:
+                title, message = WINBACK_CAMPAIGN[day]
+                notification_type = f"trial_winback_day_{day}"
+                data = {"route": "/notifications", "trialDay": day, "winback": True, "fallback": "in_app"}
+            # notify_user always writes the in-app inbox first. Only mark the
+            # day sent after that succeeds, so a transient failure is retried.
+            await notify_user(users_collection, user, title, message, notification_type, data)
+            await users_collection.update_one(
+                {"_id": user["_id"], "marketing_consent": True},
+                {"$addToSet": {"trial_campaign_sent_days": day}},
+            )
+            try:
+                await asyncio.to_thread(send_trial_campaign_email, str(user.get("email") or ""), str(user.get("name") or "there"), day, title, message)
+            except Exception:
+                logger.exception("trial_campaign_email_failed user_id=%s day=%s", user.get("_id"), day)
+            processed += 1
     challenge_reminders = 0
     if challenge_memberships_collection is not None and challenges_collection is not None:
         memberships = await challenge_memberships_collection.find({"status": "ACTIVE"}).to_list(length=None)
