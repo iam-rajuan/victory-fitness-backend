@@ -2676,6 +2676,7 @@ def _build_strength_workout_completion_png(
     plan: StrengthWorkoutPlanResponse,
     user_name: str,
     completed_day: str = "",
+    full_plan: bool = False,
 ) -> tuple[bytes, str]:
     _require_pillow()
     progress_by_day = {item.day: item for item in plan.progress}
@@ -2716,7 +2717,7 @@ def _build_strength_workout_completion_png(
     draw.ellipse((width // 2 - 32, 120, width // 2 + 32, 184), fill=cyan)
     center_text(137, "VF", _load_report_font(25, bold=True), "#03192A")
     center_text(230, "YOUR VICTORY", title_font, white)
-    center_text(292, "STRENGTH WORKOUT COMPLETED", section_font, cyan)
+    center_text(292, "CUSTOM STRENGTH PLAN COMPLETED" if full_plan else "STRENGTH WORKOUT COMPLETED", section_font, cyan)
     draw.rounded_rectangle((100, 370, width - 100, 790), radius=24, fill="#101F2E", outline="#273E50", width=2)
     title_lines = _wrap_report_text(draw, str(plan.summary or "Custom Strength Plan").upper(), heading_font, 620)[:3]
     title_y = 420
@@ -2748,7 +2749,7 @@ def _build_strength_workout_completion_png(
     day_name = selected_day.title if selected_day else "Strength workout"
     share_message = "\n".join([
         "Victory Fitness",
-        f"{day_name} completed by {user_name or 'Victory Member'}",
+        f"{'Custom strength plan' if full_plan else day_name} completed by {user_name or 'Victory Member'}",
         f"Plan progress: {completed_days}/{total_days} days | Exercises: {completed_exercises}/{max(total_exercises, completed_exercises or 1)}",
     ])
     return output.getvalue(), share_message
@@ -2758,6 +2759,7 @@ def _build_strength_workout_completion_png(
 async def workout_strength_plan_completion_report(
     plan_id: str,
     day: str = "",
+    full_plan: bool = False,
     user: dict = Depends(_require_workout_plan_access_user),
 ) -> StrengthWorkoutPlanCompletionReportResponse:
     if not ObjectId.is_valid(plan_id):
@@ -2766,7 +2768,13 @@ async def workout_strength_plan_completion_report(
     if not record or not isinstance(record.get("plan"), dict):
         raise HTTPException(status_code=404, detail="Strength workout plan not found")
     plan = _serialize_strength_workout_plan_record(record)
-    png_bytes, share_message = _build_strength_workout_completion_png(plan, str(user.get("name") or "Victory Member"), day)
+    plan_is_complete = bool(plan.days) and all(next((item.completed for item in plan.progress if item.day == workout_day.day), False) for workout_day in plan.days)
+    png_bytes, share_message = _build_strength_workout_completion_png(
+        plan,
+        str(user.get("name") or "Victory Member"),
+        day,
+        full_plan=full_plan and plan_is_complete,
+    )
     return StrengthWorkoutPlanCompletionReportResponse(
         file_name="victory-fitness-strength-completion.png",
         mime_type="image/png",
