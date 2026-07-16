@@ -130,7 +130,8 @@ async def process_trial_campaign(
                     {"$set": {"status": "COMPLETED", "completed_at": now, "updated_at": now}},
                 )
                 continue
-            reminder_key = f"{challenge_id}:{today_key}"
+            time_context = "evening" if now.hour >= 18 else "daytime"
+            reminder_key = f"{challenge_id}:{today_key}:{time_context}"
             marked = await users_collection.update_one({"_id": user["_id"], "challenge_reminder_dates": {"$ne": reminder_key}}, {"$addToSet": {"challenge_reminder_dates": reminder_key}})
             if marked.modified_count:
                 plan_days = challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []
@@ -150,7 +151,8 @@ async def process_trial_campaign(
                             if exercise_name:
                                 task_names.append(exercise_name)
                 task_context = ", ".join(task_names[:5])
-                reminder_message = await asyncio.to_thread(generate_challenge_reminder_message, str(user.get("name") or "there"), str(challenge.get("title") or "your challenge"), current_day, task_context)
-                await notify_user(users_collection, user, "Your challenge task is waiting", reminder_message, "challenge_reminder", {"type": "challenge", "challengeId": challenge_id, "day": current_day, "route": f"/challenges/progress/{challenge_id}", "taskContext": task_context})
+                reminder_message = await asyncio.to_thread(generate_challenge_reminder_message, str(user.get("name") or "there"), str(challenge.get("title") or "your challenge"), current_day, task_context, time_context)
+                reminder_title = "You still have time today" if time_context == "evening" else "Your challenge task is waiting"
+                await notify_user(users_collection, user, reminder_title, reminder_message, "challenge_reminder", {"type": "challenge", "challengeId": challenge_id, "day": current_day, "timeContext": time_context, "route": f"/challenges/progress/{challenge_id}", "taskContext": task_context})
                 challenge_reminders += 1
     return {"processed": processed, "skipped": skipped, "challenge_reminders": challenge_reminders}

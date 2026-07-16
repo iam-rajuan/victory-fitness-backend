@@ -15,7 +15,7 @@
   "crons": [
     {
       "path": "/jobs/trial-campaign",
-      "schedule": "0 0 * * *"
+      "schedule": "0 * * * *"
     },
     {
       "path": "/jobs/nutrition",
