@@ -9391,7 +9391,7 @@ async def start_challenge(
 
         if existing_status == "ACTIVE":
 
-            return StartChallengeResponse(membership_id=str(existing_membership["_id"]))
+            return StartChallengeResponse(membership_id=str(existing_membership["_id"]))
 
         if existing_status == "COMPLETED":
 
@@ -9519,7 +9519,15 @@ async def start_challenge(
 
 
 
-    return StartChallengeResponse(membership_id=str(insert_result.inserted_id))
+    await notify_user(
+        users_collection,
+        user,
+        "Challenge started",
+        f"You are ready for {str(challenge.get('title') or 'your challenge')}. Complete day 1 today to build your streak.",
+        "challenge_started",
+        {"type": "challenge", "challengeId": challenge_id, "route": f"/challenges/progress/{challenge_id}"},
+    )
+    return StartChallengeResponse(membership_id=str(insert_result.inserted_id))
 
 
 
