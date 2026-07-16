@@ -1752,13 +1752,15 @@ async def unhandled_exception_handler(
 
 
 
-async def _require_access_user(
-
-    credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
-
-) -> dict:
-
-    return await dependency_require_access_user(credentials)
+async def _require_access_user(
+
+    credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+
+    access_token: str | None = Cookie(default=None),
+
+) -> dict:
+
+    return await dependency_require_access_user(credentials, access_token)
 
 
 

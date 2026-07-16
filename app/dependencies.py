@@ -1,5 +1,5 @@
 from bson import ObjectId
-from fastapi import HTTPException, Security
+from fastapi import Cookie, HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .database import users_collection
@@ -85,8 +85,9 @@ async def get_verified_user_from_access_token(token: str) -> dict:
 
 async def require_access_user(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+    access_token: str | None = Cookie(default=None),
 ) -> dict:
-    token = credentials.credentials if credentials else None
+    token = credentials.credentials if credentials else access_token
     if not token:
         raise HTTPException(status_code=401, detail="Missing access token")
 
