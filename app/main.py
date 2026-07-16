@@ -114,6 +114,7 @@ from .models import AppNotificationItem, AppNotificationListResponse, PushTokenR
 
 
 from .push_service import notify_user, notify_users_of_published_workout
+from .challenge_milestone import generate_challenge_milestone_message
 from .trial_campaign import process_trial_campaign
 
 
@@ -8182,13 +8183,21 @@ async def _store_membership_plan_progress(
 
         await _broadcast_challenge_chat_event("message_created", str(challenge["_id"]), message_document)
 
+        milestone_message = await asyncio.to_thread(
+            generate_challenge_milestone_message,
+            str(user.get("name") or "there"),
+            str(challenge.get("title") or "your challenge"),
+            day_number,
+            duration_days,
+            next_status,
+        )
         await notify_user(
             users_collection,
             user,
-            "Challenge complete!",
-            f"You completed day {day_number} of {str(challenge.get('title') or 'your challenge')}. Your points are safe today.",
-            "challenge_completed",
-            {"type": "challenge", "challengeId": str(challenge["_id"]), "day": day_number},
+            "Challenge milestone reached",
+            milestone_message,
+            "challenge_milestone",
+            {"type": "challenge", "challengeId": str(challenge["_id"]), "day": day_number, "totalDays": duration_days, "milestone": True, "route": f"/challenges/progress/{challenge['_id']}"},
         )
 
 
