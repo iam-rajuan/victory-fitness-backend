@@ -110,6 +110,7 @@ def _send_firebase_web_push(tokens: list[str], title: str, body: str, data: dict
 
     access_token = _get_firebase_access_token()
     endpoint = f"https://fcm.googleapis.com/v1/projects/{settings.firebase_project_id}/messages:send"
+    failures: list[str] = []
     for token in tokens:
         message = {
             "message": {
@@ -134,7 +135,12 @@ def _send_firebase_web_push(tokens: list[str], title: str, body: str, data: dict
                 response.read()
         except HTTPError as error:
             details = error.read().decode("utf-8", errors="replace")[:500]
-            raise RuntimeError(f"Firebase web push failed ({error.code}): {details}") from error
+            failures.append(f"{token[:12]}… ({error.code}): {details}")
+        except Exception as error:
+            failures.append(f"{token[:12]}…: {error}")
+
+    if failures:
+        raise RuntimeError(f"Firebase web push failed for {len(failures)} token(s): {'; '.join(failures[:3])}")
 
 
 async def notify_users_of_published_workout(users_collection, workout: dict) -> None:
