@@ -3561,7 +3561,11 @@ async def verify_reset_code(payload: VerifyResetCodeRequest) -> dict[str, str]:
 
     )
 
-    logger.info("auth_verify_reset_success email=%s", email)
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_reset_token_hash": hash_password(reset_token)}},
+    )
+    logger.info("auth_verify_reset_success email=%s", email)
 
     return {"message": "Reset code verified", "reset_token": reset_token}
 
@@ -3603,9 +3607,13 @@ async def reset_password(payload: ResetPasswordRequest) -> dict[str, str]:
 
 
 
-    await users_collection.update_one(
-
-        {"_id": user_id},
+    token_hash = str(user.get("password_reset_token_hash") or "").strip()
+    if not token_hash or not verify_password(payload.reset_token, token_hash):
+        raise HTTPException(status_code=401, detail="Invalid or already used reset token")
+
+    await users_collection.update_one(
+
+        {"_id": user_id},
 
         {
 
@@ -3617,7 +3625,7 @@ async def reset_password(payload: ResetPasswordRequest) -> dict[str, str]:
 
             },
 
-            "$unset": {"reset_code_hash": "", "reset_code_expires_at": ""},
+            "$unset": {"reset_code_hash": "", "reset_code_expires_at": "", "password_reset_token_hash": ""},
 
         },
 
