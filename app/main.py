@@ -411,9 +411,11 @@ from .models import (
 
     StrengthWorkoutPlanProgressUpdateRequest,
 
-    StrengthWorkoutPlanListResponse,
-
-    StrengthWorkoutPlanResponse,
+    StrengthWorkoutPlanListResponse,
+
+    StrengthWorkoutPlanCompletionReportResponse,
+
+    StrengthWorkoutPlanResponse,
 
     SupportMessageCreateRequest,
 
@@ -2670,7 +2672,110 @@ def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlan
 
 
 
-@app.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
+def _build_strength_workout_completion_png(
+    plan: StrengthWorkoutPlanResponse,
+    user_name: str,
+    completed_day: str = "",
+) -> tuple[bytes, str]:
+    _require_pillow()
+    progress_by_day = {item.day: item for item in plan.progress}
+    completed_days = sum(1 for item in plan.progress if item.completed)
+    total_days = max(len(plan.days), 1)
+    selected_day = next((day for day in plan.days if day.day == completed_day), None)
+    if selected_day is None:
+        selected_day = next((day for day in reversed(plan.days) if progress_by_day.get(day.day) and progress_by_day[day.day].completed), None)
+    selected_day = selected_day or (plan.days[0] if plan.days else None)
+    selected_progress = progress_by_day.get(selected_day.day) if selected_day else None
+    completed_exercise_ids = set(selected_progress.completed_exercise_ids if selected_progress else [])
+    completed_section_ids = set(selected_progress.completed_section_ids if selected_progress else [])
+    entries: list[str] = []
+    if selected_day:
+        for section in selected_day.sections:
+            if section.id in completed_section_ids:
+                entries.extend(exercise.name for exercise in section.exercises)
+            else:
+                entries.extend(exercise.name for exercise in section.exercises if exercise.id in completed_exercise_ids)
+    entries = entries[:7]
+    total_exercises = sum(len(section.exercises) for day in plan.days for section in day.sections)
+    completed_exercises = sum(len(item.completed_exercise_ids) for item in plan.progress)
+    width, height = 900, 1400
+    image = Image.new("RGB", (width, height), "#03192A")
+    draw = ImageDraw.Draw(image)
+    cyan, white, muted, pink = "#00D9F5", "#F7F7F7", "#A9B8C8", "#FF4B70"
+    title_font = _load_report_font(42, bold=True)
+    heading_font = _load_report_font(32, bold=True)
+    section_font = _load_report_font(21, bold=True)
+    body_font = _load_report_font(18)
+    small_font = _load_report_font(15)
+    draw.rounded_rectangle((36, 55, width - 36, height - 28), radius=34, fill="#06111D", outline=cyan, width=3)
+
+    def center_text(y: int, text: str, font: Any, fill: str) -> None:
+        box = draw.textbbox((0, 0), text, font=font)
+        draw.text(((width - (box[2] - box[0])) / 2, y), text, font=font, fill=fill)
+
+    draw.ellipse((width // 2 - 32, 120, width // 2 + 32, 184), fill=cyan)
+    center_text(137, "VF", _load_report_font(25, bold=True), "#03192A")
+    center_text(230, "YOUR VICTORY", title_font, white)
+    center_text(292, "STRENGTH WORKOUT COMPLETED", section_font, cyan)
+    draw.rounded_rectangle((100, 370, width - 100, 790), radius=24, fill="#101F2E", outline="#273E50", width=2)
+    title_lines = _wrap_report_text(draw, str(plan.summary or "Custom Strength Plan").upper(), heading_font, 620)[:3]
+    title_y = 420
+    for line in title_lines:
+        center_text(title_y, line, heading_font, white)
+        title_y += 43
+    center_text(title_y + 20, f"{selected_day.day if selected_day else 'Workout'} · {user_name or 'Victory Member'}", body_font, muted)
+    draw.rounded_rectangle((150, 570, width - 150, 590), radius=10, fill="#203243")
+    draw.rounded_rectangle((150, 570, 150 + int(600 * min(completed_days / total_days, 1)), 590), radius=10, fill=cyan)
+    draw.text((150, 630), "COMPLETED EXERCISES", font=section_font, fill=cyan)
+    row_y = 680
+    for entry in entries or ["Keep building your strength."]:
+        draw.ellipse((154, row_y + 5, 168, row_y + 19), fill=cyan)
+        draw.text((190, row_y), entry, font=body_font, fill=white if entries else muted)
+        row_y += 34
+    for x, label, value, color in ((140, "PLAN DAYS", f"{completed_days}/{total_days}", cyan), (475, "EXERCISES", f"{completed_exercises}/{max(total_exercises, completed_exercises or 1)}", pink)):
+        draw.rounded_rectangle((x, 910, x + 285, 1030), radius=18, fill="#030606", outline="#27343A", width=2)
+        box = draw.textbbox((0, 0), label, font=small_font)
+        draw.text((x + (285 - (box[2] - box[0])) / 2, 930), label, font=small_font, fill=white)
+        value_box = draw.textbbox((0, 0), value, font=heading_font)
+        draw.text((x + (285 - (value_box[2] - value_box[0])) / 2, 962), value, font=heading_font, fill=color)
+    draw.rounded_rectangle((140, 1090, width - 140, 1180), radius=28, fill="#00C5F0")
+    member = str(user_name or "Victory Member").upper()
+    member_box = draw.textbbox((0, 0), member, font=section_font)
+    draw.text(((width - (member_box[2] - member_box[0])) / 2, 1120), member, font=section_font, fill="#06131D")
+    center_text(1245, "VICTORY-FITNESS.APP", section_font, "#B1BDCA")
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    day_name = selected_day.title if selected_day else "Strength workout"
+    share_message = "\n".join([
+        "Victory Fitness",
+        f"{day_name} completed by {user_name or 'Victory Member'}",
+        f"Plan progress: {completed_days}/{total_days} days | Exercises: {completed_exercises}/{max(total_exercises, completed_exercises or 1)}",
+    ])
+    return output.getvalue(), share_message
+
+
+@app.get("/ai/workout-plan/strength/{plan_id}/report", response_model=StrengthWorkoutPlanCompletionReportResponse)
+async def workout_strength_plan_completion_report(
+    plan_id: str,
+    day: str = "",
+    user: dict = Depends(_require_workout_plan_access_user),
+) -> StrengthWorkoutPlanCompletionReportResponse:
+    if not ObjectId.is_valid(plan_id):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+    record = await strength_workout_plans_collection.find_one({"_id": ObjectId(plan_id), "user_id": str(user["_id"])})
+    if not record or not isinstance(record.get("plan"), dict):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+    plan = _serialize_strength_workout_plan_record(record)
+    png_bytes, share_message = _build_strength_workout_completion_png(plan, str(user.get("name") or "Victory Member"), day)
+    return StrengthWorkoutPlanCompletionReportResponse(
+        file_name="victory-fitness-strength-completion.png",
+        mime_type="image/png",
+        image_base64=base64.b64encode(png_bytes).decode("ascii"),
+        share_message=share_message,
+    )
+
+
+@app.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
 
 async def workout_strength_plan(
 

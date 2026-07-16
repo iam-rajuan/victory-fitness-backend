@@ -1667,6 +1667,13 @@ class StrengthWorkoutPlanListResponse(BaseModel):
     items: list[StrengthWorkoutPlanResponse] = Field(default_factory=list)
 
 
+class StrengthWorkoutPlanCompletionReportResponse(BaseModel):
+    file_name: str
+    mime_type: str = "image/png"
+    image_base64: str = Field(min_length=32, max_length=20000000)
+    share_message: str = Field(min_length=1, max_length=5000)
+
+
 class VideoWorkoutPlanItem(BaseModel):
     id: str
     title: str
