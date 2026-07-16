@@ -3947,6 +3947,34 @@ async def delete_app_notification(
     return {"deleted": bool(result.modified_count)}
 
 
+@app.get("/me/activity-notifications/dismissed")
+async def list_dismissed_activity_notifications(
+    user: dict = Depends(_require_access_user),
+) -> dict[str, list[str]]:
+    return {
+        "ids": [
+            str(item)
+            for item in (user.get("dismissed_activity_notification_ids") or [])
+            if str(item).strip()
+        ]
+    }
+
+
+@app.delete("/me/activity-notifications/{notification_id}")
+async def delete_activity_notification(
+    notification_id: str,
+    user: dict = Depends(_require_access_user),
+) -> dict[str, bool]:
+    notification_id = notification_id.strip()
+    if not notification_id:
+        raise HTTPException(status_code=400, detail="Notification id is required")
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$addToSet": {"dismissed_activity_notification_ids": notification_id}},
+    )
+    return {"deleted": True}
+
+
 @app.delete("/me/push-token")
 async def unregister_push_token(
     payload: PushTokenRequest,
