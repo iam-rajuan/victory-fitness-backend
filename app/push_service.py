@@ -139,31 +139,8 @@ def _send_firebase_web_push(tokens: list[str], title: str, body: str, data: dict
 
 async def notify_users_of_published_workout(users_collection, workout: dict) -> None:
     records = await users_collection.find({"is_admin": {"$ne": True}}).to_list(length=None)
-    tokens = []
-    notification = {
-        "id": str(uuid4()),
-        "type": "workout_published",
-        "title": "New workout available",
-        "message": f"{str(workout.get('title') or 'A new workout')} is now available in Victory Fitness.",
-        "data": {"type": "workout", "workoutId": str(workout.get("_id") or "")},
-        "created_at": datetime.now(timezone.utc),
-        "read": False,
-    }
-    notification["data"]["notificationId"] = notification["id"]
+    title = "New workout available"
+    message = f"{str(workout.get('title') or 'A new workout')} is now available in Victory Fitness."
+    data = {"type": "workout", "workoutId": str(workout.get("_id") or ""), "route": "/workout"}
     for user in records:
-        await users_collection.update_one(
-            {"_id": user["_id"]},
-            {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}},
-        )
-        for item in user.get("push_tokens") or []:
-            if isinstance(item, dict) and str(item.get("platform") or "").lower() != "web":
-                token = str(item.get("token") or "").strip()
-                if token.startswith("ExponentPushToken["):
-                    tokens.append(token)
-    await asyncio.to_thread(
-        _send_expo_push,
-        list(dict.fromkeys(tokens)),
-        "New workout available",
-        notification["message"],
-        notification["data"],
-    )
+        await notify_user(users_collection, user, title, message, "workout_published", data)

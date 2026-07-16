@@ -3996,7 +3996,7 @@ async def unregister_push_token(
     token = payload.token.strip()
     await users_collection.update_one(
         {"_id": user["_id"]},
-        {"$set": {"push_tokens": [item for item in (user.get("push_tokens") or []) if isinstance(item, dict) and item.get("token") != token]}},
+        {"$pull": {"push_tokens": {"token": token}}},
     )
     return {"removed": True}
 
