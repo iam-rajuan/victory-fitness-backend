@@ -5,6 +5,7 @@ from bson import ObjectId
 
 from .email_service import send_trial_campaign_email
 from .push_service import notify_user
+from .challenge_milestone import generate_challenge_reminder_message
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,24 @@ async def process_trial_campaign(
             reminder_key = f"{challenge_id}:{today_key}"
             marked = await users_collection.update_one({"_id": user["_id"], "challenge_reminder_dates": {"$ne": reminder_key}}, {"$addToSet": {"challenge_reminder_dates": reminder_key}})
             if marked.modified_count:
-                await notify_user(users_collection, user, "Finish today’s challenge", f"Complete day {current_day} of {str(challenge.get('title') or 'your challenge')} today or risk losing your points.", "challenge_reminder", {"type": "challenge", "challengeId": challenge_id, "day": current_day})
+                plan_days = challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else []
+                current_plan_day = next((item for item in plan_days if isinstance(item, dict) and int(item.get("day_number") or 0) == current_day), {})
+                task_names = []
+                sections = current_plan_day.get("sections") if isinstance(current_plan_day, dict) and isinstance(current_plan_day.get("sections"), list) else []
+                for section in sections:
+                    if not isinstance(section, dict):
+                        continue
+                    section_title = str(section.get("title") or section.get("name") or "").strip()
+                    if section_title:
+                        task_names.append(section_title)
+                    exercises = section.get("exercises") if isinstance(section.get("exercises"), list) else []
+                    for exercise in exercises:
+                        if isinstance(exercise, dict):
+                            exercise_name = str(exercise.get("name") or exercise.get("title") or "").strip()
+                            if exercise_name:
+                                task_names.append(exercise_name)
+                task_context = ", ".join(task_names[:5])
+                reminder_message = await asyncio.to_thread(generate_challenge_reminder_message, str(user.get("name") or "there"), str(challenge.get("title") or "your challenge"), current_day, task_context)
+                await notify_user(users_collection, user, "Your challenge task is waiting", reminder_message, "challenge_reminder", {"type": "challenge", "challengeId": challenge_id, "day": current_day, "route": f"/challenges/progress/{challenge_id}", "taskContext": task_context})
                 challenge_reminders += 1
     return {"processed": processed, "skipped": skipped, "challenge_reminders": challenge_reminders}
