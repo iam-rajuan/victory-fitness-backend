@@ -19,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 
 async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> dict:
-    notification = {"id": str(uuid4()), "type": notification_type, "title": title, "message": message, "data": data, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
+    notification_id = str(uuid4())
+    notification_data = {**data, "notificationId": notification_id}
+    notification = {"id": notification_id, "type": notification_type, "title": title, "message": message, "data": notification_data, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
     await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
     expo_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
     web_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() == "web" and str(item.get("token") or "").strip()]
@@ -147,6 +149,7 @@ async def notify_users_of_published_workout(users_collection, workout: dict) -> 
         "created_at": datetime.now(timezone.utc),
         "read": False,
     }
+    notification["data"]["notificationId"] = notification["id"]
     for user in records:
         await users_collection.update_one(
             {"_id": user["_id"]},
