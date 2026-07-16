@@ -96,6 +96,7 @@ class SubscriptionSummaryResponse(BaseModel):
 
 class MeResponse(BaseModel):
     id: str
+    created_at: datetime | None = None
     name: str
     email: EmailStr
     is_verified: bool
@@ -730,6 +731,7 @@ class UserActiveChallengeResponse(BaseModel):
     participants: int = 0
     thumbnail: str = ""
     color: str = "#4F8EF7"
+    created_at: datetime | None = None
 
 
 class UserCompletedChallengeResponse(BaseModel):
@@ -745,6 +747,7 @@ class UserCompletedChallengeResponse(BaseModel):
     thumbnail: str = ""
     completed_at: datetime
     color: str = "#22C55E"
+    created_at: datetime | None = None
 
 
 class UserReadyChallengeResponse(BaseModel):
@@ -762,6 +765,7 @@ class UserReadyChallengeResponse(BaseModel):
     status: str
     can_start: bool = False
     thumbnail: str = ""
+    created_at: datetime | None = None
 
 
 class ChallengeOverviewResponse(BaseModel):

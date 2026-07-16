@@ -17083,7 +17083,7 @@ async def _build_subscription_update_doc(existing_user: dict, payload: UpdateSub
 
 
 
-async def _serialize_me_record(record: dict) -> dict:
+async def _serialize_me_record(record: dict) -> dict:
 
     stats = await _calculate_user_fitness_stats(str(record["_id"]))
 
@@ -17091,7 +17091,8 @@ async def _serialize_me_record(record: dict) -> dict:
 
     return {
 
-        "id": str(record["_id"]),
+        "id": str(record["_id"]),
+        "created_at": record.get("created_at"),
 
         "name": str(record.get("name") or ""),
 
@@ -19804,9 +19805,10 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
 
         active_challenges.append(
 
-            UserActiveChallengeResponse(
+            UserActiveChallengeResponse(
 
-                id=str(membership.get("_id") or challenge_id),
+                id=str(membership.get("_id") or challenge_id),
+                created_at=membership.get("started_at") or challenge.get("created_at"),
 
                 challenge_id=challenge_id,
 
@@ -19858,9 +19860,10 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
 
         completed_challenges.append(
 
-            UserCompletedChallengeResponse(
+            UserCompletedChallengeResponse(
 
-                id=str(membership.get("_id") or challenge_id),
+                id=str(membership.get("_id") or challenge_id),
+                created_at=completed_at or challenge.get("created_at"),
 
                 challenge_id=challenge_id,
 
@@ -19974,9 +19977,10 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
 
     ready_to_start = [
 
-        UserReadyChallengeResponse(
+        UserReadyChallengeResponse(
 
-            id=str(record["_id"]),
+            id=str(record["_id"]),
+            created_at=record.get("created_at"),
 
             title=str(record.get("title") or ""),
 
