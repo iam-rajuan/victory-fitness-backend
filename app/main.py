@@ -20692,3 +20692,86 @@ def _upload_community_audio_to_s3(
     file_name: str | None,
 ) -> str:
     return _upload_audio_to_s3("community-audio", user_id, audio_base64, mime_type, file_name)
+
+@app.get("/admin/dashboard/user-statistics")
+async def admin_dashboard_user_statistics(period: int = 30, _: dict = Depends(_require_admin_user)) -> dict[str, object]:
+    period = min(max(int(period or 30), 1), 365)
+    now = datetime.now(timezone.utc)
+    current_start = now - timedelta(days=period)
+    previous_start = current_start - timedelta(days=period)
+    non_admin = {"is_admin": {"$ne": True}}
+    records = await users_collection.find(non_admin).to_list(length=None)
+
+    def in_range(record, start, end=now):
+        value = record.get("created_at")
+        return isinstance(value, datetime) and start <= value < end
+
+    def pct(current, previous):
+        return round(((current - previous) / previous) * 100, 1) if previous else (100.0 if current else 0.0)
+
+    total = len(records)
+    new = sum(in_range(record, current_start) for record in records)
+    previous_new = sum(in_range(record, previous_start, current_start) for record in records)
+    active_ids = set()
+    previous_active_ids = set()
+    activity_collections = (workouts_collection, nutrition_plans_collection, coach_victor_threads_collection)
+    for collection in activity_collections:
+        try:
+            current = await collection.find({"created_at": {"$gte": current_start, "$lt": now}, "user_id": {"$exists": True}}, {"user_id": 1}).to_list(length=None)
+            previous = await collection.find({"created_at": {"$gte": previous_start, "$lt": current_start}, "user_id": {"$exists": True}}, {"user_id": 1}).to_list(length=None)
+            active_ids.update(str(item.get("user_id")) for item in current if item.get("user_id"))
+            previous_active_ids.update(str(item.get("user_id")) for item in previous if item.get("user_id"))
+        except Exception:
+            continue
+    active = len(active_ids)
+    previous_active = len(previous_active_ids)
+    trials = [record for record in records if record.get("subscription_started_at")]
+    completed_trials = [record for record in trials if record.get("subscription_started_at") < now - timedelta(days=7)]
+    converted = [record for record in completed_trials if bool(record.get("subscription_is_purchased")) or str(record.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"}]
+    tiers = {}
+    for record in records:
+        tier = str(record.get("subscription_tier") or "NONE").upper()
+        tiers[tier] = tiers.get(tier, 0) + 1
+    tier_order = ["NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"]
+    users_by_tier = [{"tier": tier, "label": tier.replace("_", " ").title(), "count": tiers.get(tier, 0)} for tier in tier_order]
+    return {"totalRegisteredUsers": total, "totalRegisteredUsersChange": 0, "newUsers": new, "newUsersChange": pct(new, previous_new), "activeUsers": active, "activeUsersChange": pct(active, previous_active), "trialToPaidConversionRate": round((len(converted) / len(completed_trials)) * 100, 1) if completed_trials else 0, "trialToPaidConversionChange": 0, "churnedUsers": 0, "churnedUsersChange": 0, "usersByTier": users_by_tier, "topUsers": []}
+
+@app.get("/admin/dashboard/workout-statistics")
+async def admin_dashboard_workout_statistics(period: int = 30, _: dict = Depends(_require_admin_user)) -> dict[str, object]:
+    period = min(max(int(period or 30), 1), 365)
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=period)
+    previous_start = start - timedelta(days=period)
+
+    async def logs_between(begin, end):
+        return await workouts_collection.find({"created_at": {"$gte": begin, "$lt": end}}).to_list(length=None)
+
+    current = await logs_between(start, now)
+    previous = await logs_between(previous_start, start)
+    completed = [item for item in current if item.get("completed_at") is not None]
+    previous_completed = [item for item in previous if item.get("completed_at") is not None]
+    started = len(current)
+    completion_rate = round((len(completed) / started) * 100, 1) if started else 0
+
+    grouped = {}
+    for item in completed:
+        workout_id = str(item.get("workout_id") or item.get("template_id") or item.get("_id") or "unknown")
+        entry = grouped.setdefault(workout_id, {"count": 0, "durations": [], "name": item.get("workout_name") or item.get("name") or "Workout"})
+        entry["count"] += 1
+        duration = item.get("duration_minutes") or item.get("duration")
+        if isinstance(duration, (int, float)):
+            entry["durations"].append(duration)
+    top = max(grouped.values(), key=lambda item: item["count"], default=None)
+    ai_count = sum(1 for item in current if str(item.get("source") or "").lower() == "ai")
+    previous_ai_count = sum(1 for item in previous if str(item.get("source") or "").lower() == "ai")
+    change = lambda value, prior: round(((value - prior) / prior) * 100, 1) if prior else (100.0 if value else 0.0)
+    return {
+        "totalWorkoutsCompleted": len(completed),
+        "totalWorkoutsCompletedChange": change(len(completed), len(previous_completed)),
+        "workoutCompletionRate": completion_rate,
+        "topWorkout": {"name": top["name"], "count": top["count"], "averageDuration": round(sum(top["durations"]) / len(top["durations"]), 1) if top and top["durations"] else 0} if top else None,
+        "aiGeneratedWorkouts": ai_count,
+        "aiGeneratedWorkoutsChange": change(ai_count, previous_ai_count),
+        "whatsappCompletionCards": 0,
+        "whatsappCompletionCardsChange": 0,
+    }
