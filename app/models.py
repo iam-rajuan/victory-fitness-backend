@@ -124,14 +124,22 @@ class MeResponse(BaseModel):
     subscription: SubscriptionSummaryResponse = Field(default_factory=SubscriptionSummaryResponse)
     marketing_consent: bool = False
     onboarding_completed: bool = False
+    country_code: str | None = None
+    identity_statement: str | None = None
+    workout_unlock_label: str | None = None
+    training_trigger_context: str | None = None
 
 
 class UpdateMeRequest(BaseModel):
     name: str | None = Field(default=None, min_length=2, max_length=100)
     email: EmailStr | None = None
     country: str | None = Field(default=None, max_length=120)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
     profileImage: str | None = Field(default=None, max_length=500)
     onboarding_completed: bool | None = None
+    identity_statement: str | None = Field(default=None, max_length=240)
+    workout_unlock_label: str | None = Field(default=None, max_length=120)
+    training_trigger_context: str | None = Field(default=None, max_length=240)
 
 
 class PushTokenRequest(BaseModel):
@@ -1384,6 +1392,11 @@ class AdminUserListItem(BaseModel):
     isVerified: bool
     contactNumber: str = ""
     country: str = ""
+    country_code: str | None = None
+    tier: str | None = None
+    identity_statement: str | None = None
+    workout_unlock_label: str | None = None
+    training_trigger_context: str | None = None
     createdAt: datetime
     updatedAt: datetime
     profileImage: str = ""
@@ -1708,3 +1721,224 @@ class VideoWorkoutPlanRequest(BaseModel):
 class VideoWorkoutPlanResponse(BaseModel):
     summary: str
     days: list[VideoWorkoutPlanDay] = Field(default_factory=list)
+
+# =====================================================================
+# Admin Intelligence & Marketing Analytics (Section 18)
+# =====================================================================
+
+
+class AnalyticsRangeResponse(BaseModel):
+    preset: str
+    market: str
+    fromDate: datetime
+    toDate: datetime
+    prevFromDate: datetime
+    prevToDate: datetime
+
+
+class UserTierBreakdown(BaseModel):
+    tier: str
+    count: int
+    color: str | None = None
+
+
+class TopUserItem(BaseModel):
+    rank: int
+    userId: str
+    name: str
+    tier: str | None = None
+    points: int
+    workouts: int = 0
+
+
+class UserStatsResponse(BaseModel):
+    totalRegistered: int
+    newUsers: int
+    newUsersChangePct: float
+    activeUsers: int
+    activeUsersChangePct: float
+    trialConversionRate: float
+    trialConversionColor: str
+    churnedUsers: int
+    churnedChangePct: float
+    usersByTier: list[UserTierBreakdown] = Field(default_factory=list)
+    top10Users: list[TopUserItem] = Field(default_factory=list)
+
+
+class TopWorkoutItem(BaseModel):
+    workoutId: str | None = None
+    title: str
+    count: int
+    avgDurationSeconds: int = 0
+
+
+class WorkoutStatsResponse(BaseModel):
+    totalCompleted: int
+    totalCompletedChangePct: float
+    completionRate: float
+    completionRateColor: str
+    topWorkout: TopWorkoutItem | None = None
+    aiGeneratedWorkouts: int
+    whatsappShares: int
+    whatsappSharesChangePct: float
+
+
+class PopularChallengeItem(BaseModel):
+    challengeId: str | None = None
+    title: str
+    category: str | None = None
+    participants: int
+    completionRate: float
+
+
+class InviteAbVariant(BaseModel):
+    variant: str
+    acceptances: int
+    total: int
+
+
+class ChallengeStatsResponse(BaseModel):
+    mostPopular: PopularChallengeItem | None = None
+    invitesSent: int
+    invitesSentChangePct: float
+    inviteConversionRate: float
+    abTestResult: list[InviteAbVariant] = Field(default_factory=list)
+
+
+class MarketFoodItem(BaseModel):
+    foodId: str | None = None
+    foodName: str
+    count: int
+
+
+class NutritionStatsResponse(BaseModel):
+    aiMealPlans: int
+    aiMealPlansChangePct: float
+    proteinTargetHitRate: float
+    mostLoggedByMarket: dict[str, "MarketFoodItem | None"] = Field(default_factory=dict)
+
+
+class RevenueTierItem(BaseModel):
+    tier: str
+    amount: float
+
+
+class MarketRevenue(BaseModel):
+    market: str
+    currency: str
+    amount: float
+
+
+class MrrTrendPoint(BaseModel):
+    date: str
+    value: float
+
+
+class RevenueStatsResponse(BaseModel):
+    mrr: dict[str, float] = Field(default_factory=dict)
+    revenueByTier: list[RevenueTierItem] = Field(default_factory=list)
+    revenueByMarket: list[MarketRevenue] = Field(default_factory=list)
+    arpu: float
+    mrrTrend: list[MrrTrendPoint] = Field(default_factory=list)
+    trendGranularity: str = "weekly"
+
+
+class CommunitySharingResponse(BaseModel):
+    whatsappShareCount: int
+    whatsappShareChangePct: float
+    viralCoefficient: float
+    viralCoefficientColor: str
+    newAccountabilityPairs: int
+    newPairsChangePct: float
+
+
+class RetentionComparison(BaseModel):
+    habitRetainedPct: float
+    nonHabitRetainedPct: float
+
+
+class HabitAdoptionResponse(BaseModel):
+    identityStatementSet: int
+    identityStatementPct: float
+    workoutUnlockSet: int
+    workoutUnlockPct: float
+    ifThenTriggerSet: int
+    ifThenTriggerPct: float
+    retentionComparison: RetentionComparison
+
+
+class FunnelStep(BaseModel):
+    label: str
+    count: int
+    dropOffPct: float
+
+
+class TrialFunnelResponse(BaseModel):
+    steps: list[FunnelStep] = Field(default_factory=list)
+    largestDropOff: str | None = None
+
+
+class SparklinePoint(BaseModel):
+    date: str
+    value: float
+
+
+class ViralCoefficientWidgetResponse(BaseModel):
+    current: float
+    color: str
+    sublabel: str
+    sparkline: list[SparklinePoint] = Field(default_factory=list)
+
+
+class MarketShareSplit(BaseModel):
+    ghana: int = 0
+    germany: int = 0
+    india: int = 0
+
+
+class WhatsAppTrackerWidgetResponse(BaseModel):
+    todayCount: int
+    thisWeekCount: int
+    thisWeekChangePct: float
+    dailySeries: list[SparklinePoint] = Field(default_factory=list)
+    marketSplit: MarketShareSplit
+
+
+class DailyWinEvent(BaseModel):
+    type: str
+    label: str
+    count: int = 1
+    createdAt: datetime
+
+
+class DailyWinsFeedResponse(BaseModel):
+    events: list[DailyWinEvent] = Field(default_factory=list)
+    lastUpdated: datetime
+
+
+class RetentionCohortRow(BaseModel):
+    weekStart: str
+    newUsers: int
+    day7Pct: float
+    day14Pct: float
+    day30Pct: float
+    paidDay30Pct: float
+
+
+class RetentionCohortResponse(BaseModel):
+    cohorts: list[RetentionCohortRow] = Field(default_factory=list)
+
+
+class MarketBreakdownRow(BaseModel):
+    name: str
+    activeUsers: int
+    newUsersThisWeek: int
+    trialConversionRate: float
+    revenueLocal: float
+    whatsappShares: int
+    day7RetentionPct: float
+    viralCoefficient: float
+
+
+class MarketBreakdownResponse(BaseModel):
+    markets: list[MarketBreakdownRow] = Field(default_factory=list)

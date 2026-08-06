@@ -67,6 +67,16 @@ if settings.mongodb_configured:
     sync_errors_collection = db["sync_errors"]
     integration_audit_logs_collection = db["integration_audit_logs"]
     admin_audit_logs_collection = db["admin_audit_logs"]
+    # ------------------------------------------------------------------
+    # Admin Intelligence & Marketing Analytics (Section 18)
+    # ------------------------------------------------------------------
+    analytics_events_collection = db["analytics_events"]
+    workout_logs_collection = db["workout_logs"]
+    payment_events_collection = db["payment_events"]
+    completion_cards_collection = db["completion_cards"]
+    accountability_pairs_collection = db["accountability_pairs"]
+    points_log_collection = db["points_log"]
+    invites_collection = db["invites"]
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -103,6 +113,13 @@ else:
     sync_errors_collection = _UnconfiguredCollection()
     integration_audit_logs_collection = _UnconfiguredCollection()
     admin_audit_logs_collection = _UnconfiguredCollection()
+    analytics_events_collection = _UnconfiguredCollection()
+    workout_logs_collection = _UnconfiguredCollection()
+    payment_events_collection = _UnconfiguredCollection()
+    completion_cards_collection = _UnconfiguredCollection()
+    accountability_pairs_collection = _UnconfiguredCollection()
+    points_log_collection = _UnconfiguredCollection()
+    invites_collection = _UnconfiguredCollection()
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -282,6 +299,27 @@ async def ensure_indexes() -> None:
     await integration_audit_logs_collection.create_index([("user_id", 1), ("provider", 1), ("created_at", -1)])
     await admin_audit_logs_collection.create_index([("created_at", -1)])
     await admin_audit_logs_collection.create_index([("resource", 1), ("resource_id", 1), ("created_at", -1)])
+    # ------------------------------------------------------------------
+    # Admin Intelligence & Marketing Analytics (Section 18) indexes
+    # ------------------------------------------------------------------
+    await analytics_events_collection.create_index([("event_type", 1), ("created_at", -1)])
+    await analytics_events_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await analytics_events_collection.create_index([("market", 1), ("created_at", -1)])
+    await workout_logs_collection.create_index([("user_id", 1), ("started_at", -1)])
+    await workout_logs_collection.create_index([("workout_id", 1), ("started_at", -1)])
+    await workout_logs_collection.create_index([("status", 1), ("started_at", -1)])
+    await payment_events_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await payment_events_collection.create_index([("status", 1), ("type", 1), ("created_at", -1)])
+    await payment_events_collection.create_index([("market", 1), ("created_at", -1)])
+    await completion_cards_collection.create_index([("shared_to_whatsapp", 1), ("created_at", -1)])
+    await completion_cards_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await accountability_pairs_collection.create_index([("status", 1), ("created_at", -1)])
+    await accountability_pairs_collection.create_index([("user_ids", 1), ("created_at", -1)])
+    await points_log_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await points_log_collection.create_index([("created_at", -1)])
+    await invites_collection.create_index([("created_at", -1)])
+    await invites_collection.create_index([("copy_variant", 1), ("created_at", -1)])
+    await invites_collection.create_index([("user_id", 1), ("created_at", -1)])
 
 
 async def close_database_connection() -> None:
