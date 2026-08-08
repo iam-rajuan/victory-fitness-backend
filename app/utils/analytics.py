@@ -34,27 +34,22 @@ def parse_time_range(
     if preset == "today":
         start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
         end = now
-        prev_start = start - timedelta(days=1)
-        prev_end = start
     elif preset == "this_year":
         start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
         end = now
-        prev_start = datetime(now.year - 1, 1, 1, tzinfo=timezone.utc)
-        prev_end = start
     elif preset == "custom" and custom_from and custom_to:
         start = datetime(custom_from.year, custom_from.month, custom_from.day, tzinfo=timezone.utc)
         end = datetime(custom_to.year, custom_to.month, custom_to.day, 23, 59, 59, tzinfo=timezone.utc)
-        # previous = same length immediately before
-        length = end - start
-        prev_end = start - timedelta(seconds=1)
-        prev_start = prev_end - length
     else:  # this_week (default)
         # ISO week: Monday as start
         start_of_day = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
         start = start_of_day - timedelta(days=start_of_day.weekday())
         end = now
-        prev_start = start - timedelta(days=7)
-        prev_end = start
+
+    # Compare like-for-like elapsed windows and avoid overlapping the boundary.
+    length = end - start
+    prev_end = start - timedelta(microseconds=1)
+    prev_start = prev_end - length
 
     return start, end, prev_start, prev_end
 
@@ -185,6 +180,13 @@ def safe_ratio(numerator: float, denominator: float) -> float:
     if denominator == 0:
         return 0.0
     return (numerator / denominator) * 100.0
+
+
+def viral_coefficient(invited_users: int, new_users: int) -> float:
+    """Invited acquisitions per ten new users, not a percentage."""
+    if new_users <= 0:
+        return 0.0
+    return (invited_users / new_users) * 10
 
 
 def aggregate_by_market(users: Iterable[dict], market_field: str = "country_code") -> dict[str, int]:

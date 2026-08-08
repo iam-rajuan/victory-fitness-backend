@@ -11,9 +11,10 @@ missing (so the dashboard renders empty state, never crashes).
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from bson import ObjectId
 from fastapi import APIRouter, Depends, Query
 
 from .database import (
@@ -21,6 +22,7 @@ from .database import (
     analytics_events_collection,
     challenges_collection,
     challenge_memberships_collection,
+    coach_victor_threads_collection,
     completion_cards_collection,
     invites_collection,
     meal_analysis_entries_collection,
@@ -34,8 +36,8 @@ from .database import (
 from .dependencies import require_admin_user
 from .models import (
     AnalyticsRangeResponse,
+    AccountabilityStatsResponse,
     ChallengeStatsResponse,
-    CommunitySharingResponse,
     DailyWinEvent,
     DailyWinsFeedResponse,
     FunnelStep,
@@ -74,6 +76,7 @@ from .utils.analytics import (
     safe_ratio,
     sparkline_series,
     trend_arrow,
+    viral_coefficient,
 )
 from .utils.country import PRIMARY_MARKETS, market_bucket
 
@@ -98,13 +101,14 @@ async def _safe_find(
     coll,
     query: dict | None = None,
     *,
+    projection: dict | None = None,
     sort: list[tuple[str, int]] | None = None,
     limit: int | None = None,
 ):
     if coll is None:
         return []
     try:
-        cursor = coll.find(query or {})
+        cursor = coll.find(query or {}, projection)
         if sort:
             cursor = cursor.sort(sort)
         if limit:
@@ -112,6 +116,121 @@ async def _safe_find(
         return await cursor.to_list(length=limit)
     except Exception:
         return []
+
+
+def _and(*filters: dict | None) -> dict:
+    clauses = [item for item in filters if item]
+    if not clauses:
+        return {}
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+async def _market_user_filter(market: str, field: str = "user_id") -> dict:
+    """Scope an activity collection through users.country_code."""
+    m_filter = market_filter(market)
+    if not m_filter:
+        return {}
+    users = await _safe_find(users_collection, m_filter, projection={"_id": 1})
+    ids: list[Any] = []
+    for user in users:
+        user_id = user.get("_id")
+        if user_id is not None:
+            ids.extend((user_id, str(user_id)))
+    return {field: {"$in": ids}}
+
+
+async def _find_by_id(collection, value: str) -> dict | None:
+    candidates: list[Any] = [value]
+    try:
+        candidates.insert(0, ObjectId(value))
+    except Exception:
+        pass
+    try:
+        return await collection.find_one({"_id": {"$in": candidates}})
+    except Exception:
+        return None
+
+
+def _as_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+async def _active_user_ids(start: datetime, end: datetime, market: str) -> set[str]:
+    user_scope = await _market_user_filter(market)
+    sources = (
+        (workout_logs_collection, "started_at", None),
+        (meal_analysis_entries_collection, "created_at", None),
+        (coach_victor_threads_collection, "created_at", None),
+        (analytics_events_collection, "created_at", {"event_type": "ai_coach_used"}),
+    )
+    active: set[str] = set()
+    for collection, date_field, extra in sources:
+        query = _and(
+            {date_field: {"$gte": start, "$lte": end}},
+            user_scope,
+            extra,
+        )
+        rows = await _safe_find(collection, query, projection={"user_id": 1})
+        active.update(str(row["user_id"]) for row in rows if row.get("user_id"))
+    return active
+
+
+async def _active_ids_for_users(
+    user_ids: list[Any],
+    start: datetime,
+    end: datetime,
+) -> set[str]:
+    if not user_ids:
+        return set()
+    scope = {"user_id": {"$in": user_ids}}
+    sources = (
+        (workout_logs_collection, "started_at"),
+        (meal_analysis_entries_collection, "created_at"),
+        (coach_victor_threads_collection, "created_at"),
+        (analytics_events_collection, "created_at"),
+    )
+    active: set[str] = set()
+    for collection, date_field in sources:
+        rows = await _safe_find(
+            collection,
+            _and(scope, {date_field: {"$gte": start, "$lt": end}}),
+            projection={"user_id": 1},
+        )
+        active.update(str(row["user_id"]) for row in rows if row.get("user_id"))
+    return active
+
+
+async def _latest_market_day7_retention(market: str, anchor: datetime) -> float:
+    current_week_start = datetime(anchor.year, anchor.month, anchor.day, tzinfo=timezone.utc)
+    current_week_start -= timedelta(days=current_week_start.weekday())
+    cohort_end = current_week_start - timedelta(days=7)
+    cohort_start = cohort_end - timedelta(days=7)
+    cohort_users = await _safe_find(
+        users_collection,
+        _and(
+            market_filter(market),
+            {"is_admin": {"$ne": True}},
+            {"created_at": {"$gte": cohort_start, "$lt": cohort_end}},
+        ),
+        projection={"_id": 1},
+    )
+    if not cohort_users:
+        return 0.0
+    ids: list[Any] = []
+    for user in cohort_users:
+        ids.extend((user.get("_id"), str(user.get("_id"))))
+    active = await _active_ids_for_users(ids, cohort_end, current_week_start)
+    return round(safe_ratio(len(active), len(cohort_users)), 1)
 
 
 def _range_dict(preset: str, market: str, start: datetime, end: datetime, prev_start: datetime, prev_end: datetime) -> dict:
@@ -189,71 +308,51 @@ async def user_stats(
         preset, from_date, to_date, market, "created_at"
     )
     m_filter = market_filter(market)
-    total = await _safe_count(users_collection)
-    new_users = await _safe_count(users_collection, {"$and": [m_filter, rng]})
-    prev_new_users = await _safe_count(users_collection, {"$and": [m_filter, prev_rng]})
+    users_filter = _and({"is_admin": {"$ne": True}}, m_filter)
+    total = await _safe_count(users_collection, users_filter)
+    new_users = await _safe_count(users_collection, _and(users_filter, rng))
+    prev_new_users = await _safe_count(users_collection, _and(users_filter, prev_rng))
 
-    # Active users: users with challenge membership in range OR workout log in range
-    active_user_ids = set()
-    memberships = await _safe_find(
-        challenge_memberships_collection,
-        rng,
-        projection={"user_id": 1},
-    )
-    for m in memberships:
-        uid = m.get("user_id")
-        if uid:
-            active_user_ids.add(str(uid))
-    workout_logs = await _safe_find(
-        workout_logs_collection,
-        rng,
-        projection={"user_id": 1},
-    )
-    for w in workout_logs:
-        uid = w.get("user_id")
-        if uid:
-            active_user_ids.add(str(uid))
+    active_user_ids = await _active_user_ids(start, end, market)
+    prev_active = await _active_user_ids(prev_start, prev_end, market)
 
-    prev_memberships = await _safe_find(
-        challenge_memberships_collection,
-        prev_rng,
-        projection={"user_id": 1},
-    )
-    prev_active = set()
-    for m in prev_memberships:
-        uid = m.get("user_id")
-        if uid:
-            prev_active.add(str(uid))
-    prev_workouts = await _safe_find(
-        workout_logs_collection,
-        prev_rng,
-        projection={"user_id": 1},
-    )
-    for w in prev_workouts:
-        uid = w.get("user_id")
-        if uid:
-            prev_active.add(str(uid))
-
-    # Trial conversion: estimate as completed trial users / total trial users
-    completed_trial_q = {"$and": [m_filter, {"subscription_tier": {"$ne": "NONE"}}, rng]}
-    completed_trial = await _safe_count(users_collection, completed_trial_q)
-    started_trial_q = {"$and": [m_filter, rng]}
-    started_trial = await _safe_count(users_collection, started_trial_q)
-    conversion = safe_ratio(completed_trial, max(started_trial, 1))
-
-    # Churned users (subscription tier NONE within range OR has cancellation flag)
-    churned = await _safe_count(
+    # A trial is decided five days after it starts. Conversion belongs to the
+    # period in which that decision date falls, not the registration period.
+    trial_users = await _safe_find(
         users_collection,
-        {"$and": [m_filter, {"subscription_tier": "NONE"}, {"created_at": {"$lt": start}}, rng]},
+        _and(users_filter, {"subscription_started_at": {"$ne": None}}),
+        projection={
+            "subscription_started_at": 1,
+            "subscription_is_purchased": 1,
+            "subscription_status": 1,
+        },
     )
-    prev_churned = await _safe_count(
-        users_collection,
-        {"$and": [m_filter, {"subscription_tier": "NONE"}, {"created_at": {"$lt": prev_start}}, prev_rng]},
-    )
+    completed_trial = converted_trial = 0
+    prev_completed_trial = prev_converted_trial = 0
+    for trial_user in trial_users:
+        trial_started = _as_utc_datetime(trial_user.get("subscription_started_at"))
+        if not trial_started:
+            continue
+        decided_at = trial_started + timedelta(days=5)
+        converted = bool(trial_user.get("subscription_is_purchased")) or str(
+            trial_user.get("subscription_status") or ""
+        ).upper() in {"ACTIVE", "PAID"}
+        if start <= decided_at <= end:
+            completed_trial += 1
+            converted_trial += int(converted)
+        elif prev_start <= decided_at <= prev_end:
+            prev_completed_trial += 1
+            prev_converted_trial += int(converted)
+    conversion = safe_ratio(converted_trial, completed_trial)
+
+    activity_market = await _market_user_filter(market)
+    churn_event = {"type": {"$in": ["subscription_cancelled", "subscription_expired"]}}
+    churned = await _safe_count(payment_events_collection, _and(rng, activity_market, churn_event))
+    prev_churned = await _safe_count(payment_events_collection, _and(prev_rng, activity_market, churn_event))
 
     # Users by tier
     tier_counts: Counter[str] = Counter()
-    all_users = await _safe_find(users_collection, m_filter or {}, projection={"subscription_tier": 1})
+    all_users = await _safe_find(users_collection, users_filter, projection={"subscription_tier": 1})
     for u in all_users:
         tier = u.get("subscription_tier") or "NONE"
         tier_counts[tier] += 1
@@ -265,7 +364,7 @@ async def user_stats(
     # Top 10 users by points
     top = await _safe_find(
         points_log_collection,
-        rng,
+        _and(rng, activity_market),
         sort=[("created_at", -1)],
         limit=500,
         projection={"user_id": 1, "points": 1},
@@ -277,11 +376,31 @@ async def user_stats(
     top_sorted = sorted(points_by_user.items(), key=lambda kv: kv[1], reverse=True)[:10]
     top_users: list[TopUserItem] = []
     for idx, (uid, points) in enumerate(top_sorted, start=1):
-        name = uid[:8]
-        top_users.append(TopUserItem(rank=idx, userId=uid, name=name, points=points))
+        profile = await _find_by_id(users_collection, uid)
+        name = str((profile or {}).get("name") or (profile or {}).get("full_name") or uid[:8])
+        tier = str((profile or {}).get("subscription_tier") or "NONE")
+        workouts = await _safe_count(
+            workout_logs_collection,
+            _and(
+                {"started_at": {"$gte": start, "$lte": end}},
+                {"user_id": {"$in": [uid, (profile or {}).get("_id")] }},
+                {"completed_at": {"$ne": None}},
+            ),
+        )
+        top_users.append(
+            TopUserItem(
+                rank=idx,
+                userId=uid,
+                name=name,
+                tier=tier,
+                points=points,
+                workouts=workouts,
+            )
+        )
 
     return UserStatsResponse(
         totalRegistered=total,
+        totalRegisteredChangePct=round(pct_change(total, max(total - new_users, 0)), 1),
         newUsers=new_users,
         newUsersChangePct=round(pct_change(new_users, prev_new_users), 1),
         activeUsers=len(active_user_ids),
@@ -307,13 +426,17 @@ async def workout_stats(
     market: str = Query("all"),
     _: dict = Depends(require_admin_user),
 ) -> WorkoutStatsResponse:
-    rng, prev_rng, _, start, end, prev_start, prev_end = _common_filter(
+    rng, prev_rng, _, start, end, _, _ = _common_filter(
         preset, from_date, to_date, market, "started_at"
     )
-    completed_q = {"$and": [rng, {"completed_at": {"$ne": None}}]}
+    activity_market = await _market_user_filter(market)
+    completed_q = _and(rng, activity_market, {"completed_at": {"$ne": None}})
     completed = await _safe_count(workout_logs_collection, completed_q)
-    prev_completed = await _safe_count(workout_logs_collection, {"$and": [prev_rng, {"completed_at": {"$ne": None}}]})
-    started = await _safe_count(workout_logs_collection, rng)
+    prev_completed = await _safe_count(
+        workout_logs_collection,
+        _and(prev_rng, activity_market, {"completed_at": {"$ne": None}}),
+    )
+    started = await _safe_count(workout_logs_collection, _and(rng, activity_market))
     rate = safe_ratio(completed, max(started, 1))
 
     # Top workout
@@ -329,7 +452,7 @@ async def workout_stats(
         top_wid, top_count = counts.most_common(1)[0]
         title = top_wid
         try:
-            w = await workouts_collection.find_one({"_id": top_wid}) if workouts_collection else None
+            w = await _find_by_id(workouts_collection, top_wid)
             if w:
                 title = str(w.get("title") or top_wid)
         except Exception:
@@ -338,12 +461,14 @@ async def workout_stats(
         avg = sum(durs) // len(durs) if durs else 0
         top_workout = TopWorkoutItem(workoutId=top_wid, title=title, count=top_count, avgDurationSeconds=avg)
 
-    ai_generated = await _safe_count(workouts_collection, {"source": "ai"})
-
-    # WhatsApp shares
-    shares_q = {"$and": [rng, {"shared_to_whatsapp": True}]}
-    shares = await _safe_count(completion_cards_collection, shares_q)
-    prev_shares = await _safe_count(completion_cards_collection, {"$and": [prev_rng, {"shared_to_whatsapp": True}]})
+    ai_generated = await _safe_count(
+        workouts_collection,
+        _and(
+            {"source": "ai"},
+            {"created_at": {"$gte": start, "$lte": end}},
+            activity_market,
+        ),
+    )
 
     return WorkoutStatsResponse(
         totalCompleted=completed,
@@ -352,8 +477,6 @@ async def workout_stats(
         completionRateColor=color_band(rate, 70.0, 50.0),
         topWorkout=top_workout,
         aiGeneratedWorkouts=ai_generated,
-        whatsappShares=shares,
-        whatsappSharesChangePct=round(pct_change(shares, prev_shares), 1),
     )
 
 
@@ -369,15 +492,18 @@ async def challenge_stats(
     market: str = Query("all"),
     _: dict = Depends(require_admin_user),
 ) -> ChallengeStatsResponse:
-    rng, prev_rng, _, *_ = _common_filter(preset, from_date, to_date, market, "joined_at")
-    m_filter = market_filter(market)
+    rng, prev_rng, _, start, end, prev_start, prev_end = _common_filter(
+        preset, from_date, to_date, market, "joined_at"
+    )
+    activity_market = await _market_user_filter(market)
+    membership_filter = _and(rng, activity_market)
 
     # Most popular challenge in range (by member count)
     pipeline = []
     if challenge_memberships_collection is not None:
         try:
             pipeline = [
-                {"$match": {"$and": [rng, m_filter]}},
+                {"$match": membership_filter},
                 {"$group": {"_id": "$challenge_id", "count": {"$sum": 1}}},
                 {"$sort": {"count": -1}},
                 {"$limit": 1},
@@ -405,7 +531,7 @@ async def challenge_stats(
                 pass
         try:
             members = await challenge_memberships_collection.count_documents(
-                {"$and": [rng, {"challenge_id": challenge_id}, {"status": "completed"}]}
+                _and(membership_filter, {"challenge_id": challenge_id}, {"status": "completed"})
             )
             completion_rate = safe_ratio(members, max(top.get("count", 0), 1))
         except Exception:
@@ -418,15 +544,24 @@ async def challenge_stats(
             completionRate=round(completion_rate, 1),
         )
 
-    invites_sent = await _safe_count(invites_collection, rng)
-    prev_invites_sent = await _safe_count(invites_collection, prev_rng)
-    accepted = await _safe_count(invites_collection, {"$and": [rng, {"accepted": True}]})
+    invite_rng = {"created_at": {"$gte": start, "$lte": end}}
+    prev_invite_rng = {"created_at": {"$gte": prev_start, "$lte": prev_end}}
+    invites_sent = await _safe_count(invites_collection, _and(invite_rng, activity_market))
+    prev_invites_sent = await _safe_count(invites_collection, _and(prev_invite_rng, activity_market))
+    accepted = await _safe_count(
+        invites_collection,
+        _and(invite_rng, activity_market, {"accepted": True}),
+    )
     invite_conversion = safe_ratio(accepted, max(invites_sent, 1))
 
     # A/B variant test
     variant_counts: Counter[str] = Counter()
     variant_accepted: Counter[str] = Counter()
-    rows = await _safe_find(invites_collection, rng, projection={"copy_variant": 1, "accepted": 1})
+    rows = await _safe_find(
+        invites_collection,
+        _and(invite_rng, activity_market),
+        projection={"copy_variant": 1, "accepted": 1},
+    )
     for r in rows:
         v = str(r.get("copy_variant") or "a").lower()
         variant_counts[v] += 1
@@ -459,33 +594,61 @@ async def nutrition_stats(
     _: dict = Depends(require_admin_user),
 ) -> NutritionStatsResponse:
     rng, prev_rng, _, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
+    activity_market = await _market_user_filter(market)
+    meal_plan_job = {
+        "$or": [
+            {"job_type": "meal_plan"},
+            {"generation_mode": {"$exists": True}},
+        ]
+    }
     ai_plans = await _safe_count(
         nutrition_plan_jobs_collection,
-        {"$and": [rng, {"job_type": "meal_plan"}, {"status": "completed"}]},
+        _and(rng, activity_market, meal_plan_job, {"status": "completed"}),
     )
     prev_ai_plans = await _safe_count(
         nutrition_plan_jobs_collection,
-        {"$and": [prev_rng, {"job_type": "meal_plan"}, {"status": "completed"}]},
+        _and(prev_rng, activity_market, meal_plan_job, {"status": "completed"}),
     )
-    protein_q = {"$and": [rng, {"protein_target_hit": True}]}
-    protein_hit = await _safe_count(meal_analysis_entries_collection, protein_q)
-    total_entries = await _safe_count(meal_analysis_entries_collection, rng)
-    protein_rate = safe_ratio(protein_hit, max(total_entries, 1))
+    entries = await _safe_find(
+        meal_analysis_entries_collection,
+        _and(rng, activity_market),
+        projection={"user_id": 1, "created_at": 1, "analysis.estimated_protein": 1},
+    )
+    protein_by_user_day: dict[tuple[str, str], float] = defaultdict(float)
+    for entry in entries:
+        created_at = _as_utc_datetime(entry.get("created_at"))
+        user_id = str(entry.get("user_id") or "")
+        if not created_at or not user_id:
+            continue
+        protein_by_user_day[(user_id, created_at.strftime("%Y-%m-%d"))] += float(
+            (entry.get("analysis") or {}).get("estimated_protein") or 0
+        )
+    protein_hit = 0
+    for (user_id, _day), protein_total in protein_by_user_day.items():
+        profile = await _find_by_id(users_collection, user_id)
+        target = float(
+            (profile or {}).get("protein_target_g")
+            or (profile or {}).get("daily_protein")
+            or 0
+        )
+        if target > 0 and protein_total >= target:
+            protein_hit += 1
+    protein_rate = safe_ratio(protein_hit, len(protein_by_user_day))
 
     # Most logged food by market — group meal entries by market via user.country_code
     most_logged: dict[str, MarketFoodItem | None] = {"Ghana": None, "Germany": None, "India": None}
     if meal_analysis_entries_collection is not None and users_collection is not None:
         try:
             pipeline = [
-                {"$match": rng},
+                {"$match": _and(rng, activity_market)},
                 {"$lookup": {"from": "users", "localField": "user_id", "foreignField": "_id", "as": "user"}},
                 {"$unwind": {"path": "$user", "preserveNullAndEmptyArrays": False}},
                 {
                     "$group": {
                         "_id": {
                             "market": "$user.country_code",
-                            "food_id": "$food_id",
-                            "food_name": "$food_name",
+                            "food_id": "$analysis.meal_name_guess",
+                            "food_name": "$analysis.meal_name_guess",
                         },
                         "count": {"$sum": 1},
                     }
@@ -533,19 +696,25 @@ async def revenue_stats(
     from_date: date | None = Query(default=None, alias="from"),
     to_date: date | None = Query(default=None, alias="to"),
     market: str = Query("all"),
+    trend_granularity: str = Query("daily", alias="granularity"),
     _: dict = Depends(require_admin_user),
 ) -> RevenueStatsResponse:
-    rng, prev_rng, _, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
+    rng, _, _, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
+    activity_market = await _market_user_filter(market)
+    payment_filter = _and(
+        activity_market,
+        {"status": "success"},
+        {"type": "subscription_renewed"},
+    )
     payments = await _safe_find(
         payment_events_collection,
-        {"$and": [rng, {"status": "success"}, {"type": "subscription_renewed"}]},
+        _and(rng, payment_filter),
         projection={"amount": 1, "currency": 1, "tier": 1, "market": 1, "created_at": 1},
         limit=5000,
     )
     by_country: dict[str, float] = defaultdict(float)
     by_tier: dict[str, float] = defaultdict(float)
     daily: dict[str, float] = defaultdict(float)
-    total_revenue = 0.0
     for p in payments:
         amount = float(p.get("amount") or 0)
         currency = str(p.get("currency") or "EUR")
@@ -553,13 +722,38 @@ async def revenue_stats(
         tier = str(p.get("tier") or "NONE")
         by_country[market_code] += amount
         by_tier[tier] += amount
-        ts = p.get("created_at")
+        ts = _as_utc_datetime(p.get("created_at"))
         if isinstance(ts, datetime):
-            daily[ts.strftime("%Y-%m-%d")] += amount
-        total_revenue += amount
-    mrr = build_currency_breakdown(by_country)
-    active_subs = max(await _safe_count(users_collection, {"subscription_status": "active"}), 1)
-    arpu = round(total_revenue / active_subs, 2) if active_subs else 0.0
+            granularity = trend_granularity.lower()
+            if granularity == "monthly":
+                bucket = ts.strftime("%Y-%m")
+            elif granularity == "weekly":
+                bucket = f"{ts.isocalendar().year}-W{ts.isocalendar().week:02d}"
+            else:
+                granularity = "daily"
+                bucket = ts.strftime("%Y-%m-%d")
+            daily[bucket] += amount
+
+    now = datetime.now(timezone.utc)
+    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    mrr_payments = await _safe_find(
+        payment_events_collection,
+        _and({"created_at": {"$gte": month_start, "$lte": now}}, payment_filter),
+        projection={"amount": 1, "market": 1},
+        limit=5000,
+    )
+    mrr_by_country: dict[str, float] = defaultdict(float)
+    for payment in mrr_payments:
+        mrr_by_country[str(payment.get("market") or "OTHER")] += float(payment.get("amount") or 0)
+    mrr = build_currency_breakdown(mrr_by_country)
+    active_subs = await _safe_count(
+        users_collection,
+        _and(
+            market_filter(market),
+            {"subscription_status": {"$in": ["ACTIVE", "PAID", "active", "paid"]}},
+        ),
+    )
+    arpu = round(sum(mrr_by_country.values()) / active_subs, 2) if active_subs else 0.0
 
     revenue_by_tier = [
         RevenueTierItem(tier=t, amount=round(amt, 2))
@@ -574,7 +768,9 @@ async def revenue_stats(
     ]
 
     trend = [MrrTrendPoint(date=k, value=round(v, 2)) for k, v in sorted(daily.items())]
-    granularity = "daily" if preset in ("today", "this_week", "custom") else "monthly"
+    granularity = trend_granularity.lower()
+    if granularity not in {"daily", "weekly", "monthly"}:
+        granularity = "daily"
 
     return RevenueStatsResponse(
         mrr=mrr,
@@ -587,35 +783,23 @@ async def revenue_stats(
 
 
 # ---------------------------------------------------------------------------
-# 18.7 Community & Sharing
+# 18.7 Accountability Adoption
 # ---------------------------------------------------------------------------
 
-@router.get("/community-sharing", response_model=CommunitySharingResponse)
-async def community_sharing_stats(
+@router.get("/accountability-stats", response_model=AccountabilityStatsResponse)
+async def accountability_stats(
     preset: str = Query("this_week"),
     from_date: date | None = Query(default=None, alias="from"),
     to_date: date | None = Query(default=None, alias="to"),
     market: str = Query("all"),
     _: dict = Depends(require_admin_user),
-) -> CommunitySharingResponse:
+) -> AccountabilityStatsResponse:
     rng, prev_rng, _, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
-    shares = await _safe_count(completion_cards_collection, {"$and": [rng, {"shared_to_whatsapp": True}]})
-    prev_shares = await _safe_count(completion_cards_collection, {"$and": [prev_rng, {"shared_to_whatsapp": True}]})
+    pair_scope = await _market_user_filter(market, field="user_ids")
+    pairs = await _safe_count(accountability_pairs_collection, _and(rng, pair_scope, {"status": "active"}))
+    prev_pairs = await _safe_count(accountability_pairs_collection, _and(prev_rng, pair_scope, {"status": "active"}))
 
-    # Viral coefficient: new users via invite / total new users
-    invites_q = {"$and": [rng, {"accepted": True}]}
-    invite_accepts = await _safe_count(invites_collection, invites_q)
-    new_users = await _safe_count(users_collection, rng)
-    viral = round(safe_ratio(invite_accepts * 10, max(new_users, 1)), 2)
-
-    pairs = await _safe_count(accountability_pairs_collection, {"$and": [rng, {"status": "active"}]})
-    prev_pairs = await _safe_count(accountability_pairs_collection, {"$and": [prev_rng, {"status": "active"}]})
-
-    return CommunitySharingResponse(
-        whatsappShareCount=shares,
-        whatsappShareChangePct=round(pct_change(shares, prev_shares), 1),
-        viralCoefficient=viral,
-        viralCoefficientColor=color_band(viral, 1.0, 0.5),
+    return AccountabilityStatsResponse(
         newAccountabilityPairs=pairs,
         newPairsChangePct=round(pct_change(pairs, prev_pairs), 1),
     )
@@ -634,28 +818,60 @@ async def habit_adoption_stats(
     _: dict = Depends(require_admin_user),
 ) -> HabitAdoptionResponse:
     m_filter = market_filter(market)
-    base = {"$and": [m_filter, {"subscription_tier": {"$in": ["GOLD", "PLATINUM", "INNER_CIRCLE"]}}]}
-    eligible = await _safe_count(users_collection, base) or 1
-
-    identity_q = {"$and": [base, {"identity_statement": {"$ne": None}}]}
-    unlock_q = {"$and": [base, {"workout_unlock_label": {"$ne": None}}]}
-    trigger_q = {"$and": [base, {"training_trigger_context": {"$ne": None}}]}
-
-    identity_set = await _safe_count(users_collection, identity_q)
-    unlock_set = await _safe_count(users_collection, unlock_q)
-    trigger_set = await _safe_count(users_collection, trigger_q)
-
-    # Retention comparison: Gold users with habit vs without
-    habit_users = await _safe_count(
-        users_collection,
-        {"$and": [base, {"$or": [identity_q["$and"][1], unlock_q["$and"][1], trigger_q["$and"][1]]}]},
+    base = _and(
+        m_filter,
+        {"subscription_tier": {"$in": ["GOLD", "PLATINUM", "INNER_CIRCLE"]}},
     )
-    non_habit_users = max(eligible - 1 - habit_users, 1)
+    eligible_users = await _safe_find(
+        users_collection,
+        base,
+        projection={
+            "_id": 1,
+            "identity_statement": 1,
+            "workout_unlock_label": 1,
+            "training_trigger_context": 1,
+            "subscription_confirmed_at": 1,
+            "subscription_started_at": 1,
+        },
+    )
+    eligible = len(eligible_users)
 
-    habit_retained_q = {"$and": [base, {"recent_activity": True}, {"$or": [identity_q["$and"][1], unlock_q["$and"][1], trigger_q["$and"][1]]}]}
-    non_habit_retained_q = {"$and": [base, {"recent_activity": True}, {"$or": [{"identity_statement": None}, {"workout_unlock_label": None}, {"training_trigger_context": None}]}]}
-    habit_retained = await _safe_count(users_collection, habit_retained_q)
-    non_habit_retained = await _safe_count(users_collection, non_habit_retained_q)
+    def is_set(value: Any) -> bool:
+        return bool(str(value or "").strip())
+
+    identity_set = sum(is_set(user.get("identity_statement")) for user in eligible_users)
+    unlock_set = sum(is_set(user.get("workout_unlock_label")) for user in eligible_users)
+    trigger_set = sum(is_set(user.get("training_trigger_context")) for user in eligible_users)
+
+    mature_habit = mature_non_habit = habit_retained = non_habit_retained = 0
+    now = datetime.now(timezone.utc)
+    for user in eligible_users:
+        gold_started = _as_utc_datetime(
+            user.get("subscription_confirmed_at") or user.get("subscription_started_at")
+        )
+        if not gold_started or gold_started + timedelta(days=30) > now:
+            continue
+        has_habit = any(
+            is_set(user.get(field))
+            for field in (
+                "identity_statement",
+                "workout_unlock_label",
+                "training_trigger_context",
+            )
+        )
+        active = bool(
+            await _active_ids_for_users(
+                [user.get("_id"), str(user.get("_id"))],
+                gold_started,
+                gold_started + timedelta(days=30),
+            )
+        )
+        if has_habit:
+            mature_habit += 1
+            habit_retained += int(active)
+        else:
+            mature_non_habit += 1
+            non_habit_retained += int(active)
 
     return HabitAdoptionResponse(
         identityStatementSet=identity_set,
@@ -665,8 +881,8 @@ async def habit_adoption_stats(
         ifThenTriggerSet=trigger_set,
         ifThenTriggerPct=round(safe_ratio(trigger_set, eligible), 1),
         retentionComparison=RetentionComparison(
-            habitRetainedPct=round(safe_ratio(habit_retained, max(habit_users, 1)), 1),
-            nonHabitRetainedPct=round(safe_ratio(non_habit_retained, non_habit_users), 1),
+            habitRetainedPct=round(safe_ratio(habit_retained, mature_habit), 1),
+            nonHabitRetainedPct=round(safe_ratio(non_habit_retained, mature_non_habit), 1),
         ),
     )
 
@@ -685,12 +901,13 @@ async def trial_funnel_widget(
 ) -> TrialFunnelResponse:
     rng, _, _, start, end, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
     m_filter = market_filter(market)
+    activity_market = await _market_user_filter(market)
 
     started = await _safe_count(users_collection, {"$and": [m_filter, rng]})
-    opened_msg = await _safe_count(analytics_events_collection, {"$and": [m_filter, rng, {"event_type": "day1_message_opened"}]})
-    used_coach = await _safe_count(analytics_events_collection, {"$and": [m_filter, rng, {"event_type": "ai_coach_used"}]})
-    used_nutrition = await _safe_count(nutrition_plan_jobs_collection, {"$and": [m_filter, rng]})
-    warmup = await _safe_count(analytics_events_collection, {"$and": [m_filter, rng, {"event_type": "day4_warmup_seen"}]})
+    opened_msg = await _safe_count(analytics_events_collection, _and(activity_market, rng, {"event_type": "day1_message_opened"}))
+    used_coach = await _safe_count(analytics_events_collection, _and(activity_market, rng, {"event_type": "ai_coach_used"}))
+    used_nutrition = await _safe_count(nutrition_plan_jobs_collection, _and(activity_market, rng))
+    warmup = await _safe_count(analytics_events_collection, _and(activity_market, rng, {"event_type": "day4_warmup_seen"}))
     converted = await _safe_count(users_collection, {"$and": [m_filter, rng, {"subscription_tier": {"$ne": "NONE"}}]})
 
     raw = [
@@ -708,7 +925,7 @@ async def trial_funnel_widget(
     for label, count in raw:
         drop_pct = 0.0
         if prev_count and prev_count > 0:
-            drop_pct = round(((prev_count - count) / prev_count) * 100, 1)
+            drop_pct = round(max(0, (prev_count - count) / prev_count * 100), 1)
         steps.append(FunnelStep(label=label, count=count, dropOffPct=drop_pct))
         if drop_pct > largest_drop_pct:
             largest_drop_pct = drop_pct
@@ -727,28 +944,43 @@ async def viral_coefficient_widget(
     _: dict = Depends(require_admin_user),
 ) -> ViralCoefficientWidgetResponse:
     # Use a rolling 30-day window regardless of preset
-    from datetime import timedelta
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=30)
+    activity_market = await _market_user_filter(market)
+    user_market = market_filter(market)
     weekly_points = []
     sparkline: list[SparklinePoint] = []
     for week_offset in range(12):
         week_end = end - timedelta(weeks=week_offset)
         week_start = week_end - timedelta(weeks=1)
-        invites_q = {"created_at": {"$gte": week_start, "$lte": week_end}, "accepted": True}
-        new_q = {"created_at": {"$gte": week_start, "$lte": week_end}}
+        invites_q = _and(
+            {"created_at": {"$gte": week_start, "$lte": week_end}},
+            activity_market,
+            {"accepted": True},
+        )
+        new_q = _and(
+            {"created_at": {"$gte": week_start, "$lte": week_end}},
+            user_market,
+        )
         accepted = await _safe_count(invites_collection, invites_q)
         new_users = await _safe_count(users_collection, new_q)
-        ratio = safe_ratio(accepted * 10, max(new_users, 1))
+        ratio = viral_coefficient(accepted, new_users)
         weekly_points.append(SparklinePoint(date=week_start.strftime("%Y-%m-%d"), value=round(ratio, 2)))
     weekly_points.reverse()
     sparkline = weekly_points
 
-    invites_q = {"created_at": {"$gte": start, "$lte": end}, "accepted": True}
+    invites_q = _and(
+        {"created_at": {"$gte": start, "$lte": end}},
+        activity_market,
+        {"accepted": True},
+    )
     accepted = await _safe_count(invites_collection, invites_q)
-    new_users = await _safe_count(users_collection, {"created_at": {"$gte": start, "$lte": end}})
-    current = round(safe_ratio(accepted * 10, max(new_users, 1)), 2)
-    sublabel = f"For every 10 new users, {int(current * 10)} came from an invite"
+    new_users = await _safe_count(
+        users_collection,
+        _and({"created_at": {"$gte": start, "$lte": end}}, user_market),
+    )
+    current = round(viral_coefficient(accepted, new_users), 2)
+    sublabel = f"For every 10 new users, {current:g} came from an invite"
 
     return ViralCoefficientWidgetResponse(
         current=current,
@@ -766,21 +998,37 @@ async def whatsapp_tracker_widget(
     market: str = Query("all"),
     _: dict = Depends(require_admin_user),
 ) -> WhatsAppTrackerWidgetResponse:
-    rng, prev_rng, _, start, end, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
+    _, _, _, _start, end, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
+    activity_market = await _market_user_filter(market)
     today_start = datetime(end.year, end.month, end.day, tzinfo=timezone.utc)
-    today_count = await _safe_count(completion_cards_collection, {"$and": [rng, {"shared_to_whatsapp": True}]})
-    week_count = today_count
-    prev_week = await _safe_count(completion_cards_collection, {"$and": [prev_rng, {"shared_to_whatsapp": True}]})
+    week_start = today_start - timedelta(days=today_start.weekday())
+    prev_week_start = week_start - timedelta(days=7)
+    share_filter = _and(activity_market, {"shared_to_whatsapp": True})
+    today_count = await _safe_count(
+        completion_cards_collection,
+        _and({"created_at": {"$gte": today_start, "$lte": end}}, share_filter),
+    )
+    week_count = await _safe_count(
+        completion_cards_collection,
+        _and({"created_at": {"$gte": week_start, "$lte": end}}, share_filter),
+    )
+    prev_week = await _safe_count(
+        completion_cards_collection,
+        _and({"created_at": {"$gte": prev_week_start, "$lt": week_start}}, share_filter),
+    )
 
     # 30-day daily series
     daily_series: list[SparklinePoint] = []
     for day_offset in range(29, -1, -1):
-        day = end - __import__("datetime").timedelta(days=day_offset)
+        day = end - timedelta(days=day_offset)
         day_start = datetime(day.year, day.month, day.day, tzinfo=timezone.utc)
-        day_end = day_start + __import__("datetime").timedelta(days=1)
+        day_end = day_start + timedelta(days=1)
         c = await _safe_count(
             completion_cards_collection,
-            {"created_at": {"$gte": day_start, "$lt": day_end}, "shared_to_whatsapp": True},
+            _and(
+                {"created_at": {"$gte": day_start, "$lt": day_end}},
+                share_filter,
+            ),
         )
         daily_series.append(SparklinePoint(date=day_start.strftime("%Y-%m-%d"), value=float(c)))
 
@@ -789,7 +1037,10 @@ async def whatsapp_tracker_widget(
     if completion_cards_collection is not None and users_collection is not None:
         try:
             pipeline = [
-                {"$match": {"$and": [rng, {"shared_to_whatsapp": True}]}},
+                {"$match": _and(
+                    {"created_at": {"$gte": week_start, "$lte": end}},
+                    share_filter,
+                )},
                 {"$lookup": {"from": "users", "localField": "user_id", "foreignField": "_id", "as": "user"}},
                 {"$unwind": {"path": "$user", "preserveNullAndEmptyArrays": False}},
                 {"$group": {"_id": "$user.country_code", "count": {"$sum": 1}}},
@@ -838,6 +1089,7 @@ async def daily_wins_widget(
                     type="whatsapp_share",
                     label=f"{r['count']} workout card{'s' if r['count'] != 1 else ''} shared",
                     count=r["count"],
+                    createdAt=end,
                 ))
         except Exception:
             pass
@@ -846,7 +1098,7 @@ async def daily_wins_widget(
         try:
             n = await accountability_pairs_collection.count_documents(rng)
             if n:
-                events.append(DailyWinEvent(type="pair_created", label=f"{n} new accountability pair{'s' if n != 1 else ''}", count=n))
+                events.append(DailyWinEvent(type="pair_created", label=f"{n} new accountability pair{'s' if n != 1 else ''}", count=n, createdAt=end))
         except Exception:
             pass
 
@@ -854,17 +1106,24 @@ async def daily_wins_widget(
         try:
             n = await challenge_memberships_collection.count_documents({"$and": [rng, {"status": "completed"}]})
             if n:
-                events.append(DailyWinEvent(type="challenge_completed", label=f"{n} challenge{'s' if n != 1 else ''} completed", count=n))
+                events.append(DailyWinEvent(type="challenge_completed", label=f"{n} challenge{'s' if n != 1 else ''} completed", count=n, createdAt=end))
         except Exception:
             pass
 
-    new_subs = await _safe_count(payment_events_collection, {"$and": [rng, {"type": "subscription_started"}]})
+    new_subs = await _safe_count(
+        payment_events_collection,
+        _and(
+            rng,
+            {"type": "subscription_started"},
+            {"tier": {"$in": ["GOLD", "PLATINUM", "INNER_CIRCLE"]}},
+        ),
+    )
     if new_subs:
-        events.append(DailyWinEvent(type="new_subscriber", label=f"{new_subs} new Gold subscriber{'s' if new_subs != 1 else ''}", count=new_subs))
+        events.append(DailyWinEvent(type="new_subscriber", label=f"{new_subs} new Gold subscriber{'s' if new_subs != 1 else ''}", count=new_subs, createdAt=end))
 
     streaks = await _safe_count(analytics_events_collection, {"$and": [rng, {"event_type": "streak_7_day"}]})
     if streaks:
-        events.append(DailyWinEvent(type="streak", label=f"{streaks} 7-day streak{'s' if streaks != 1 else ''} achieved", count=streaks))
+        events.append(DailyWinEvent(type="streak", label=f"{streaks} 7-day streak{'s' if streaks != 1 else ''} achieved", count=streaks, createdAt=end))
 
     return DailyWinsFeedResponse(events=events[:10], lastUpdated=end)
 
@@ -875,35 +1134,71 @@ async def daily_wins_widget(
 
 @router.get("/retention-cohort", response_model=RetentionCohortResponse)
 async def retention_cohort(
+    preset: str = Query("this_week"),
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    market: str = Query("all"),
     _: dict = Depends(require_admin_user),
 ) -> RetentionCohortResponse:
     rows: list[RetentionCohortRow] = []
-    end = datetime.now(timezone.utc)
-    # Last 8 weekly cohorts
-    for week_offset in range(7, -1, -1):
-        week_end = end - __import__("datetime").timedelta(weeks=week_offset)
-        week_start = week_end - __import__("datetime").timedelta(days=7)
-        new_users = await _safe_count(users_collection, {"created_at": {"$gte": week_start, "$lt": week_end}})
-        if new_users == 0:
+    selected_start, selected_end, _, _ = parse_time_range(preset, from_date, to_date)
+    span_weeks = max(8, min(52, int((selected_end - selected_start).days / 7) + 1))
+    anchor = datetime(selected_end.year, selected_end.month, selected_end.day, tzinfo=timezone.utc)
+    anchor -= timedelta(days=anchor.weekday())
+    now = datetime.now(timezone.utc)
+    for week_offset in range(span_weeks - 1, -1, -1):
+        week_start = anchor - timedelta(weeks=week_offset)
+        week_end = week_start + timedelta(days=7)
+        cohort_users = await _safe_find(
+            users_collection,
+            _and(
+                market_filter(market),
+                {"is_admin": {"$ne": True}},
+                {"created_at": {"$gte": week_start, "$lt": week_end}},
+            ),
+            projection={
+                "_id": 1,
+                "subscription_confirmed_at": 1,
+                "subscription_started_at": 1,
+                "subscription_status": 1,
+                "subscription_is_purchased": 1,
+            },
+        )
+        if not cohort_users:
             continue
-        # Day-7 retention: users with activity in the week after their cohort start
-        d7_start = week_start
-        d7_end = week_start + __import__("datetime").timedelta(days=7)
-        d14_start = week_start
-        d14_end = week_start + __import__("datetime").timedelta(days=14)
-        d30_start = week_start
-        d30_end = week_start + __import__("datetime").timedelta(days=30)
-        d7 = await _safe_count(workout_logs_collection, {"started_at": {"$gte": d7_start, "$lt": d7_end}})
-        d14 = await _safe_count(workout_logs_collection, {"started_at": {"$gte": d14_start, "$lt": d14_end}})
-        d30 = await _safe_count(workout_logs_collection, {"started_at": {"$gte": d30_start, "$lt": d30_end}})
-        paid = await _safe_count(users_collection, {"$and": [{"created_at": {"$gte": week_start, "$lt": week_end}}, {"subscription_tier": {"$ne": "NONE"}}]})
+        new_users = len(cohort_users)
+        cohort_ids: list[Any] = []
+        for user in cohort_users:
+            cohort_ids.extend((user.get("_id"), str(user.get("_id"))))
+
+        async def retention_for_window(window_start: datetime, window_end: datetime) -> float | None:
+            if now < window_end:
+                return None
+            active = await _active_ids_for_users(cohort_ids, window_start, window_end)
+            return round(safe_ratio(len(active), new_users), 1)
+
+        day7 = await retention_for_window(week_end, week_end + timedelta(days=7))
+        day14 = await retention_for_window(week_end + timedelta(days=7), week_end + timedelta(days=14))
+        day30_end = week_end + timedelta(days=30)
+        day30 = await retention_for_window(week_end + timedelta(days=23), day30_end)
+        paid_day30 = None
+        if now >= day30_end:
+            paid = 0
+            for user in cohort_users:
+                confirmed_at = _as_utc_datetime(user.get("subscription_confirmed_at"))
+                purchased = bool(user.get("subscription_is_purchased")) or str(
+                    user.get("subscription_status") or ""
+                ).upper() in {"ACTIVE", "PAID"}
+                if purchased and (confirmed_at is None or confirmed_at <= day30_end):
+                    paid += 1
+            paid_day30 = round(safe_ratio(paid, new_users), 1)
         rows.append(RetentionCohortRow(
             weekStart=week_start.strftime("%Y-%m-%d"),
             newUsers=new_users,
-            day7Pct=round(safe_ratio(d7, max(new_users, 1)), 1),
-            day14Pct=round(safe_ratio(d14, max(new_users, 1)), 1),
-            day30Pct=round(safe_ratio(d30, max(new_users, 1)), 1),
-            paidDay30Pct=round(safe_ratio(paid, max(new_users, 1)), 1),
+            day7Pct=day7,
+            day14Pct=day14,
+            day30Pct=day30,
+            paidDay30Pct=paid_day30,
         ))
     return RetentionCohortResponse(cohorts=rows)
 
@@ -914,16 +1209,21 @@ async def retention_cohort(
 
 @router.get("/market-breakdown", response_model=MarketBreakdownResponse)
 async def market_breakdown(
+    preset: str = Query("this_week"),
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
     _: dict = Depends(require_admin_user),
 ) -> MarketBreakdownResponse:
     markets = ["Ghana", "Germany", "India"]
     out: list[MarketBreakdownRow] = []
-    rng_q = {"created_at": {"$gte": datetime.now(timezone.utc) - __import__("datetime").timedelta(days=7)}}
+    start, end, _, _ = parse_time_range(preset, from_date, to_date)
+    rng_q = {"created_at": {"$gte": start, "$lte": end}}
     shares_rng = {"$and": [rng_q, {"shared_to_whatsapp": True}]}
     for market_name in markets:
         market_code = {"Ghana": "GH", "Germany": "DE", "India": "IN"}[market_name]
         m_filter = {"$or": [{"country_code": market_code}, {"country_code": {"$exists": False}, "country": {"$regex": {"Ghana": "ghana", "Germany": "germany|german", "India": "india|indian"}[market_name], "$options": "i"}}]}
-        active = await _safe_count(users_collection, {"$and": [m_filter, {"recent_activity": True}]})
+        activity_market = await _market_user_filter(market_name.lower())
+        active = len(await _active_user_ids(start, end, market_name.lower()))
         new_users = await _safe_count(users_collection, {"$and": [m_filter, rng_q]})
         converted = await _safe_count(users_collection, {"$and": [m_filter, rng_q, {"subscription_tier": {"$ne": "NONE"}}]})
         trial_conversion = safe_ratio(converted, max(new_users, 1))
@@ -939,27 +1239,18 @@ async def market_breakdown(
                     revenue_local = round(float(rows[0].get("total") or 0), 2)
             except Exception:
                 pass
-        shares = await _safe_count(completion_cards_collection, {"$and": [shares_rng, {"user_id": {"$in": []}}]})
-        # Re-query shares via lookup if user collection has country_code
-        if completion_cards_collection is not None and users_collection is not None:
-            try:
-                pipeline = [
-                    {"$match": shares_rng},
-                    {"$lookup": {"from": "users", "localField": "user_id", "foreignField": "_id", "as": "user"}},
-                    {"$unwind": "$user"},
-                    {"$match": m_filter},
-                    {"$count": "total"},
-                ]
-                rows = await completion_cards_collection.aggregate(pipeline).to_list(length=1)
-                if rows:
-                    shares = rows[0].get("total", 0)
-            except Exception:
-                pass
+        shares = await _safe_count(
+            completion_cards_collection,
+            _and(shares_rng, activity_market),
+        )
         viral = 0.0
         if invites_collection is not None:
             try:
-                accepted = await _safe_count(invites_collection, {"$and": [rng_q, {"accepted": True}, {"market": market_code}]})
-                viral = round(safe_ratio(accepted * 10, max(new_users, 1)), 2)
+                accepted = await _safe_count(
+                    invites_collection,
+                    _and(rng_q, activity_market, {"accepted": True}),
+                )
+                viral = round(viral_coefficient(accepted, new_users), 2)
             except Exception:
                 pass
         out.append(MarketBreakdownRow(
@@ -969,7 +1260,7 @@ async def market_breakdown(
             trialConversionRate=round(trial_conversion, 1),
             revenueLocal=revenue_local,
             whatsappShares=shares,
-            day7RetentionPct=0.0,
+            day7RetentionPct=await _latest_market_day7_retention(market_name.lower(), end),
             viralCoefficient=viral,
         ))
     return MarketBreakdownResponse(markets=out)

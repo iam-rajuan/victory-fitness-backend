@@ -1238,30 +1238,6 @@ class HomepageQuoteListResponse(BaseModel):
     items: list[HomepageQuote] = Field(default_factory=list)
 
 
-class TrialConversionUser(BaseModel):
-    id: str
-    fullName: str
-    email: EmailStr
-    trialStartedAt: datetime
-    trialEndsAt: datetime
-    status: str
-    subscriptionTier: str = "NONE"
-    subscriptionStatus: str = "NONE"
-    subscriptionIsPurchased: bool = False
-
-
-class TrialConversionResponse(BaseModel):
-    totalUsers: int = 0
-    totalSubscriptions: int = 0
-    trialUsers: int = 0
-    activeTrials: int = 0
-    continuedAfterTrial: int = 0
-    trialEndedNotContinued: int = 0
-    conversionRate: float = 0
-    chart: list[dict[str, int | str]] = Field(default_factory=list)
-    users: list[TrialConversionUser] = Field(default_factory=list)
-
-
 class AdminNotificationItem(BaseModel):
     id: str
     title: str
@@ -1753,6 +1729,7 @@ class TopUserItem(BaseModel):
 
 class UserStatsResponse(BaseModel):
     totalRegistered: int
+    totalRegisteredChangePct: float
     newUsers: int
     newUsersChangePct: float
     activeUsers: int
@@ -1779,8 +1756,6 @@ class WorkoutStatsResponse(BaseModel):
     completionRateColor: str
     topWorkout: TopWorkoutItem | None = None
     aiGeneratedWorkouts: int
-    whatsappShares: int
-    whatsappSharesChangePct: float
 
 
 class PopularChallengeItem(BaseModel):
@@ -1843,11 +1818,7 @@ class RevenueStatsResponse(BaseModel):
     trendGranularity: str = "weekly"
 
 
-class CommunitySharingResponse(BaseModel):
-    whatsappShareCount: int
-    whatsappShareChangePct: float
-    viralCoefficient: float
-    viralCoefficientColor: str
+class AccountabilityStatsResponse(BaseModel):
     newAccountabilityPairs: int
     newPairsChangePct: float
 
@@ -1919,10 +1890,10 @@ class DailyWinsFeedResponse(BaseModel):
 class RetentionCohortRow(BaseModel):
     weekStart: str
     newUsers: int
-    day7Pct: float
-    day14Pct: float
-    day30Pct: float
-    paidDay30Pct: float
+    day7Pct: float | None = None
+    day14Pct: float | None = None
+    day30Pct: float | None = None
+    paidDay30Pct: float | None = None
 
 
 class RetentionCohortResponse(BaseModel):
