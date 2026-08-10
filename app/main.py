@@ -98,7 +98,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
 
 
 
@@ -1154,7 +1154,7 @@ class _AnalyticsEventRequest(BaseModel):
 @app.post("/analytics-events", status_code=status.HTTP_202_ACCEPTED)
 async def create_analytics_event(
     payload: _AnalyticsEventRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, str]:
     if payload.event_type not in _CLIENT_ANALYTICS_EVENTS:
         raise HTTPException(status_code=400, detail="Unsupported analytics event")
@@ -1185,7 +1185,7 @@ class _WorkoutLogRequest(BaseModel):
 @app.post("/workout-logs", status_code=status.HTTP_201_CREATED)
 async def create_workout_log(
     payload: _WorkoutLogRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, Any]:
     user_id = str(user.get("_id") or user.get("id") or "")
     if not user_id:
@@ -1223,7 +1223,7 @@ class _CompletionCardRequest(BaseModel):
 @app.post("/completion-cards", status_code=status.HTTP_201_CREATED)
 async def create_completion_card(
     payload: _CompletionCardRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, Any]:
     user_id = str(user.get("_id") or user.get("id") or "")
     if completion_cards_collection is None:
@@ -1256,7 +1256,7 @@ class _InviteRequest(BaseModel):
 @app.post("/invites", status_code=status.HTTP_201_CREATED)
 async def create_invite(
     payload: _InviteRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, Any]:
     user_id = str(user.get("_id") or user.get("id") or "")
     if invites_collection is None:
@@ -1287,7 +1287,7 @@ class _PaymentEventRequest(BaseModel):
 @app.post("/payment-events", status_code=status.HTTP_201_CREATED)
 async def create_payment_event(
     payload: _PaymentEventRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, Any]:
     user_id = str(user.get("_id") or user.get("id") or "")
     if payment_events_collection is None:
@@ -1326,7 +1326,7 @@ class _PointsLogRequest(BaseModel):
 @app.post("/points-log", status_code=status.HTTP_201_CREATED)
 async def create_points_entry(
     payload: _PointsLogRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, str]:
     user_id = str(user.get("_id") or user.get("id") or "")
     if not user_id:
@@ -1351,7 +1351,7 @@ class _AccountabilityPairRequest(BaseModel):
 @app.post("/accountability-pairs", status_code=status.HTTP_201_CREATED)
 async def create_accountability_pair(
     payload: _AccountabilityPairRequest,
-    user: dict = Depends(_require_access_user),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, str]:
     user_id = str(user.get("_id") or user.get("id") or "")
     if not user_id:

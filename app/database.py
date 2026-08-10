@@ -219,7 +219,6 @@ async def _collapse_health_snapshot_collection(collection, *, preserve_existing:
 
 async def ensure_indexes() -> None:
     _require_database_configured()
-    await users_collection.create_index("email", unique=True, sparse=True)
     await users_collection.create_index([("created_at", -1)])
     await users_collection.create_index([("subscription_tier", 1), ("created_at", -1)])
     await users_collection.create_index([("marketing_consent", 1), ("subscription_started_at", -1)])

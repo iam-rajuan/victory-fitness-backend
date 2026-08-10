@@ -44,7 +44,7 @@ victory-fitness-backend/
 
 Install these before running the project:
 
-- Python 3.12 or newer
+- Python 3.12
 - Git
 - MongoDB Atlas database, or another MongoDB instance reachable from your machine
 - Docker Desktop, only if you want to run the backend with Docker
@@ -61,9 +61,12 @@ cd D:\RAJUAN-PERSONAL\VSCODE\victora\victory-fitness-backend
 Create and activate a virtual environment:
 
 ```powershell
-python -m venv .venv
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python --version
 ```
+
+The version check should print `Python 3.12.x`. Do not use Python 3.14 for this project because `Pillow==11.2.1` does not provide compatible Windows wheels for that runtime.
 
 Install the Python dependencies:
 
@@ -246,6 +249,21 @@ If login works locally but cookies do not persist in production, verify `COOKIE_
 If email verification does not send, check the SMTP variables and confirm that the provider allows app passwords or SMTP authentication.
 
 If AI routes fail, verify that the required model provider API key is present and valid.
+
+If `py -3.12 -m venv .venv` prints `No suitable Python runtime found`, install Python 3.12 first, then create the virtual environment again. On Windows, you can install it from the official Python installer or with:
+
+```powershell
+winget install Python.Python.3.12
+```
+
+Close and reopen PowerShell after installation, then verify:
+
+```powershell
+py -0
+py -3.12 --version
+```
+
+If `pip install -r requirements.txt` fails while building `Pillow` and the output mentions `cpython-314` or `Python 3.14`, delete `.venv`, recreate it with Python 3.12, and reinstall the dependencies.
 
 ## Development Notes
 
