@@ -320,6 +320,14 @@ from .models import (
 
 
 
+    ChallengePlanExercise,
+
+
+
+    ChallengePlanSection,
+
+
+
     ChallengePlanDayProgressResponse,
 
 
@@ -29781,6 +29789,278 @@ def _serialize_admin_masterclass_item(item: dict) -> dict:
 
 
 
+
+
+async def _build_admin_user_summary_response(year: int | None = None) -> AdminUserSummaryResponse:
+    selected_year = year or datetime.now(timezone.utc).year
+    year_start = datetime(selected_year, 1, 1, tzinfo=timezone.utc)
+    next_year_start = datetime(selected_year + 1, 1, 1, tzinfo=timezone.utc)
+    base_filter = {"is_admin": {"$ne": True}}
+    total_users, active_users, pending_users, yearly_users = await asyncio.gather(
+        users_collection.count_documents(base_filter),
+        users_collection.count_documents({**base_filter, "is_verified": True}),
+        users_collection.count_documents(
+            {
+                **base_filter,
+                "$or": [
+                    {"is_verified": {"$ne": True}},
+                    {"status": {"$regex": "^pending$", "$options": "i"}},
+                ],
+            }
+        ),
+        users_collection.find(
+            {**base_filter, "created_at": {"$gte": year_start, "$lt": next_year_start}},
+            projection={"created_at": 1, "is_verified": 1, "status": 1},
+        ).to_list(length=None),
+    )
+    monthly = {month: {"userCount": 0, "activeUserCount": 0} for month in month_abbr[1:]}
+    for record in yearly_users:
+        created_at = record.get("created_at")
+        if not isinstance(created_at, datetime):
+            continue
+        month = month_abbr[_as_utc(created_at).month]
+        monthly[month]["userCount"] += 1
+        if bool(record.get("is_verified")) or _normalize_admin_user_status(record) == "ACTIVE":
+            monthly[month]["activeUserCount"] += 1
+    return AdminUserSummaryResponse(
+        totalUsers=total_users,
+        activeUsers=active_users,
+        pendingUsers=pending_users,
+        userChart=[AdminUserChartPoint(month=month, **values) for month, values in monthly.items()],
+    )
+
+
+async def _build_admin_user_list_response(
+    page: int = 1,
+    limit: int = 10,
+    query: str | None = None,
+) -> AdminUserListResponse:
+    normalized_page = max(int(page or 1), 1)
+    normalized_limit = max(min(int(limit or 10), 100), 1)
+    filter_doc: dict = {"is_admin": {"$ne": True}}
+    search = (query or "").strip()
+    if search:
+        escaped = re.escape(search)
+        filter_doc["$or"] = [
+            {"name": {"$regex": escaped, "$options": "i"}},
+            {"email": {"$regex": escaped, "$options": "i"}},
+            {"country": {"$regex": escaped, "$options": "i"}},
+            {"contact_number": {"$regex": escaped, "$options": "i"}},
+            {"role": {"$regex": escaped, "$options": "i"}},
+            {"status": {"$regex": escaped, "$options": "i"}},
+        ]
+    skip = (normalized_page - 1) * normalized_limit
+    total, records = await asyncio.gather(
+        users_collection.count_documents(filter_doc),
+        users_collection.find(filter_doc, sort=[("created_at", -1), ("_id", -1)])
+        .skip(skip)
+        .limit(normalized_limit)
+        .to_list(length=normalized_limit),
+    )
+    return AdminUserListResponse(
+        total=total,
+        page=normalized_page,
+        limit=normalized_limit,
+        users=[AdminUserListItem(**_serialize_admin_user_record(record)) for record in records],
+    )
+
+
+def _serialize_admin_workout_record(record: dict) -> dict:
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    updated_at = _as_utc(record.get("updated_at") or created_at)
+    video_source = str(record.get("video_source") or "VIMEO").strip().upper() or "VIMEO"
+    return {
+        "id": str(record.get("_id") or ""),
+        "title": str(record.get("title") or "").strip(),
+        "vimeoId": str(record.get("vimeo_id") or "").strip(),
+        "videoUrl": str(record.get("video_url") or "").strip(),
+        "videoSource": video_source,
+        "tag": str(record.get("tag") or "").strip(),
+        "visibility": str(record.get("visibility") or "Published").strip(),
+        "providerVisibility": str(record.get("provider_visibility") or record.get("visibility") or "Published").strip(),
+        "thumbnail": str(record.get("thumbnail") or record.get("thumbnail_url") or "").strip(),
+        "dateAdded": created_at,
+        "updatedAt": updated_at,
+    }
+
+
+async def _load_challenge_stats_map(challenge_ids: list[str]) -> dict[str, dict[str, int]]:
+    stats = {challenge_id: {"participantCount": 0, "completionCount": 0} for challenge_id in challenge_ids}
+    if not challenge_ids:
+        return stats
+    pipeline = [
+        {"$match": {"challenge_id": {"$in": challenge_ids}}},
+        {
+            "$group": {
+                "_id": "$challenge_id",
+                "participantCount": {
+                    "$sum": {"$cond": [{"$in": ["$status", ["ACTIVE", "COMPLETED"]]}, 1, 0]}
+                },
+                "completionCount": {"$sum": {"$cond": [{"$eq": ["$status", "COMPLETED"]}, 1, 0]}},
+            }
+        },
+    ]
+    async for row in challenge_memberships_collection.aggregate(pipeline):
+        challenge_id = str(row.get("_id") or "")
+        if challenge_id:
+            stats[challenge_id] = {
+                "participantCount": int(row.get("participantCount") or 0),
+                "completionCount": int(row.get("completionCount") or 0),
+            }
+    return stats
+
+
+def _normalize_challenge_plan_days(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    normalized_days: list[dict] = []
+    for index, raw_day in enumerate(value, start=1):
+        if isinstance(raw_day, ChallengePlanDay):
+            raw_day = raw_day.model_dump()
+        if not isinstance(raw_day, dict):
+            continue
+        try:
+            day_number = int(raw_day.get("day_number") or raw_day.get("dayNumber") or raw_day.get("day") or index)
+        except (TypeError, ValueError):
+            day_number = index
+        sections: list[dict] = []
+        for section_index, raw_section in enumerate(raw_day.get("sections") or [], start=1):
+            if isinstance(raw_section, ChallengePlanSection):
+                raw_section = raw_section.model_dump()
+            if not isinstance(raw_section, dict):
+                continue
+            exercises: list[dict] = []
+            for exercise_index, raw_exercise in enumerate(raw_section.get("exercises") or [], start=1):
+                if isinstance(raw_exercise, ChallengePlanExercise):
+                    raw_exercise = raw_exercise.model_dump()
+                if not isinstance(raw_exercise, dict):
+                    continue
+                exercise_id = str(raw_exercise.get("id") or f"day-{day_number}-exercise-{exercise_index}")
+                exercises.append(
+                    {
+                        "id": exercise_id[:80],
+                        "name": str(raw_exercise.get("name") or f"Exercise {exercise_index}").strip()[:160],
+                        "details": str(raw_exercise.get("details") or raw_exercise.get("description") or "Complete this exercise.").strip()[:240],
+                        "notes": str(raw_exercise.get("notes") or "").strip()[:400],
+                        "workout_id": str(raw_exercise.get("workout_id") or raw_exercise.get("workoutId") or "").strip()[:80],
+                        "workout_title": str(raw_exercise.get("workout_title") or raw_exercise.get("workoutTitle") or "").strip()[:160],
+                        "workout_vimeo_id": str(raw_exercise.get("workout_vimeo_id") or raw_exercise.get("workoutVimeoId") or "").strip()[:80],
+                        "workout_video_url": str(raw_exercise.get("workout_video_url") or raw_exercise.get("workoutVideoUrl") or "").strip()[:2000],
+                        "workout_video_source": str(raw_exercise.get("workout_video_source") or raw_exercise.get("workoutVideoSource") or "VIMEO").strip().upper()[:20],
+                        "workout_thumbnail": str(raw_exercise.get("workout_thumbnail") or raw_exercise.get("workoutThumbnail") or "").strip(),
+                    }
+                )
+            section_id = str(raw_section.get("id") or f"day-{day_number}-section-{section_index}")
+            sections.append(
+                {
+                    "id": section_id[:80],
+                    "title": str(raw_section.get("title") or f"Section {section_index}").strip()[:160],
+                    "description": str(raw_section.get("description") or "").strip()[:400],
+                    "estimated_minutes": max(0, min(int(raw_section.get("estimated_minutes") or raw_section.get("estimatedMinutes") or 10), 240)),
+                    "exercises": exercises,
+                }
+            )
+        normalized_days.append(
+            {
+                "day_number": max(1, min(day_number, 365)),
+                "title": str(raw_day.get("title") or f"Day {day_number}").strip()[:160],
+                "focus": str(raw_day.get("focus") or raw_day.get("title") or "Training").strip()[:200],
+                "notes": str(raw_day.get("notes") or "").strip()[:1200],
+                "sections": sections,
+            }
+        )
+    return normalized_days
+
+
+def _extract_plan_day_numbers(plan_days: list[dict]) -> list[int]:
+    numbers: list[int] = []
+    for day in plan_days:
+        if not isinstance(day, dict):
+            continue
+        try:
+            numbers.append(int(day.get("day_number") or day.get("dayNumber") or day.get("day") or 0))
+        except (TypeError, ValueError):
+            continue
+    return [number for number in numbers if number > 0]
+
+
+def _build_challenge_plan_text(plan_days: list[dict]) -> str:
+    lines: list[str] = []
+    for day in plan_days:
+        if not isinstance(day, dict):
+            continue
+        day_number = day.get("day_number") or day.get("dayNumber") or ""
+        title = str(day.get("title") or "").strip()
+        focus = str(day.get("focus") or "").strip()
+        lines.append(f"Day {day_number}: {title}".strip())
+        if focus:
+            lines.append(f"Focus: {focus}")
+        notes = str(day.get("notes") or "").strip()
+        if notes:
+            lines.append(notes)
+    return "\n".join(line for line in lines if line).strip()
+
+
+def _normalize_challenge_thumbnail(value: object) -> str:
+    return str(value or "").strip()
+
+
+async def _sync_workout_library_from_challenge_plan(plan_days: list[dict], category: str) -> None:
+    return None
+
+
+def _serialize_admin_challenge_record(record: dict, stats: dict[str, dict[str, int]] | None = None) -> dict:
+    challenge_id = str(record.get("_id") or "")
+    challenge_stats = (stats or {}).get(challenge_id, {})
+    created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    updated_at = _as_utc(record.get("updated_at") or created_at)
+    return {
+        "id": challenge_id,
+        "title": str(record.get("title") or "").strip(),
+        "description": str(record.get("description") or "").strip(),
+        "whyItMatters": str(record.get("why_it_matters") or record.get("whyItMatters") or "").strip(),
+        "planText": str(record.get("plan_text") or record.get("planText") or "").strip(),
+        "planDays": _normalize_challenge_plan_days(record.get("plan_days") or record.get("planDays") or []),
+        "category": str(record.get("category") or "").strip(),
+        "durationDays": int(record.get("duration_days") or record.get("durationDays") or 0),
+        "points": int(record.get("points") or 0),
+        "difficulty": str(record.get("difficulty") or "BEGINNER").strip().upper(),
+        "status": str(record.get("status") or "DRAFT").strip().upper(),
+        "thumbnail": str(record.get("thumbnail") or "").strip(),
+        "participantCount": int(challenge_stats.get("participantCount") or 0),
+        "completionCount": int(challenge_stats.get("completionCount") or 0),
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }
+
+
+HOMEPAGE_QUOTES_KEY = "homepage_quotes"
+DEFAULT_HOMEPAGE_QUOTES = [
+    {
+        "id": "homepage-quote-default",
+        "text": "Every rep is a vote for the person you are becoming.",
+        "author": "Victory Fitness",
+        "active": True,
+    }
+]
+
+
+async def _load_homepage_quotes() -> list[dict]:
+    record = await _ensure_items_record(HOMEPAGE_QUOTES_KEY, DEFAULT_HOMEPAGE_QUOTES)
+    return [_serialize_homepage_quote_item(item) for item in record.get("items") or [] if isinstance(item, dict)]
+
+
+async def _save_homepage_quotes(items: list[dict]) -> None:
+    await _replace_items_record(HOMEPAGE_QUOTES_KEY, [_serialize_homepage_quote_item(item) for item in items])
+
+
+def _serialize_homepage_quote_item(item: dict) -> dict:
+    return {
+        "id": str(item.get("id") or uuid4().hex),
+        "text": str(item.get("text") or "").strip(),
+        "author": str(item.get("author") or "").strip() or "Victory Fitness",
+        "active": bool(item.get("active", True)),
+    }
 
 
 def _serialize_admin_subscriber_record(record: dict) -> dict:
