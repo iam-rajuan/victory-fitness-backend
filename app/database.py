@@ -222,6 +222,8 @@ async def ensure_indexes() -> None:
     await users_collection.create_index([("created_at", -1)])
     await users_collection.create_index([("subscription_tier", 1), ("created_at", -1)])
     await users_collection.create_index([("marketing_consent", 1), ("subscription_started_at", -1)])
+    await users_collection.create_index([("trial_tier_granted", 1), ("trial_start_at", -1)])
+    await users_collection.create_index([("trial_outcome", 1), ("trial_end_at", -1)])
     await client.admin.command("ping")
     await _collapse_health_snapshot_collection(health_metric_current_collection)
     await _collapse_health_snapshot_collection(health_samples_collection)

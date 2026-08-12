@@ -94,6 +94,17 @@ class SubscriptionSummaryResponse(BaseModel):
     access: list[str] = Field(default_factory=list)
 
 
+class GoldTrialSummaryResponse(BaseModel):
+    tier_granted: str | None = None
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    outcome: str | None = None
+    active: bool = False
+    days_remaining: int = 0
+    campaign_days_sent: list[int] = Field(default_factory=list)
+    usage: dict[str, Any] = Field(default_factory=dict)
+
+
 class MeResponse(BaseModel):
     id: str
     created_at: datetime | None = None
@@ -122,6 +133,11 @@ class MeResponse(BaseModel):
     subscription_purchase_source: str = ""
     subscription_access: list[str] = Field(default_factory=list)
     subscription: SubscriptionSummaryResponse = Field(default_factory=SubscriptionSummaryResponse)
+    trial_tier_granted: str | None = None
+    trial_start_at: datetime | None = None
+    trial_end_at: datetime | None = None
+    trial_outcome: str | None = None
+    gold_trial: GoldTrialSummaryResponse = Field(default_factory=GoldTrialSummaryResponse)
     marketing_consent: bool = False
     onboarding_completed: bool = False
     country_code: str | None = None
@@ -1446,6 +1462,62 @@ class AdminTrialDropoutItem(BaseModel):
 class AdminTrialDropoutResponse(BaseModel):
     total: int = 0
     users: list[AdminTrialDropoutItem] = Field(default_factory=list)
+
+
+class GoldTrialMessageConfig(BaseModel):
+    day: int = Field(ge=0, le=5)
+    title: str = Field(min_length=1, max_length=160)
+    body: str = Field(min_length=1, max_length=1000)
+    channels: list[str] = Field(default_factory=list)
+    video_url: str = Field(default="", max_length=2000)
+    active: bool = True
+
+
+class GoldTrialConfigResponse(BaseModel):
+    tierLabel: str = "Try Gold free for 5 days"
+    trialTierGranted: str = "gold"
+    durationDays: int = 5
+    messages: list[GoldTrialMessageConfig] = Field(default_factory=list)
+    fallbackRule: str = "skip_to_next_channel_and_notify_admin"
+    updatedAt: datetime | None = None
+
+
+class GoldTrialConfigUpdateRequest(BaseModel):
+    tierLabel: str | None = Field(default=None, min_length=1, max_length=120)
+    messages: list[GoldTrialMessageConfig] | None = None
+
+
+class GoldTrialOutcomeBreakdownResponse(BaseModel):
+    totalTrials: int = 0
+    activeTrials: int = 0
+    convertedGold: int = 0
+    downgradedSilver: int = 0
+    lapsed: int = 0
+    pendingDecision: int = 0
+    conversionRate: float = 0
+    downgradeRate: float = 0
+    lapsedRate: float = 0
+
+
+class GoldTrialStartResponse(BaseModel):
+    status: str = "active"
+    trial: GoldTrialSummaryResponse
+
+
+class GoldTrialDecisionOption(BaseModel):
+    tier: str
+    label: str
+    priceYearly: int | None = None
+    includes: list[str] = Field(default_factory=list)
+    missing: list[str] = Field(default_factory=list)
+    demonstratedUsage: dict[str, Any] = Field(default_factory=dict)
+
+
+class GoldTrialDecisionResponse(BaseModel):
+    trial: GoldTrialSummaryResponse
+    usage: dict[str, Any] = Field(default_factory=dict)
+    options: list[GoldTrialDecisionOption] = Field(default_factory=list)
+    guardrail: str = "No paid plan is activated without explicit user action."
 
 
 class AdminSubscriberItem(BaseModel):

@@ -1,4 +1,5 @@
 from bson import ObjectId
+from datetime import datetime, timezone
 from fastapi import Cookie, HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -109,8 +110,30 @@ def resolve_subscription_access(tier: object) -> list[str]:
     return list(SUBSCRIPTION_ACCESS.get(normalize_subscription_tier(tier), []))
 
 
+def _as_utc_datetime(value: object) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def user_has_active_gold_trial(user: dict, now: datetime | None = None) -> bool:
+    if normalize_subscription_tier(user.get("trial_tier_granted")) != "GOLD":
+        return False
+    if str(user.get("trial_outcome") or "").strip():
+        return False
+    start_at = _as_utc_datetime(user.get("trial_start_at"))
+    end_at = _as_utc_datetime(user.get("trial_end_at"))
+    if not start_at or not end_at:
+        return False
+    current = now or datetime.now(timezone.utc)
+    current = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
+    return start_at <= current < end_at
+
+
 def user_has_subscription_access(user: dict, feature: str) -> bool:
     if bool(user.get("is_admin")):
+        return True
+    if user_has_active_gold_trial(user) and feature in resolve_subscription_access("GOLD"):
         return True
     tier = user.get("subscription_tier") or user.get("subscription_role") or user.get("tier")
     return feature in resolve_subscription_access(tier)

@@ -9,13 +9,16 @@ from .challenge_milestone import generate_challenge_reminder_message
 
 logger = logging.getLogger(__name__)
 
+GOLD_TRIAL_CONFIG_KEY = "gold_trial_config"
+TRIAL_DURATION_DAYS = 5
+
 CAMPAIGN = {
     0: ("Welcome to Victory Gold", "Hi {name}, your Gold trial is active. Ask Coach Victor one question right now to get your first win."),
-    1: ("Have you set up your meal plan?", "Your personalized Nutrition Planner takes about two minutes to set up."),
-    2: ("See what Gold can do", "Watch your mid-trial Victory Fitness video and choose one feature to try today."),
+    1: ("Have you set up your meal plan?", "Have you set up your meal plan yet? Takes 2 minutes."),
+    2: ("See what Gold can do", "Watch your mid-trial Victory Fitness video and choose one Gold feature to try today."),
     3: ("Keep your momentum going", "{engagement_message}"),
-    4: ("Your trial ends tomorrow", "Review what you have used so far and get ready to choose your Gold plan."),
-    5: ("Your Gold trial is complete", "Your trial has ended. Keep your coaching, nutrition, and workout tools by choosing a plan."),
+    4: ("Your trial ends tomorrow", "Tomorrow your trial ends. Here is what you have used so far: {usage_summary}"),
+    5: ("Your Gold trial is complete", "Your Gold trial has ended. Compare Silver and Gold using what you actually tried, then choose your plan."),
 }
 
 WINBACK_CAMPAIGN = {
@@ -24,28 +27,136 @@ WINBACK_CAMPAIGN = {
 }
 
 
-async def _engagement_message(user: dict, coach_threads_collection=None, nutrition_plans_collection=None) -> str:
+def _as_utc(value: object) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def _trial_started_at(user: dict) -> datetime | None:
+    return _as_utc(user.get("trial_start_at") or user.get("subscription_started_at"))
+
+
+def _trial_ended_at(user: dict, started_at: datetime) -> datetime:
+    return _as_utc(user.get("trial_end_at")) or (started_at + timedelta(days=TRIAL_DURATION_DAYS))
+
+
+def _is_paid(user: dict) -> bool:
+    tier = str(user.get("subscription_tier") or "").upper()
+    status = str(user.get("subscription_status") or "").upper()
+    return tier not in {"", "NONE"} and (bool(user.get("subscription_is_purchased")) or status in {"ACTIVE", "PAID"})
+
+
+def _trial_outcome_for_user(user: dict, now: datetime) -> str | None:
+    tier = str(user.get("subscription_tier") or "").upper()
+    if tier in {"GOLD", "PLATINUM", "INNER_CIRCLE"} and _is_paid(user):
+        return "converted_gold"
+    if tier == "SILVER" and _is_paid(user):
+        return "downgraded_silver"
+    started_at = _trial_started_at(user)
+    if started_at and now >= _trial_ended_at(user, started_at):
+        return "lapsed"
+    return None
+
+
+async def _load_campaign_config(app_content_collection=None) -> dict:
+    config = {"messages": {}, "tierLabel": "Try Gold free for 5 days"}
+    if app_content_collection is None:
+        return config
+    try:
+        record = await app_content_collection.find_one({"key": GOLD_TRIAL_CONFIG_KEY})
+    except Exception:
+        return config
+    messages = {}
+    for item in (record or {}).get("messages") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            day = int(item.get("day"))
+        except (TypeError, ValueError):
+            continue
+        messages[day] = item
+    config["messages"] = messages
+    if record and record.get("tierLabel"):
+        config["tierLabel"] = str(record.get("tierLabel"))
+    return config
+
+
+async def _notify_admin_fallback(app_content_collection, title: str, message: str, data: dict | None = None) -> None:
+    if app_content_collection is None:
+        logger.warning("trial_campaign_admin_fallback title=%s message=%s", title, message)
+        return
+    now = datetime.now(timezone.utc)
+    item = {
+        "id": str(ObjectId()),
+        "title": title,
+        "message": message,
+        "read": False,
+        "createdAt": now,
+        "data": data or {},
+    }
+    try:
+        await app_content_collection.update_one(
+            {"key": "dashboard_notifications"},
+            {
+                "$setOnInsert": {"key": "dashboard_notifications", "created_at": now},
+                "$set": {"updated_at": now},
+                "$push": {"items": {"$each": [item], "$slice": -100}},
+            },
+            upsert=True,
+        )
+    except Exception:
+        logger.exception("trial_campaign_admin_fallback_failed")
+
+
+async def _trial_usage_counts(user: dict, started_at: datetime, now: datetime, coach_threads_collection=None, nutrition_plans_collection=None, nutrition_logs_collection=None) -> dict:
     user_id = str(user.get("_id") or "")
     coach_messages = 0
-    has_nutrition_plan = False
+    meals_logged = 0
+    nutrition_plans = 0
 
     if coach_threads_collection is not None and user_id:
         threads = await coach_threads_collection.find({"user_id": user_id}, {"messages": 1}).to_list(length=None)
         for thread in threads:
             messages = thread.get("messages") if isinstance(thread, dict) else None
             if isinstance(messages, list):
-                coach_messages += sum(1 for message in messages if isinstance(message, dict) and str(message.get("role") or "").lower() == "user")
+                for message in messages:
+                    if not isinstance(message, dict) or str(message.get("role") or "").lower() != "user":
+                        continue
+                    created_at = _as_utc(message.get("created_at"))
+                    if created_at is None or started_at <= created_at <= now:
+                        coach_messages += 1
 
     if nutrition_plans_collection is not None and user_id:
-        has_nutrition_plan = bool(await nutrition_plans_collection.find_one({"user_id": user_id}, {"_id": 1}))
+        nutrition_plans = await nutrition_plans_collection.count_documents({"user_id": user_id, "created_at": {"$gte": started_at, "$lte": now}})
 
-    if coach_messages and has_nutrition_plan:
-        return f"You have sent {coach_messages} message{'s' if coach_messages != 1 else ''} to Coach Victor and set up your nutrition plan. Keep going today."
+    if nutrition_logs_collection is not None and user_id:
+        meals_logged = await nutrition_logs_collection.count_documents({"user_id": user_id, "created_at": {"$gte": started_at, "$lte": now}})
+
+    tracked = user.get("trial_engagement") if isinstance(user.get("trial_engagement"), dict) else {}
+    coach_messages = max(coach_messages, int(tracked.get("coach_messages") or 0))
+    if tracked.get("nutrition_plan_created_at"):
+        nutrition_plans = max(nutrition_plans, 1)
+    return {"ai_message_count": coach_messages, "nutrition_plan_count": nutrition_plans, "meal_logged_count": meals_logged}
+
+
+async def _engagement_message(user: dict, started_at: datetime, now: datetime, coach_threads_collection=None, nutrition_plans_collection=None, nutrition_logs_collection=None) -> str:
+    usage = await _trial_usage_counts(user, started_at, now, coach_threads_collection, nutrition_plans_collection, nutrition_logs_collection)
+    coach_messages = int(usage["ai_message_count"])
+    meals_or_plans = int(usage["meal_logged_count"]) + int(usage["nutrition_plan_count"])
     if coach_messages:
-        return f"You have already sent {coach_messages} message{'s' if coach_messages != 1 else ''} to Coach Victor. Keep going and set up your Nutrition Planner today."
-    if has_nutrition_plan:
-        return "You have started your Nutrition Planner. Open Coach Victor today to keep your progress moving."
-    return "You have not tried Coach Victor or the Nutrition Planner yet. Open one today before your trial gets away from you."
+        return f"You have already sent {coach_messages} message{'s' if coach_messages != 1 else ''} to your coach - keep going."
+    if meals_or_plans:
+        return "You have started Nutrition Planner. Ask your AI Coach one question today to connect the plan to your training."
+    return "You have 2 days left to try your AI Coach - ask it one question right now."
+
+
+def _usage_summary_text(usage: dict) -> str:
+    return (
+        f"{int(usage.get('ai_message_count') or 0)} coach messages, "
+        f"{int(usage.get('nutrition_plan_count') or 0)} nutrition plans, "
+        f"{int(usage.get('meal_logged_count') or 0)} meals logged."
+    )
 
 
 async def process_trial_campaign(
@@ -54,43 +165,74 @@ async def process_trial_campaign(
     challenges_collection=None,
     coach_threads_collection=None,
     nutrition_plans_collection=None,
+    nutrition_logs_collection=None,
+    app_content_collection=None,
 ) -> dict[str, int]:
     now = datetime.now(timezone.utc)
-    processed = skipped = 0
-    users = await users_collection.find({"marketing_consent": True, "subscription_started_at": {"$ne": None}}).to_list(length=None)
+    processed = skipped = outcomes_updated = admin_alerts = 0
+    config = await _load_campaign_config(app_content_collection)
+    users = await users_collection.find({
+        "marketing_consent": True,
+        "trial_tier_granted": "gold",
+        "trial_start_at": {"$ne": None},
+    }).to_list(length=None)
     for user in users:
-        if bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"}:
+        started = _trial_started_at(user)
+        if not started:
             skipped += 1
             continue
-        started = user.get("subscription_started_at")
-        if not isinstance(started, datetime):
+
+        current_outcome = str(user.get("trial_outcome") or "").strip()
+        next_outcome = _trial_outcome_for_user(user, now)
+        if next_outcome and next_outcome != current_outcome:
+            await users_collection.update_one(
+                {"_id": user["_id"]},
+                {"$set": {"trial_outcome": next_outcome, "trial_outcome_at": now, "updated_at": now}},
+            )
+            outcomes_updated += 1
+            user["trial_outcome"] = next_outcome
+        if next_outcome in {"converted_gold", "downgraded_silver"}:
+            skipped += 1
             continue
-        if started.tzinfo is None:
-            started = started.replace(tzinfo=timezone.utc)
+
         current_day = int((now - started).total_seconds() // 86400)
         if current_day < 0:
             skipped += 1
             continue
         sent_days = {int(day) for day in (user.get("trial_campaign_sent_days") or []) if str(day).lstrip("-").isdigit()}
-        due_days = sorted(day for day in (set(CAMPAIGN) | set(WINBACK_CAMPAIGN)) if day <= current_day and day not in sent_days)
+        due_days = sorted(day for day in set(CAMPAIGN) if day <= current_day and day not in sent_days)
         if not due_days:
             skipped += 1
             continue
         for day in due_days:
-            if day in CAMPAIGN:
-                title, message_template = CAMPAIGN[day]
-                engagement_message = await _engagement_message(user, coach_threads_collection, nutrition_plans_collection) if day == 3 else ""
-                message = message_template.format(name=str(user.get("name") or "there"), engagement_message=engagement_message)
-                notification_type = f"trial_day_{day}"
-                data = {"route": "/notifications", "trialDay": day, "fallback": "in_app"}
-                if day in {2, 5}:
-                    data.update({"contentType": "video", "videoRoute": "/workoutplan/video-plan", "videoFallback": "Open the workout plan from your notification inbox."})
-                if day == 5:
-                    data["channels"] = ["push", "email", "video"]
-            else:
-                title, message = WINBACK_CAMPAIGN[day]
-                notification_type = f"trial_winback_day_{day}"
-                data = {"route": "/notifications", "trialDay": day, "winback": True, "fallback": "in_app"}
+            message_config = (config.get("messages") or {}).get(day) or {}
+            if message_config and message_config.get("active") is False:
+                continue
+            title, message_template = CAMPAIGN[day]
+            title = str(message_config.get("title") or title)
+            message_template = str(message_config.get("body") or message_template)
+            usage = await _trial_usage_counts(user, started, now, coach_threads_collection, nutrition_plans_collection, nutrition_logs_collection)
+            engagement_message = await _engagement_message(user, started, now, coach_threads_collection, nutrition_plans_collection, nutrition_logs_collection) if day == 3 else ""
+            message = message_template.format(
+                name=str(user.get("name") or "there"),
+                engagement_message=engagement_message,
+                usage_summary=_usage_summary_text(usage),
+                ai_message_count=int(usage.get("ai_message_count") or 0),
+                meal_logged_count=int(usage.get("meal_logged_count") or 0),
+                nutrition_plan_count=int(usage.get("nutrition_plan_count") or 0),
+            )
+            notification_type = f"trial_day_{day}"
+            data = {"route": "/notifications", "trialDay": day, "fallback": "in_app", "usage": usage}
+            if day in {2, 5}:
+                video_url = str(message_config.get("video_url") or "").strip()
+                if video_url:
+                    data.update({"contentType": "video", "videoUrl": video_url, "videoFallback": "Open the workout plan from your notification inbox."})
+                else:
+                    await _notify_admin_fallback(app_content_collection, "Gold trial video missing", f"Day {day} trial video is not configured. Video channel was skipped.", {"trialDay": day})
+                    admin_alerts += 1
+            if day == 5:
+                data["route"] = "/subscription/compare"
+                data["channels"] = ["push", "email"] + (["video"] if data.get("videoUrl") else [])
             # notify_user always writes the in-app inbox first. Only mark the
             # day sent after that succeeds, so a transient failure is retried.
             await notify_user(users_collection, user, title, message, notification_type, data)
@@ -102,6 +244,8 @@ async def process_trial_campaign(
                 await asyncio.to_thread(send_trial_campaign_email, str(user.get("email") or ""), str(user.get("name") or "there"), day, title, message)
             except Exception:
                 logger.exception("trial_campaign_email_failed user_id=%s day=%s", user.get("_id"), day)
+                await _notify_admin_fallback(app_content_collection, "Gold trial email failed", f"Email delivery failed for {user.get('email')} on Day {day}. In-app notification was sent.", {"userId": str(user.get("_id")), "trialDay": day})
+                admin_alerts += 1
             processed += 1
     challenge_reminders = 0
     if challenge_memberships_collection is not None and challenges_collection is not None:
@@ -155,4 +299,4 @@ async def process_trial_campaign(
                 reminder_title = "You still have time today" if time_context == "evening" else "Your challenge task is waiting"
                 await notify_user(users_collection, user, reminder_title, reminder_message, "challenge_reminder", {"type": "challenge", "challengeId": challenge_id, "day": current_day, "timeContext": time_context, "route": f"/challenges/progress/{challenge_id}", "taskContext": task_context})
                 challenge_reminders += 1
-    return {"processed": processed, "skipped": skipped, "challenge_reminders": challenge_reminders}
+    return {"processed": processed, "skipped": skipped, "outcomes_updated": outcomes_updated, "admin_alerts": admin_alerts, "challenge_reminders": challenge_reminders}

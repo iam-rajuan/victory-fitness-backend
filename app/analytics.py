@@ -165,6 +165,30 @@ def _as_utc_datetime(value: Any) -> datetime | None:
     return None
 
 
+def _trial_started_at(user: dict) -> datetime | None:
+    return _as_utc_datetime(user.get("trial_start_at") or user.get("subscription_started_at"))
+
+
+def _trial_end_at(user: dict, started_at: datetime) -> datetime:
+    return _as_utc_datetime(user.get("trial_end_at")) or (started_at + timedelta(days=5))
+
+
+def _trial_user_outcome(user: dict, now: datetime) -> str | None:
+    explicit = str(user.get("trial_outcome") or "").strip()
+    if explicit:
+        return explicit
+    tier = str(user.get("subscription_tier") or "").upper()
+    paid = bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"}
+    if paid and tier in {"GOLD", "PLATINUM", "INNER_CIRCLE"}:
+        return "converted_gold"
+    if paid and tier == "SILVER":
+        return "downgraded_silver"
+    started_at = _trial_started_at(user)
+    if started_at and now >= _trial_end_at(user, started_at):
+        return "lapsed"
+    return None
+
+
 async def _active_user_ids(start: datetime, end: datetime, market: str) -> set[str]:
     user_scope = await _market_user_filter(market)
     sources = (
@@ -320,23 +344,25 @@ async def user_stats(
     # period in which that decision date falls, not the registration period.
     trial_users = await _safe_find(
         users_collection,
-        _and(users_filter, {"subscription_started_at": {"$ne": None}}),
+        _and(users_filter, {"$or": [{"trial_start_at": {"$ne": None}}, {"subscription_started_at": {"$ne": None}}]}),
         projection={
+            "trial_start_at": 1,
+            "trial_end_at": 1,
+            "trial_outcome": 1,
             "subscription_started_at": 1,
             "subscription_is_purchased": 1,
             "subscription_status": 1,
+            "subscription_tier": 1,
         },
     )
     completed_trial = converted_trial = 0
     prev_completed_trial = prev_converted_trial = 0
     for trial_user in trial_users:
-        trial_started = _as_utc_datetime(trial_user.get("subscription_started_at"))
+        trial_started = _trial_started_at(trial_user)
         if not trial_started:
             continue
-        decided_at = trial_started + timedelta(days=5)
-        converted = bool(trial_user.get("subscription_is_purchased")) or str(
-            trial_user.get("subscription_status") or ""
-        ).upper() in {"ACTIVE", "PAID"}
+        decided_at = _trial_end_at(trial_user, trial_started)
+        converted = _trial_user_outcome(trial_user, end) == "converted_gold"
         if start <= decided_at <= end:
             completed_trial += 1
             converted_trial += int(converted)
@@ -900,15 +926,16 @@ async def trial_funnel_widget(
     _: dict = Depends(require_admin_user),
 ) -> TrialFunnelResponse:
     rng, _, _, start, end, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
+    trial_rng, _, _, *_ = _common_filter(preset, from_date, to_date, market, "trial_start_at")
     m_filter = market_filter(market)
     activity_market = await _market_user_filter(market)
 
-    started = await _safe_count(users_collection, {"$and": [m_filter, rng]})
+    started = await _safe_count(users_collection, {"$and": [m_filter, trial_rng, {"trial_tier_granted": "gold"}]})
     opened_msg = await _safe_count(analytics_events_collection, _and(activity_market, rng, {"event_type": "day1_message_opened"}))
     used_coach = await _safe_count(analytics_events_collection, _and(activity_market, rng, {"event_type": "ai_coach_used"}))
     used_nutrition = await _safe_count(nutrition_plan_jobs_collection, _and(activity_market, rng))
     warmup = await _safe_count(analytics_events_collection, _and(activity_market, rng, {"event_type": "day4_warmup_seen"}))
-    converted = await _safe_count(users_collection, {"$and": [m_filter, rng, {"subscription_tier": {"$ne": "NONE"}}]})
+    converted = await _safe_count(users_collection, {"$and": [m_filter, {"trial_outcome": "converted_gold"}, {"trial_outcome_at": {"$gte": start, "$lte": end}}]})
 
     raw = [
         ("Trial Started", started),
@@ -1225,7 +1252,7 @@ async def market_breakdown(
         activity_market = await _market_user_filter(market_name.lower())
         active = len(await _active_user_ids(start, end, market_name.lower()))
         new_users = await _safe_count(users_collection, {"$and": [m_filter, rng_q]})
-        converted = await _safe_count(users_collection, {"$and": [m_filter, rng_q, {"subscription_tier": {"$ne": "NONE"}}]})
+        converted = await _safe_count(users_collection, {"$and": [m_filter, {"trial_outcome": "converted_gold"}, {"trial_outcome_at": {"$gte": start, "$lte": end}}]})
         trial_conversion = safe_ratio(converted, max(new_users, 1))
         revenue_local = 0.0
         if payment_events_collection is not None:

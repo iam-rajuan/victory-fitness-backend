@@ -504,6 +504,22 @@ from .models import (
 
     AdminTrialDropoutResponse,
 
+    GoldTrialConfigResponse,
+
+    GoldTrialConfigUpdateRequest,
+
+    GoldTrialDecisionOption,
+
+    GoldTrialDecisionResponse,
+
+    GoldTrialMessageConfig,
+
+    GoldTrialOutcomeBreakdownResponse,
+
+    GoldTrialStartResponse,
+
+    GoldTrialSummaryResponse,
+
 
     AdminUserManagementOverviewResponse,
 
@@ -7998,6 +8014,8 @@ async def run_trial_campaign(
         challenges_collection,
         coach_victor_threads_collection,
         nutrition_plans_collection,
+        meal_analysis_entries_collection,
+        app_content_collection,
     )
 
 
@@ -20173,8 +20191,137 @@ async def admin_user_management_overview(
 
 
 
+GOLD_TRIAL_CONFIG_KEY = "gold_trial_config"
+GOLD_TRIAL_TIER = "gold"
+GOLD_TRIAL_DURATION_DAYS = 5
+GOLD_TRIAL_OUTCOMES = {"converted_gold", "downgraded_silver", "lapsed"}
+
+
+DEFAULT_GOLD_TRIAL_MESSAGES = [
+    {
+        "day": 0,
+        "title": "Welcome to Victory Gold",
+        "body": "Hi {name}, your Gold trial is active. Ask Coach Victor one question right now to get your first win.",
+        "channels": ["push", "in_app", "email"],
+        "video_url": "",
+        "active": True,
+    },
+    {
+        "day": 1,
+        "title": "Have you set up your meal plan?",
+        "body": "Have you set up your meal plan yet? Takes 2 minutes.",
+        "channels": ["push", "in_app", "email"],
+        "video_url": "",
+        "active": True,
+    },
+    {
+        "day": 2,
+        "title": "See what Gold can do",
+        "body": "Watch your mid-trial Victory Fitness video and choose one Gold feature to try today.",
+        "channels": ["push", "in_app", "email", "video"],
+        "video_url": "",
+        "active": True,
+    },
+    {
+        "day": 3,
+        "title": "Keep your momentum going",
+        "body": "{engagement_message}",
+        "channels": ["push", "in_app", "email"],
+        "video_url": "",
+        "active": True,
+    },
+    {
+        "day": 4,
+        "title": "Your trial ends tomorrow",
+        "body": "Tomorrow your trial ends. Here is what you have used so far: {usage_summary}",
+        "channels": ["push", "in_app"],
+        "video_url": "",
+        "active": True,
+    },
+    {
+        "day": 5,
+        "title": "Your Gold trial is complete",
+        "body": "Your Gold trial has ended. Compare Silver and Gold using what you actually tried, then choose your plan.",
+        "channels": ["push", "in_app", "email", "video"],
+        "video_url": "",
+        "active": True,
+    },
+]
+
+
 def _trial_cohort_key(value: datetime) -> str:
     return _as_utc(value).strftime("%Y-%m")
+
+
+def _trial_datetime(value: object) -> datetime | None:
+    return _as_utc(value) if isinstance(value, datetime) else None
+
+
+def _trial_started_at(user: dict) -> datetime | None:
+    return _trial_datetime(user.get("trial_start_at") or user.get("subscription_started_at"))
+
+
+def _trial_ended_at(user: dict, started_at: datetime | None = None) -> datetime | None:
+    explicit = _trial_datetime(user.get("trial_end_at"))
+    if explicit:
+        return explicit
+    started = started_at or _trial_started_at(user)
+    return started + timedelta(days=GOLD_TRIAL_DURATION_DAYS) if started else None
+
+
+def _trial_is_active(user: dict, now: datetime | None = None) -> bool:
+    if str(user.get("trial_tier_granted") or "").strip().lower() != GOLD_TRIAL_TIER:
+        return False
+    if str(user.get("trial_outcome") or "").strip() in GOLD_TRIAL_OUTCOMES:
+        return False
+    started_at = _trial_started_at(user)
+    ended_at = _trial_ended_at(user, started_at)
+    if not started_at or not ended_at:
+        return False
+    current = now or datetime.now(timezone.utc)
+    return started_at <= current < ended_at
+
+
+def _trial_usage_from_user(user: dict) -> dict[str, Any]:
+    engagement = user.get("trial_engagement") if isinstance(user.get("trial_engagement"), dict) else {}
+    days = sorted({int(day) for day in (engagement.get("days") or []) if str(day).lstrip("-").isdigit()})
+    return {
+        "ai_message_count": max(int(engagement.get("coach_messages") or 0), 0),
+        "nutrition_plan_count": 1 if engagement.get("nutrition_plan_created_at") else 0,
+        "meal_logged_count": max(int(engagement.get("meal_logged_count") or 0), 0),
+        "challenge_count": max(int(engagement.get("challenge_count") or 0), 0),
+        "engaged_days": days,
+    }
+
+
+def _trial_summary(user: dict, now: datetime | None = None) -> dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    started_at = _trial_started_at(user)
+    ended_at = _trial_ended_at(user, started_at)
+    days_remaining = 0
+    if ended_at and current < ended_at:
+        days_remaining = max(int(((ended_at - current).total_seconds() + 86399) // 86400), 0)
+    return {
+        "tier_granted": str(user.get("trial_tier_granted") or "").strip() or None,
+        "start_at": started_at,
+        "end_at": ended_at,
+        "outcome": str(user.get("trial_outcome") or "").strip() or None,
+        "active": _trial_is_active(user, current),
+        "days_remaining": days_remaining,
+        "campaign_days_sent": sorted({int(day) for day in (user.get("trial_campaign_sent_days") or []) if str(day).lstrip("-").isdigit()}),
+        "usage": _trial_usage_from_user(user),
+    }
+
+
+def _trial_outcome_for_subscription(tier: str, is_purchased: bool) -> str | None:
+    normalized = _normalize_subscription_tier(tier)
+    if not is_purchased or normalized == "NONE":
+        return None
+    if normalized == "SILVER":
+        return "downgraded_silver"
+    if normalized in {"GOLD", "PLATINUM", "INNER_CIRCLE"}:
+        return "converted_gold"
+    return None
 
 
 async def _record_trial_engagement(user: dict, kind: str) -> None:
@@ -20194,19 +20341,219 @@ async def _record_trial_engagement(user: dict, kind: str) -> None:
     await users_collection.update_one({"_id": user["_id"]}, update)
 
 
+async def _get_gold_trial_config_record() -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    record = await app_content_collection.find_one({"key": GOLD_TRIAL_CONFIG_KEY})
+    if not record:
+        record = {
+            "key": GOLD_TRIAL_CONFIG_KEY,
+            "tierLabel": "Try Gold free for 5 days",
+            "trialTierGranted": GOLD_TRIAL_TIER,
+            "durationDays": GOLD_TRIAL_DURATION_DAYS,
+            "messages": DEFAULT_GOLD_TRIAL_MESSAGES,
+            "fallbackRule": "skip_to_next_channel_and_notify_admin",
+            "created_at": now,
+            "updated_at": now,
+        }
+        await app_content_collection.update_one({"key": GOLD_TRIAL_CONFIG_KEY}, {"$setOnInsert": record}, upsert=True)
+    return record
+
+
+def _serialize_gold_trial_config(record: dict[str, Any]) -> dict[str, Any]:
+    messages = []
+    raw_messages = record.get("messages") if isinstance(record.get("messages"), list) else DEFAULT_GOLD_TRIAL_MESSAGES
+    by_day: dict[int, dict[str, Any]] = {}
+    for item in raw_messages:
+        if not isinstance(item, dict):
+            continue
+        try:
+            day = int(item.get("day"))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= day <= 5:
+            by_day[day] = item
+    for default in DEFAULT_GOLD_TRIAL_MESSAGES:
+        day = int(default["day"])
+        item = {**default, **by_day.get(day, {})}
+        messages.append({
+            "day": day,
+            "title": str(item.get("title") or default["title"]).strip(),
+            "body": str(item.get("body") or default["body"]).strip(),
+            "channels": [str(channel).strip() for channel in (item.get("channels") or default["channels"]) if str(channel).strip()],
+            "video_url": str(item.get("video_url") or "").strip(),
+            "active": bool(item.get("active", True)),
+        })
+    return {
+        "tierLabel": str(record.get("tierLabel") or "Try Gold free for 5 days"),
+        "trialTierGranted": GOLD_TRIAL_TIER,
+        "durationDays": GOLD_TRIAL_DURATION_DAYS,
+        "messages": messages,
+        "fallbackRule": "skip_to_next_channel_and_notify_admin",
+        "updatedAt": record.get("updated_at"),
+    }
+
+
+async def _gold_trial_decision_options(user: dict) -> list[GoldTrialDecisionOption]:
+    usage = _trial_usage_from_user(user)
+    plan_items = await _get_dashboard_subscription_plan_items()
+    prices: dict[str, int | None] = {"SILVER": 199, "GOLD": None}
+    for item in plan_items:
+        tier = _normalize_subscription_plan_tier_key(item.get("tier"))
+        if tier in prices:
+            serialized = _serialize_app_subscription_plan_item(item)
+            prices[tier] = serialized.get("discountedPriceYearly") or serialized.get("priceYearly") or prices[tier]
+    return [
+        GoldTrialDecisionOption(
+            tier="SILVER",
+            label="Silver",
+            priceYearly=prices["SILVER"],
+            includes=["Workouts", "Challenges", "Silver Community"],
+            missing=["AI Coach", "Nutrition Planner", "AI meal-plan generation"],
+            demonstratedUsage=usage,
+        ),
+        GoldTrialDecisionOption(
+            tier="GOLD",
+            label="Gold",
+            priceYearly=prices["GOLD"],
+            includes=["AI Coach", "Nutrition Planner", "AI meal-plan generation", "Workouts", "Challenges", "Silver Community"],
+            missing=[],
+            demonstratedUsage=usage,
+        ),
+    ]
+
+
+@app.get("/me/trial/status", response_model=GoldTrialSummaryResponse)
+async def get_me_gold_trial_status(user: dict = Depends(_require_access_user)) -> GoldTrialSummaryResponse:
+    return GoldTrialSummaryResponse(**_trial_summary(user))
+
+
+@app.post("/me/trial/gold/start", response_model=GoldTrialStartResponse)
+async def start_me_gold_trial(user: dict = Depends(_require_access_user)) -> GoldTrialStartResponse:
+    tier = _normalize_subscription_tier(user.get("subscription_tier"))
+    if tier != "NONE":
+        raise HTTPException(status_code=409, detail="Users who already selected a tier are not eligible for the undecided Gold trial")
+    existing_started = _trial_started_at(user)
+    if existing_started:
+        return GoldTrialStartResponse(trial=GoldTrialSummaryResponse(**_trial_summary(user)))
+
+    now = datetime.now(timezone.utc)
+    end_at = now + timedelta(days=GOLD_TRIAL_DURATION_DAYS)
+    update_doc = {
+        "trial_tier_granted": GOLD_TRIAL_TIER,
+        "trial_start_at": now,
+        "trial_end_at": end_at,
+        "trial_outcome": None,
+        "trial_outcome_at": None,
+        "trial_campaign_sent_days": [0],
+        "trial_engagement": {"days": [0], "coach_messages": 0},
+        "updated_at": now,
+    }
+    await users_collection.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    updated_user = await users_collection.find_one({"_id": user["_id"]})
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+    await notify_user(
+        users_collection,
+        updated_user,
+        "Welcome to Victory Gold",
+        f"Hi {updated_user.get('name') or 'there'}, your Gold trial is active. Ask Coach Victor one question right now to get your first win.",
+        "trial_day_0",
+        {"route": "/ai-coach", "trialDay": 0, "tier": "gold"},
+    )
+    await _record_analytics_event("gold_trial_started", user_id=str(user["_id"]), market=str(user.get("country_code") or "") or None)
+    return GoldTrialStartResponse(trial=GoldTrialSummaryResponse(**_trial_summary(updated_user)))
+
+
+@app.get("/me/trial/decision", response_model=GoldTrialDecisionResponse)
+async def get_me_gold_trial_decision(user: dict = Depends(_require_access_user)) -> GoldTrialDecisionResponse:
+    trial = GoldTrialSummaryResponse(**_trial_summary(user))
+    if not trial.start_at:
+        raise HTTPException(status_code=404, detail="Gold trial has not started")
+    return GoldTrialDecisionResponse(
+        trial=trial,
+        usage=trial.usage,
+        options=await _gold_trial_decision_options(user),
+    )
+
+
+@app.get("/admin/trials/config", response_model=GoldTrialConfigResponse)
+async def admin_get_gold_trial_config(_: dict = Depends(_require_admin_user)) -> GoldTrialConfigResponse:
+    record = await _get_gold_trial_config_record()
+    return GoldTrialConfigResponse(**_serialize_gold_trial_config(record))
+
+
+@app.patch("/admin/trials/config", response_model=GoldTrialConfigResponse)
+async def admin_update_gold_trial_config(
+    payload: GoldTrialConfigUpdateRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> GoldTrialConfigResponse:
+    current = _serialize_gold_trial_config(await _get_gold_trial_config_record())
+    next_record = {
+        "tierLabel": payload.tierLabel.strip() if payload.tierLabel is not None else current["tierLabel"],
+        "messages": [item.model_dump() for item in payload.messages] if payload.messages is not None else current["messages"],
+        "trialTierGranted": GOLD_TRIAL_TIER,
+        "durationDays": GOLD_TRIAL_DURATION_DAYS,
+        "fallbackRule": "skip_to_next_channel_and_notify_admin",
+        "updated_at": datetime.now(timezone.utc),
+    }
+    await app_content_collection.update_one(
+        {"key": GOLD_TRIAL_CONFIG_KEY},
+        {"$set": next_record, "$setOnInsert": {"key": GOLD_TRIAL_CONFIG_KEY, "created_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    await _record_admin_audit(admin_user, "gold_trial_config_updated", "gold_trial_config", GOLD_TRIAL_CONFIG_KEY)
+    updated = await _get_gold_trial_config_record()
+    return GoldTrialConfigResponse(**_serialize_gold_trial_config(updated))
+
+
+@app.get("/admin/trials/outcomes", response_model=GoldTrialOutcomeBreakdownResponse)
+async def admin_gold_trial_outcomes(_: dict = Depends(_require_admin_user)) -> GoldTrialOutcomeBreakdownResponse:
+    now = datetime.now(timezone.utc)
+    users = await users_collection.find({"is_admin": {"$ne": True}, "trial_tier_granted": GOLD_TRIAL_TIER}).to_list(length=None)
+    total = active = converted = downgraded = lapsed = pending = 0
+    for user in users:
+        total += 1
+        summary = _trial_summary(user, now)
+        outcome = summary["outcome"]
+        if summary["active"]:
+            active += 1
+        if outcome == "converted_gold":
+            converted += 1
+        elif outcome == "downgraded_silver":
+            downgraded += 1
+        elif outcome == "lapsed":
+            lapsed += 1
+        else:
+            pending += 1
+    decided = converted + downgraded + lapsed
+    return GoldTrialOutcomeBreakdownResponse(
+        totalTrials=total,
+        activeTrials=active,
+        convertedGold=converted,
+        downgradedSilver=downgraded,
+        lapsed=lapsed,
+        pendingDecision=pending,
+        conversionRate=round((converted / decided) * 100, 2) if decided else 0,
+        downgradeRate=round((downgraded / decided) * 100, 2) if decided else 0,
+        lapsedRate=round((lapsed / decided) * 100, 2) if decided else 0,
+    )
+
+
 def _trial_user_converted(user: dict) -> bool:
-    return bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"}
-
-
-def _trial_started_at(user: dict) -> datetime | None:
-    value = user.get("subscription_started_at")
-    return _as_utc(value) if isinstance(value, datetime) else None
+    tier = _normalize_subscription_tier(user.get("subscription_tier"))
+    return tier != "NONE" and (bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"})
 
 
 @app.get("/admin/trials/cohorts", response_model=AdminTrialCohortResponse)
 async def admin_trial_cohorts(_: dict = Depends(_require_admin_user)) -> AdminTrialCohortResponse:
     now = datetime.now(timezone.utc)
-    users = await users_collection.find({"is_admin": {"$ne": True}, "subscription_started_at": {"$ne": None}}).to_list(length=None)
+    users = await users_collection.find({
+        "is_admin": {"$ne": True},
+        "$or": [
+            {"trial_start_at": {"$ne": None}},
+            {"subscription_started_at": {"$ne": None}},
+        ],
+    }).to_list(length=None)
     grouped: dict[tuple[str, str], dict] = {}
     for user in users:
         started_at = _trial_started_at(user)
@@ -20247,8 +20594,11 @@ async def admin_trial_dropouts(
     records = await users_collection.find({
         "is_admin": {"$ne": True},
         "marketing_consent": True,
-        "subscription_started_at": {"$ne": None},
-    }, sort=[("subscription_started_at", -1)]).to_list(length=min(max(limit, 1), 500))
+        "$or": [
+            {"trial_start_at": {"$ne": None}},
+            {"subscription_started_at": {"$ne": None}},
+        ],
+    }, sort=[("trial_start_at", -1)]).to_list(length=min(max(limit, 1), 500))
     dropouts = []
     for user in records:
         started_at = _trial_started_at(user)
@@ -32265,7 +32615,7 @@ async def _consume_returning_user_recognition(user: dict) -> dict | None:
     if not bool(user.get("marketing_consent")):
         return None
 
-    started_at = _trial_datetime(user.get("subscription_started_at"))
+    started_at = _trial_started_at(user)
     if not started_at:
         return None
 
@@ -32867,6 +33217,12 @@ def _user_has_subscription_access(user: dict, feature: str) -> bool:
 
         return True
 
+    if _trial_is_active(user) and feature in _resolve_subscription_access("GOLD"):
+
+
+
+        return True
+
 
 
     return feature in _resolve_subscription_access(
@@ -33193,6 +33549,18 @@ def _build_subscription_summary(record: dict) -> dict:
 
 
 
+    access = subscription.get("access") if isinstance(subscription.get("access"), list) and subscription.get("access") else _resolve_subscription_access(tier)
+
+
+
+    if _trial_is_active(record):
+
+
+
+        access = sorted(set(access) | set(_resolve_subscription_access("GOLD")))
+
+
+
     return {
 
 
@@ -33237,7 +33605,7 @@ def _build_subscription_summary(record: dict) -> dict:
 
 
 
-        "access": subscription.get("access") if isinstance(subscription.get("access"), list) and subscription.get("access") else _resolve_subscription_access(tier),
+        "access": access,
 
 
 
@@ -33595,11 +33963,10 @@ async def _build_subscription_update_doc(existing_user: dict, payload: UpdateSub
 
         update_doc["subscription_confirmed_at"] = now if subscription_status == "ACTIVE" else existing_user.get("subscription_confirmed_at")
 
-
-
-
-
-
+    trial_outcome = _trial_outcome_for_subscription(tier, is_purchased)
+    if trial_outcome and _trial_started_at(existing_user):
+        update_doc["trial_outcome"] = trial_outcome
+        update_doc["trial_outcome_at"] = now
 
     return update_doc
 
@@ -33733,6 +34100,11 @@ async def _serialize_me_record(record: dict) -> dict:
 
 
         "subscription": subscription_summary,
+        "trial_tier_granted": _trial_summary(record)["tier_granted"],
+        "trial_start_at": _trial_summary(record)["start_at"],
+        "trial_end_at": _trial_summary(record)["end_at"],
+        "trial_outcome": _trial_summary(record)["outcome"],
+        "gold_trial": _trial_summary(record),
         "marketing_consent": bool(record.get("marketing_consent")),
 
 
