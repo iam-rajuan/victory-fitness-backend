@@ -115,7 +115,8 @@ Important environment variables:
 | `JWT_ALGORITHM` | No | JWT signing algorithm. Defaults to `HS256`. |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | No | Access token lifetime. Defaults to `10`. |
 | `SESSION_TOKEN_EXPIRE_DAYS` | No | Session token lifetime. Defaults to `30`. |
-| `CORS_ORIGINS` or `CORS_ORIGIN` | Yes | Comma-separated frontend origins allowed to call the API. |
+| `CORS_ORIGINS` or `CORS_ORIGIN` | Yes | Comma-separated frontend origins allowed to call the API. Exact origins are allowed directly, and trusted `*.vercel.app` preview domains are also allowed for the Victory Fitness frontend projects by default. |
+| `CORS_ORIGIN_REGEX` | No | Optional regex override for custom origin matching rules. |
 | `CORS_ALLOW_ALL` | No | Allows all origins when set to `true`; avoid in production. |
 | `COOKIE_SECURE` | Yes | Use `false` locally and `true` in HTTPS production. |
 | `COOKIE_SAMESITE` | Yes | Use `lax` locally. Use `none` for cross-site HTTPS cookies in production. |
@@ -233,6 +234,8 @@ COOKIE_SAMESITE=none
 CORS_ORIGINS=https://your-app-domain.com,https://your-dashboard-domain.com
 ```
 
+The backend also accepts Vercel preview deployments such as `https://victory-fitness-dashboard-delta.vercel.app` by default, as long as the hostname starts with one of the approved Victory Fitness project prefixes.
+
 The Vercel configuration also defines scheduled jobs:
 
 - `POST /jobs/trial-campaign` every hour
@@ -242,7 +245,7 @@ The Vercel configuration also defines scheduled jobs:
 
 If the server cannot connect to MongoDB, verify `MONGODB_URI`, `MONGODB_DB`, Atlas network access, and database user permissions.
 
-If browser requests fail because of CORS, add the frontend URL to `CORS_ORIGINS` and restart the backend.
+If browser requests fail because of CORS, add the frontend URL to `CORS_ORIGINS` or set `CORS_ORIGIN_REGEX` for your deployment pattern, then restart or redeploy the backend.
 
 If login works locally but cookies do not persist in production, verify `COOKIE_SECURE=true`, `COOKIE_SAMESITE=none`, HTTPS, and the frontend API base URL.
 
