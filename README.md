@@ -71,6 +71,12 @@ The version check should print `Python 3.12.x`. Do not use Python 3.14 for this 
 Install the Python dependencies:
 
 ```powershell
+uv sync
+```
+
+If you are not using `uv`, install the same dependencies with pip:
+
+```powershell
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```

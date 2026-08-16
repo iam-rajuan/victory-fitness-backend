@@ -4,6 +4,43 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+
+def _verification_code_matches(payload_code: str, user: dict) -> bool:
+    now = datetime.now(timezone.utc)
+    for hash_field, expiry_field in (
+        ("verification_code_hash", "verification_code_expires_at"),
+        ("previous_verification_code_hash", "previous_verification_code_expires_at"),
+    ):
+        expires_at = user.get(expiry_field)
+        code_hash = str(user.get(hash_field) or "").strip()
+        if not expires_at or not code_hash or _as_utc(expires_at) < now:
+            continue
+        if verify_password(payload_code, code_hash):
+            return True
+    return False
+
+
+def _remember_previous_verification_code(existing_user: dict | None, now: datetime) -> tuple[dict, dict]:
+    if not existing_user or existing_user.get("is_verified"):
+        return {}, {
+            "previous_verification_code_hash": "",
+            "previous_verification_code_expires_at": "",
+        }
+
+    current_hash = str(existing_user.get("verification_code_hash") or "").strip()
+    current_expires_at = existing_user.get("verification_code_expires_at")
+    if current_hash and current_expires_at and _as_utc(current_expires_at) >= now:
+        return {
+            "previous_verification_code_hash": current_hash,
+            "previous_verification_code_expires_at": current_expires_at,
+        }, {}
+
+    return {}, {
+        "previous_verification_code_hash": "",
+        "previous_verification_code_expires_at": "",
+    }
+
+
 @router.post("/auth/register", status_code=status.HTTP_202_ACCEPTED)
 
 async def register(payload: RegisterRequest) -> dict[str, str]:
@@ -25,6 +62,7 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
     mobile = payload.mobile.strip()
 
     now = datetime.now(timezone.utc)
+    previous_code_set, previous_code_unset = _remember_previous_verification_code(existing_user, now)
 
     update_doc = {
 
@@ -73,6 +111,9 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
         "$setOnInsert": {"created_at": now},
 
     }
+    update_doc["$set"].update(previous_code_set)
+    if previous_code_unset:
+        update_doc["$unset"] = previous_code_unset
 
     await users_collection.update_one({"email": email}, update_doc, upsert=True)
 
@@ -100,13 +141,20 @@ async def resend_verification(payload: ResendVerificationRequest) -> dict[str, s
 
     code = create_verification_code()
     now = datetime.now(timezone.utc)
+    previous_code_set, previous_code_unset = _remember_previous_verification_code(user, now)
+    set_doc = {
+        "verification_code_hash": hash_password(code),
+        "verification_code_expires_at": now + timedelta(minutes=10),
+        "updated_at": now,
+    }
+    set_doc.update(previous_code_set)
+    update_doc = {"$set": set_doc}
+    if previous_code_unset:
+        update_doc["$unset"] = previous_code_unset
+
     await users_collection.update_one(
         {"_id": user["_id"]},
-        {"$set": {
-            "verification_code_hash": hash_password(code),
-            "verification_code_expires_at": now + timedelta(minutes=10),
-            "updated_at": now,
-        }},
+        update_doc,
     )
 
     try:
@@ -141,8 +189,7 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
 
         raise HTTPException(status_code=400, detail="Verification code expired")
 
-    code_hash = str(user.get("verification_code_hash") or "").strip()
-    if not code_hash or not verify_password(payload.code, code_hash):
+    if not _verification_code_matches(payload.code, user):
 
         raise HTTPException(status_code=400, detail="Invalid verification code")
 
@@ -154,7 +201,12 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
 
             "$set": {"is_verified": True, "updated_at": datetime.now(timezone.utc)},
 
-            "$unset": {"verification_code_hash": "", "verification_code_expires_at": ""},
+            "$unset": {
+                "verification_code_hash": "",
+                "verification_code_expires_at": "",
+                "previous_verification_code_hash": "",
+                "previous_verification_code_expires_at": "",
+            },
 
         },
 
