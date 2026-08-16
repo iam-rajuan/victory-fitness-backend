@@ -136,6 +136,17 @@ class Settings:
         self.anthropic_api_key = _get_secret("ANTHROPIC_API_KEY")
         self.anthropic_model = _get_str("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
         self.vimeo_access_token = _get_secret("VIMEO_ACCESS_TOKEN")
+        self.stripe_secret_key = _get_secret("STRIPE_SECRET_KEY")
+        self.stripe_webhook_secret = _get_secret("STRIPE_WEBHOOK_SECRET")
+        self.stripe_currency = _get_str("STRIPE_CURRENCY", "eur").lower()
+        self.stripe_checkout_success_url = _get_str(
+            "STRIPE_CHECKOUT_SUCCESS_URL",
+            "http://localhost:8081/plan?checkout=success",
+        )
+        self.stripe_checkout_cancel_url = _get_str(
+            "STRIPE_CHECKOUT_CANCEL_URL",
+            "http://localhost:8081/plan?checkout=cancelled",
+        )
 
         self.coach_recent_message_limit = _get_int("COACH_RECENT_MESSAGE_LIMIT", 40)
         self.coach_archive_batch_size = _get_int("COACH_ARCHIVE_BATCH_SIZE", 20)

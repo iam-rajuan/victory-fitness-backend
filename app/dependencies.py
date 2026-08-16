@@ -133,6 +133,12 @@ def user_has_active_gold_trial(user: dict, now: datetime | None = None) -> bool:
 def user_has_subscription_access(user: dict, feature: str) -> bool:
     if bool(user.get("is_admin")):
         return True
+    configured_access = user.get("subscription_access")
+    subscription = user.get("subscription") if isinstance(user.get("subscription"), dict) else {}
+    if not configured_access and isinstance(subscription.get("access"), list):
+        configured_access = subscription.get("access")
+    if isinstance(configured_access, list) and configured_access:
+        return feature in {str(item).strip() for item in configured_access if str(item).strip()}
     if user_has_active_gold_trial(user) and feature in resolve_subscription_access("GOLD"):
         return True
     tier = user.get("subscription_tier") or user.get("subscription_role") or user.get("tier")

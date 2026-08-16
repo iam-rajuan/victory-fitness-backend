@@ -312,6 +312,11 @@ async def ensure_indexes() -> None:
     await payment_events_collection.create_index([("user_id", 1), ("created_at", -1)])
     await payment_events_collection.create_index([("status", 1), ("type", 1), ("created_at", -1)])
     await payment_events_collection.create_index([("market", 1), ("created_at", -1)])
+    await payment_events_collection.create_index(
+        [("stripe_event_id", 1)],
+        unique=True,
+        partialFilterExpression={"stripe_event_id": {"$type": "string"}},
+    )
     await completion_cards_collection.create_index([("shared_to_whatsapp", 1), ("created_at", -1)])
     await completion_cards_collection.create_index([("user_id", 1), ("created_at", -1)])
     await accountability_pairs_collection.create_index([("status", 1), ("created_at", -1)])

@@ -230,6 +230,23 @@ class UpdateSubscriptionRequest(BaseModel):
     plan_id: str | None = Field(default=None, max_length=120)
 
 
+class StripeCheckoutSessionRequest(BaseModel):
+    subscription_tier: str = Field(pattern=r"^(SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+    billing_cycle: str = Field(default="yearly", pattern=r"^(monthly|yearly)$")
+    plan_id: str | None = Field(default=None, max_length=120)
+    success_url: str | None = Field(default=None, max_length=1000)
+    cancel_url: str | None = Field(default=None, max_length=1000)
+
+
+class StripeCheckoutSessionResponse(BaseModel):
+    checkout_url: str
+    session_id: str
+
+
+class StripeWebhookResponse(BaseModel):
+    received: bool = True
+
+
 class ProfileImageUploadRequest(BaseModel):
     image_base64: str = Field(min_length=32, max_length=20000000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
@@ -1287,6 +1304,7 @@ class AdminSubscriptionPlanItem(BaseModel):
     isMostPopular: bool = False
     iconType: str = ""
     features: list[str] = Field(default_factory=list)
+    featureAccess: list[str] = Field(default_factory=list)
 
 
 class AdminSubscriptionPlanListResponse(BaseModel):
@@ -1305,6 +1323,7 @@ class AdminSubscriptionPlanRequest(BaseModel):
     isMostPopular: bool = False
     iconType: str = Field(default="", max_length=80)
     features: list[str] = Field(default_factory=list)
+    featureAccess: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_discount_window(self):
@@ -1333,6 +1352,7 @@ class AppSubscriptionPlanItem(BaseModel):
     isMostPopular: bool = False
     iconType: str = ""
     features: list[str] = Field(default_factory=list)
+    featureAccess: list[str] = Field(default_factory=list)
 
 
 class AppSubscriptionPlanListResponse(BaseModel):

@@ -6437,6 +6437,32 @@ def _normalize_subscription_plan_tier_key(value: object) -> str:
 
     return normalized
 
+def _normalize_plan_feature_access(item: dict) -> list[str]:
+
+    tier = _normalize_subscription_plan_tier_key(item.get("tier"))
+
+    features = item.get("featureAccess") or item.get("feature_access")
+
+    if not isinstance(features, list) or not features:
+
+        return _resolve_subscription_access(tier)
+
+    normalized = []
+
+    seen = set()
+
+    for feature in features:
+
+        value = str(feature).strip()
+
+        if value and value not in seen:
+
+            normalized.append(value)
+
+            seen.add(value)
+
+    return normalized
+
 def _serialize_admin_subscription_plan_item(item: dict) -> dict:
 
     discount_percentage, discount_start_date, discount_end_date = _normalize_subscription_discount_fields(item)
@@ -6474,6 +6500,8 @@ def _serialize_admin_subscription_plan_item(item: dict) -> dict:
             if str(feature).strip()
 
         ],
+
+        "featureAccess": _normalize_plan_feature_access(item),
 
     }
 
@@ -6530,6 +6558,8 @@ def _serialize_app_subscription_plan_item(item: dict, now: datetime | None = Non
         "iconType": normalized["iconType"],
 
         "features": normalized["features"],
+
+        "featureAccess": normalized["featureAccess"],
 
     }
 
@@ -8266,9 +8296,9 @@ def _normalize_subscription_status(value: object, tier: str) -> str:
 
     status = str(value or "").strip().upper().replace(" ", "_")
 
-    if status in {"ACTIVE", "PENDING_PAYMENT", "CANCELLED"}:
+    if status in {"ACTIVE", "PENDING_PAYMENT", "CANCELLED", "CANCELED"}:
 
-        return status
+        return "CANCELLED" if status == "CANCELED" else status
 
     return "ACTIVE" if tier != "NONE" else "NONE"
 
@@ -8289,6 +8319,18 @@ def _user_has_subscription_access(user: dict, feature: str) -> bool:
     if bool(user.get("is_admin")):
 
         return True
+
+    configured_access = user.get("subscription_access")
+
+    subscription = user.get("subscription") if isinstance(user.get("subscription"), dict) else {}
+
+    if not configured_access and isinstance(subscription.get("access"), list):
+
+        configured_access = subscription.get("access")
+
+    if isinstance(configured_access, list) and configured_access:
+
+        return feature in {str(item).strip() for item in configured_access if str(item).strip()}
 
     if _trial_is_active(user) and feature in _resolve_subscription_access("GOLD"):
 
@@ -8426,7 +8468,19 @@ def _build_subscription_summary(record: dict) -> dict:
 
     ).strip()
 
-    access = subscription.get("access") if isinstance(subscription.get("access"), list) and subscription.get("access") else _resolve_subscription_access(tier)
+    record_access = record.get("subscription_access")
+
+    if isinstance(record_access, list) and record_access:
+
+        access = [str(item).strip() for item in record_access if str(item).strip()]
+
+    elif isinstance(subscription.get("access"), list) and subscription.get("access"):
+
+        access = [str(item).strip() for item in subscription.get("access") if str(item).strip()]
+
+    else:
+
+        access = _resolve_subscription_access(tier)
 
     if _trial_is_active(record):
 
@@ -8526,6 +8580,8 @@ async def _resolve_subscription_checkout_plan(
 
             "title": plan["title"],
 
+            "feature_access": plan["featureAccess"],
+
         }
 
     original_price = plan["priceMonthly"] if billing_cycle == "monthly" else plan["priceYearly"]
@@ -8546,6 +8602,8 @@ async def _resolve_subscription_checkout_plan(
 
         "title": plan["title"],
 
+        "feature_access": plan["featureAccess"],
+
     }
 
 async def _build_subscription_update_doc(existing_user: dict, payload: UpdateSubscriptionRequest, now: datetime) -> dict:
@@ -8559,6 +8617,8 @@ async def _build_subscription_update_doc(existing_user: dict, payload: UpdateSub
     is_purchased = bool(payload.confirm_payment and tier != "NONE")
 
     checkout_plan = await _resolve_subscription_checkout_plan(tier, billing_cycle, payload.plan_id) if tier != "NONE" else None
+
+    feature_access = checkout_plan["feature_access"] if checkout_plan and is_purchased else []
 
     update_doc: dict = {
 
@@ -8581,6 +8641,26 @@ async def _build_subscription_update_doc(existing_user: dict, payload: UpdateSub
         "subscription_original_price_amount": checkout_plan["original_price"] if checkout_plan and is_purchased else None,
 
         "subscription_discount_percentage": checkout_plan["discount_percentage"] if checkout_plan and is_purchased else None,
+
+        "subscription_access": feature_access,
+
+        "subscription": {
+
+            "tier": tier,
+
+            "role": tier,
+
+            "status": subscription_status,
+
+            "billing_cycle": billing_cycle,
+
+            "is_purchased": is_purchased,
+
+            "purchase_source": "manual_confirm" if is_purchased else "",
+
+            "access": feature_access,
+
+        },
 
         "updated_at": now,
 
@@ -8608,11 +8688,35 @@ async def _build_subscription_update_doc(existing_user: dict, payload: UpdateSub
 
         update_doc["subscription_discount_percentage"] = None
 
+        update_doc["subscription_access"] = []
+
+        update_doc["subscription"] = {
+
+            "tier": "NONE",
+
+            "role": "NONE",
+
+            "status": "NONE",
+
+            "billing_cycle": "yearly",
+
+            "is_purchased": False,
+
+            "purchase_source": "",
+
+            "access": [],
+
+        }
+
     else:
 
         update_doc["subscription_started_at"] = existing_user.get("subscription_started_at") or now
 
         update_doc["subscription_confirmed_at"] = now if subscription_status == "ACTIVE" else existing_user.get("subscription_confirmed_at")
+
+        update_doc["subscription"]["started_at"] = update_doc["subscription_started_at"]
+
+        update_doc["subscription"]["confirmed_at"] = update_doc["subscription_confirmed_at"]
 
     trial_outcome = _trial_outcome_for_subscription(tier, is_purchased)
     if trial_outcome and _trial_started_at(existing_user):

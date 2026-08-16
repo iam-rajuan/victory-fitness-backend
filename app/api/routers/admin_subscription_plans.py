@@ -78,6 +78,17 @@ async def admin_update_subscription_plan(
 
     await _replace_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, items)
 
+    await users_collection.update_many(
+        {"subscription_plan_id": plan_id, "subscription_status": "ACTIVE"},
+        {
+            "$set": {
+                "subscription_access": updated_plan["featureAccess"],
+                "subscription.access": updated_plan["featureAccess"],
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+    )
+
     return AdminSubscriptionPlanItem(**updated_plan)
 
 @router.delete("/admin/subscription-plans/{plan_id}")

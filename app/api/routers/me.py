@@ -205,6 +205,10 @@ async def update_subscription(
 
 ) -> MeResponse:
 
+    if _normalize_subscription_tier(payload.subscription_tier) != "NONE":
+
+        raise HTTPException(status_code=400, detail="Use Stripe Checkout to start or change a paid subscription")
+
     now = datetime.now(timezone.utc)
 
     update_doc = await _build_subscription_update_doc(user, payload, now)
