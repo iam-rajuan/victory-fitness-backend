@@ -1,0 +1,90 @@
+from fastapi import APIRouter
+
+from ...core.legacy import *
+
+router = APIRouter()
+
+@router.get("/admin/notifications", response_model=AdminNotificationListResponse)
+
+async def admin_list_notifications(
+
+    _: dict = Depends(_require_admin_user),
+
+) -> AdminNotificationListResponse:
+
+    items = [_serialize_admin_notification_item(item) for item in await _get_dashboard_notification_items()]
+
+    items.sort(key=lambda item: item["createdAt"], reverse=True)
+
+    return AdminNotificationListResponse(items=[AdminNotificationItem(**item) for item in items])
+
+@router.post("/admin/notifications/test")
+async def admin_send_test_notification(
+    payload: AdminTestNotificationRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> dict[str, object]:
+    email = payload.email.strip().lower()
+    user = await users_collection.find_one({"email": email, "is_admin": {"$ne": True}})
+    if not user:
+        raise HTTPException(status_code=404, detail="App user not found for that email")
+    tokens = [item for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("token") or "").strip()]
+    delivery = await notify_user(
+        users_collection,
+        user,
+        "Victory Fitness test notification",
+        "Push notifications are connected successfully.",
+        "test_notification",
+        {"type": "test_notification", "route": "/notifications"},
+    )
+    return {"status": delivery.get("status", "sent"), "email": email, "registeredDevices": len(tokens), "delivery": delivery}
+
+@router.patch("/admin/notifications/{notification_id}", response_model=AdminNotificationItem)
+async def admin_update_notification(
+
+    notification_id: str,
+
+    payload: AdminNotificationUpdateRequest,
+
+    _: dict = Depends(_require_admin_user),
+
+) -> AdminNotificationItem:
+
+    items = [_serialize_admin_notification_item(item) for item in await _get_dashboard_notification_items()]
+
+    updated_item: dict | None = None
+
+    for item in items:
+
+        if item["id"] == notification_id:
+
+            item["read"] = payload.read
+
+            updated_item = item
+
+            break
+
+    if not updated_item:
+
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    await _replace_items_record(DASHBOARD_NOTIFICATIONS_KEY, items)
+
+    return AdminNotificationItem(**updated_item)
+
+@router.patch("/admin/notifications/actions/read-all", response_model=AdminNotificationListResponse)
+
+async def admin_mark_all_notifications_read(
+
+    _: dict = Depends(_require_admin_user),
+
+) -> AdminNotificationListResponse:
+
+    items = [_serialize_admin_notification_item(item) for item in await _get_dashboard_notification_items()]
+
+    for item in items:
+
+        item["read"] = True
+
+    await _replace_items_record(DASHBOARD_NOTIFICATIONS_KEY, items)
+
+    return AdminNotificationListResponse(items=[AdminNotificationItem(**item) for item in items])

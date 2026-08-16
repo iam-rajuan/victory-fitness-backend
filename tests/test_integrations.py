@@ -400,6 +400,8 @@ class CommunityPostDeletePermissionTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(backend_module.app.router)
         app.dependency_overrides[backend_module._require_community_access_user] = lambda: user
+        if user.get("is_admin"):
+            app.dependency_overrides[backend_module._require_admin_user] = lambda: user
         return TestClient(app)
 
     def test_community_post_delete_is_owner_only(self) -> None:
