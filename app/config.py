@@ -70,12 +70,7 @@ DEFAULT_CORS_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:8081",
 ]
-DEFAULT_CORS_ORIGIN_REGEX = (
-    r"^https://"
-    r"(victory-fitness-dashboard|victory-fitness-app|victora-web-app|victory-fitness-backend)"
-    r"(?:-[a-z0-9-]+)*"
-    r"\.vercel\.app$"
-)
+DEFAULT_CORS_ORIGIN_REGEX = r"^https?://.+$"
 
 
 def _get_cors_origins() -> tuple[str, bool, list[str], str | None]:
