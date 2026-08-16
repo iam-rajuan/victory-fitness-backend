@@ -221,7 +221,7 @@ from .longevity_ai import generate_longevity_weekly_plan
 from .models import AppNotificationItem, AppNotificationListResponse, PushTokenRequest
 
 
-from .push_service import notify_user, notify_users_of_published_workout
+from .push_service import notify_user, notify_users_of_published_workout, subscribe_notification_events
 from .challenge_milestone import generate_challenge_milestone_message
 from .trial_campaign import process_trial_campaign
 
@@ -3261,6 +3261,65 @@ class ChallengeChatSocketManager:
 challenge_chat_socket_manager = ChallengeChatSocketManager()
 
 
+class NotificationSocketManager:
+
+    def __init__(self) -> None:
+
+        self._connections: dict[str, set[WebSocket]] = {}
+
+
+    async def connect(self, user_id: str, websocket: WebSocket) -> None:
+
+        await websocket.accept()
+
+        self._connections.setdefault(user_id, set()).add(websocket)
+
+
+    def disconnect(self, user_id: str, websocket: WebSocket) -> None:
+
+        connections = self._connections.get(user_id)
+
+        if not connections:
+
+            return
+
+        connections.discard(websocket)
+
+        if not connections:
+
+            self._connections.pop(user_id, None)
+
+
+    async def send_to_user(self, user_id: str, payload: dict) -> None:
+
+        connections = list(self._connections.get(user_id, set()))
+
+        stale: list[WebSocket] = []
+
+        for websocket in connections:
+
+            try:
+
+                await websocket.send_json(payload)
+
+            except Exception:
+
+                stale.append(websocket)
+
+        for websocket in stale:
+
+            self.disconnect(user_id, websocket)
+
+
+notification_socket_manager = NotificationSocketManager()
+
+
+async def _broadcast_notification_event(user_id: str, payload: dict) -> None:
+
+    await notification_socket_manager.send_to_user(user_id, payload)
+
+
+subscribe_notification_events(_broadcast_notification_event)
 
 
 
@@ -3268,6 +3327,602 @@ challenge_chat_socket_manager = ChallengeChatSocketManager()
 
 
 
+
+
+
+
+async def _get_challenge_or_404(challenge_id: str) -> dict:
+
+    if not ObjectId.is_valid(challenge_id):
+
+        raise HTTPException(status_code=404, detail="Challenge not found")
+
+    challenge = await challenges_collection.find_one({"_id": ObjectId(challenge_id)})
+
+    if not challenge:
+
+        raise HTTPException(status_code=404, detail="Challenge not found")
+
+    return challenge
+
+
+async def _get_challenge_membership_or_403(challenge_id: str, user_id: str) -> dict:
+
+    membership = await challenge_memberships_collection.find_one(
+
+        {"challenge_id": challenge_id, "user_id": user_id}
+
+    )
+
+    if not membership:
+
+        raise HTTPException(status_code=403, detail="Challenge membership required")
+
+    return membership
+
+
+def _ensure_challenge_read_access(membership: dict | None, challenge: dict) -> None:
+
+    challenge_status = str(challenge.get("status") or "ACTIVE").upper()
+
+    membership_status = str((membership or {}).get("status") or "").upper()
+
+    if challenge_status != "ACTIVE" and membership_status not in {"ACTIVE", "COMPLETED", "LEFT"}:
+
+        raise HTTPException(status_code=403, detail="Challenge is not available")
+
+    if membership_status not in {"ACTIVE", "COMPLETED", "LEFT"}:
+
+        raise HTTPException(status_code=403, detail="Challenge membership required")
+
+
+def _ensure_challenge_write_access(membership: dict | None, challenge: dict) -> None:
+
+    _ensure_challenge_read_access(membership, challenge)
+
+    membership_status = str((membership or {}).get("status") or "").upper()
+
+    challenge_status = str(challenge.get("status") or "ACTIVE").upper()
+
+    if membership_status != "ACTIVE":
+
+        raise HTTPException(status_code=403, detail="Challenge is not active for this user")
+
+    if challenge_status != "ACTIVE":
+
+        raise HTTPException(status_code=403, detail="Challenge is not active")
+
+
+def _ensure_challenge_chat_write_access(membership: dict | None, challenge: dict) -> None:
+
+    _ensure_challenge_read_access(membership, challenge)
+
+    membership_status = str((membership or {}).get("status") or "").upper()
+
+    challenge_status = str(challenge.get("status") or "ACTIVE").upper()
+
+    if membership_status != "ACTIVE" or challenge_status != "ACTIVE":
+
+        raise HTTPException(status_code=403, detail="Challenge chat is only available for active challenge members")
+
+
+def _normalize_progress_list(value: object) -> list[str]:
+
+    if not isinstance(value, list):
+
+        return []
+
+    items: list[str] = []
+
+    for item in value:
+
+        text = str(item or "").strip()
+
+        if text and text not in items:
+
+            items.append(text)
+
+    return items
+
+
+def _build_viewer_plan_progress(plan_days: list[dict], membership: dict) -> list[ChallengePlanDayProgressResponse]:
+
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+
+    progress_items: list[ChallengePlanDayProgressResponse] = []
+
+    for day in plan_days:
+
+        day_number = max(int(day.get("day_number") or 0), 0)
+
+        raw_day = raw_progress.get(str(day_number), {}) if isinstance(raw_progress, dict) else {}
+
+        raw_day = raw_day if isinstance(raw_day, dict) else {}
+
+        progress_items.append(
+
+            ChallengePlanDayProgressResponse(
+
+                day_number=day_number,
+
+                completed=bool(raw_day.get("completed")),
+
+                completed_section_ids=_normalize_progress_list(raw_day.get("completed_section_ids")),
+
+                completed_exercise_ids=_normalize_progress_list(raw_day.get("completed_exercise_ids")),
+
+            )
+
+        )
+
+    return progress_items
+
+
+def _count_completed_plan_days_from_start(plan_days: list[dict], raw_progress: dict | None) -> int:
+
+    progress = raw_progress if isinstance(raw_progress, dict) else {}
+
+    completed_count = 0
+
+    for day in sorted(plan_days, key=lambda item: int(item.get("day_number") or 0)):
+
+        day_number = str(day.get("day_number") or "")
+
+        day_progress = progress.get(day_number, {})
+
+        if isinstance(day_progress, dict) and bool(day_progress.get("completed")):
+
+            completed_count += 1
+
+            continue
+
+        break
+
+    return completed_count
+
+
+def _calculate_challenge_points_earned(plan_days: list[dict], membership: dict, challenge_points: int) -> int:
+
+    duration_days = max(len(plan_days), 1)
+
+    completed_days = _count_completed_plan_days_from_start(
+
+        plan_days,
+
+        membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {},
+
+    )
+
+    if completed_days <= 0 or challenge_points <= 0:
+
+        return 0
+
+    if completed_days >= duration_days:
+
+        return challenge_points
+
+    return int(round(challenge_points * (completed_days / duration_days)))
+
+
+def _calculate_challenge_completion_counts(plan_days: list[dict], membership: dict) -> tuple[int, int]:
+
+    plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+
+    completed_units = 0
+
+    total_units = 0
+
+    for day in plan_days:
+
+        if not isinstance(day, dict):
+
+            continue
+
+        day_number = str(day.get("day_number") or "").strip()
+
+        day_progress = plan_progress.get(day_number, {}) if day_number else {}
+
+        day_progress = day_progress if isinstance(day_progress, dict) else {}
+
+        valid_section_ids, valid_exercise_ids = _get_plan_day_ids(day)
+
+        if valid_exercise_ids:
+
+            total_units += len(valid_exercise_ids)
+
+            if bool(day_progress.get("completed")):
+
+                completed_units += len(valid_exercise_ids)
+
+                continue
+
+            completed_exercise_ids = {
+
+                str(value or "").strip()
+
+                for value in day_progress.get("completed_exercise_ids", [])
+
+                if str(value or "").strip()
+
+            }
+
+            completed_units += len([exercise_id for exercise_id in valid_exercise_ids if exercise_id in completed_exercise_ids])
+
+            continue
+
+        if valid_section_ids:
+
+            total_units += len(valid_section_ids)
+
+            if bool(day_progress.get("completed")):
+
+                completed_units += len(valid_section_ids)
+
+                continue
+
+            completed_section_ids = {
+
+                str(value or "").strip()
+
+                for value in day_progress.get("completed_section_ids", [])
+
+                if str(value or "").strip()
+
+            }
+
+            completed_units += len([section_id for section_id in valid_section_ids if section_id in completed_section_ids])
+
+            continue
+
+        total_units += 1
+
+        if bool(day_progress.get("completed")):
+
+            completed_units += 1
+
+    return completed_units, total_units
+
+
+def _has_completed_challenge_day_today(membership: dict) -> bool:
+
+    plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+
+    today = datetime.now(timezone.utc).date()
+
+    for raw_day in plan_progress.values():
+
+        if not isinstance(raw_day, dict) or not raw_day.get("completed"):
+
+            continue
+
+        updated_at = _coerce_utc_datetime(raw_day.get("updated_at"))
+
+        if updated_at and updated_at.date() == today:
+
+            return True
+
+    return False
+
+
+async def _load_challenge_participants(challenge_id: str) -> list[ChallengeParticipantResponse]:
+
+    memberships = await challenge_memberships_collection.find(
+
+        {"challenge_id": challenge_id, "status": {"$in": ["ACTIVE", "COMPLETED"]}}
+
+    ).to_list(length=100)
+
+    user_ids = [ObjectId(str(item.get("user_id"))) for item in memberships if ObjectId.is_valid(str(item.get("user_id") or ""))]
+
+    users_by_id: dict[str, dict] = {}
+
+    if user_ids:
+
+        users = await users_collection.find({"_id": {"$in": user_ids}}).to_list(length=len(user_ids))
+
+        users_by_id = {str(user["_id"]): user for user in users}
+
+    participants: list[ChallengeParticipantResponse] = []
+
+    for membership in memberships:
+
+        user_id = str(membership.get("user_id") or "")
+
+        user = users_by_id.get(user_id, {})
+
+        participants.append(
+
+            ChallengeParticipantResponse(
+
+                user_id=user_id,
+
+                name=str(user.get("name") or membership.get("user_name") or "Victory Member"),
+
+                profile_image=str(user.get("profile_image") or ""),
+
+            )
+
+        )
+
+    return participants
+
+
+async def _load_message_reactions_map(challenge_id: str, message_ids: list[str]) -> dict[str, list[dict]]:
+
+    if not message_ids:
+
+        return {}
+
+    records = await challenge_message_reactions_collection.find(
+
+        {"challenge_id": challenge_id, "message_id": {"$in": message_ids}}
+
+    ).to_list(length=None)
+
+    user_ids = [ObjectId(str(item.get("user_id"))) for item in records if ObjectId.is_valid(str(item.get("user_id") or ""))]
+
+    users_by_id: dict[str, dict] = {}
+
+    if user_ids:
+
+        users = await users_collection.find({"_id": {"$in": user_ids}}).to_list(length=len(user_ids))
+
+        users_by_id = {str(user["_id"]): user for user in users}
+
+    grouped: dict[str, list[dict]] = {}
+
+    for record in records:
+
+        message_id = str(record.get("message_id") or "")
+
+        user_id = str(record.get("user_id") or "")
+
+        user = users_by_id.get(user_id, {})
+
+        grouped.setdefault(message_id, []).append(
+
+            {
+
+                "emoji": str(record.get("emoji") or ""),
+
+                "user_id": user_id,
+
+                "user_name": str(user.get("name") or "Victory Member"),
+
+            }
+
+        )
+
+    return grouped
+
+
+def _serialize_challenge_chat_message(
+
+    document: dict,
+
+    author: dict | None,
+
+    viewer_user_id: str | None,
+
+    reactions: list[dict] | None = None,
+
+) -> dict:
+
+    author_id = str(document.get("author_id") or "")
+
+    author_name = str((author or {}).get("name") or ("Coach Victor" if author_id == "coach_bot" else "Victory Member"))
+
+    author_role = str((author or {}).get("role") or ("coach" if author_id == "coach_bot" else "member"))
+
+    deleted = bool(document.get("deleted_at"))
+
+    return {
+
+        "id": str(document.get("_id") or ""),
+
+        "challenge_id": str(document.get("challenge_id") or ""),
+
+        "author_id": author_id,
+
+        "author_name": author_name,
+
+        "author_role": author_role,
+
+        "author_profile_image": str((author or {}).get("profile_image") or ""),
+
+        "message_type": str(document.get("message_type") or "message"),
+
+        "content": "" if deleted else str(document.get("content") or ""),
+
+        "image_url": "" if deleted else str(document.get("image_url") or ""),
+
+        "reply_to_message_id": str(document.get("reply_to_message_id") or "") or None,
+
+        "progress_payload": document.get("progress_payload") if isinstance(document.get("progress_payload"), dict) else None,
+
+        "created_at": document.get("created_at") or datetime.now(timezone.utc),
+
+        "updated_at": document.get("updated_at") or document.get("created_at") or datetime.now(timezone.utc),
+
+        "can_delete": bool(viewer_user_id and viewer_user_id == author_id and author_id not in {"coach_bot", "system"}),
+
+        "can_edit": bool(viewer_user_id and viewer_user_id == author_id and author_id not in {"coach_bot", "system"} and not deleted),
+
+        "is_edited": bool(document.get("edited_at")),
+
+        "is_deleted": deleted,
+
+        "reactions": reactions or [],
+
+    }
+
+
+async def _serialize_single_challenge_chat_message(document: dict, viewer_user_id: str | None) -> dict:
+
+    author_id = str(document.get("author_id") or "")
+
+    author = None
+
+    if ObjectId.is_valid(author_id):
+
+        author = await users_collection.find_one({"_id": ObjectId(author_id)})
+
+    reactions_map = await _load_message_reactions_map(
+
+        str(document.get("challenge_id") or ""),
+
+        [str(document.get("_id") or "")],
+
+    )
+
+    return _serialize_challenge_chat_message(
+
+        document,
+
+        author,
+
+        viewer_user_id,
+
+        reactions_map.get(str(document.get("_id") or ""), []),
+
+    )
+
+
+async def _load_challenge_chat_messages(challenge_id: str, viewer_user_id: str | None, *, limit: int = 50) -> list[dict]:
+
+    records = await challenge_chat_messages_collection.find(
+
+        {"challenge_id": challenge_id},
+
+        sort=[("created_at", 1), ("_id", 1)],
+
+    ).to_list(length=max(limit, 1))
+
+    author_ids = [ObjectId(str(item.get("author_id"))) for item in records if ObjectId.is_valid(str(item.get("author_id") or ""))]
+
+    authors_by_id: dict[str, dict] = {}
+
+    if author_ids:
+
+        authors = await users_collection.find({"_id": {"$in": author_ids}}).to_list(length=len(author_ids))
+
+        authors_by_id = {str(author["_id"]): author for author in authors}
+
+    message_ids = [str(record.get("_id") or "") for record in records]
+
+    reactions_map = await _load_message_reactions_map(challenge_id, message_ids)
+
+    return [
+
+        _serialize_challenge_chat_message(
+
+            record,
+
+            authors_by_id.get(str(record.get("author_id") or "")),
+
+            viewer_user_id,
+
+            reactions_map.get(str(record.get("_id") or ""), []),
+
+        )
+
+        for record in records[-limit:]
+
+    ]
+
+
+async def _count_unread_challenge_messages(challenge_id: str, user_id: str, membership: dict) -> int:
+
+    last_read_at = _coerce_utc_datetime(membership.get("last_read_message_at"))
+
+    query: dict[str, Any] = {"challenge_id": challenge_id, "author_id": {"$ne": user_id}}
+
+    if last_read_at is not None:
+
+        query["created_at"] = {"$gt": last_read_at}
+
+    return max(int(await challenge_chat_messages_collection.count_documents(query)), 0)
+
+
+async def _get_challenge_message_or_404(challenge_id: str, message_id: str) -> dict:
+
+    if not ObjectId.is_valid(message_id):
+
+        raise HTTPException(status_code=404, detail="Challenge chat message not found")
+
+    message = await challenge_chat_messages_collection.find_one(
+
+        {"_id": ObjectId(message_id), "challenge_id": challenge_id}
+
+    )
+
+    if not message:
+
+        raise HTTPException(status_code=404, detail="Challenge chat message not found")
+
+    return message
+
+
+async def _broadcast_challenge_chat_event(
+
+    event: str,
+
+    challenge_id: str,
+
+    document: dict | None = None,
+
+    message_id: str | None = None,
+
+) -> None:
+
+    payload: dict[str, Any] = {
+
+        "event": event,
+
+        "challenge_id": challenge_id,
+
+        "message": None,
+
+        "message_id": message_id,
+
+    }
+
+    if document is not None:
+
+        payload["message"] = await _serialize_single_challenge_chat_message(document, None)
+
+        payload["message_id"] = payload["message"]["id"]
+
+    await challenge_chat_socket_manager.broadcast(challenge_id, payload)
+
+
+def _serialize_challenge_plan_progress_response(
+
+    challenge_id: str,
+
+    membership: dict,
+
+    plan_days: list[dict],
+
+) -> ChallengePlanProgressResponse:
+
+    challenge_points = max(int(membership.get("challenge_points") or 0), 0)
+
+    raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+
+    return ChallengePlanProgressResponse(
+
+        challenge_id=challenge_id,
+
+        viewer_membership_status=str(membership.get("status") or "ACTIVE"),
+
+        viewer_progress_days_completed=_count_completed_plan_days_from_start(plan_days, raw_progress),
+
+        viewer_points_earned=_calculate_challenge_points_earned(plan_days, membership, challenge_points),
+
+        viewer_plan_progress=_build_viewer_plan_progress(plan_days, membership),
+
+    )
 
 
 def _build_cors_response_headers(request: Request) -> dict[str, str]:
@@ -5046,7 +5701,7 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
 
 
 
-    workouts = [WorkoutLibraryItem(**_serialize_public_workout_record(record)) for record in records]
+    workouts = [WorkoutLibraryItem(**shared_serialize_public_workout_record(record)) for record in records]
 
 
 
@@ -14906,7 +15561,7 @@ async def challenge_chat_socket(
 
 
 
-        user = await _get_verified_user_from_access_token(token)
+        user = await dependency_get_verified_user_from_access_token(token)
 
 
 
@@ -14963,6 +15618,49 @@ async def challenge_chat_socket(
 
 
         challenge_chat_socket_manager.disconnect(challenge_id, websocket)
+
+
+@app.websocket("/ws/notifications")
+
+async def notification_socket(websocket: WebSocket) -> None:
+
+    token = websocket.query_params.get("token", "").strip()
+
+    if not token:
+
+        await websocket.close(code=4401, reason="Missing access token")
+
+        return
+
+    try:
+
+        user = await dependency_get_verified_user_from_access_token(token)
+
+    except HTTPException as exc:
+
+        await websocket.close(code=4403 if exc.status_code == 403 else 4401, reason=str(exc.detail))
+
+        return
+
+    user_id = str(user["_id"])
+
+    await notification_socket_manager.connect(user_id, websocket)
+
+    try:
+
+        await websocket.send_json({"type": "connected"})
+
+        while True:
+
+            await websocket.receive_text()
+
+    except WebSocketDisconnect:
+
+        notification_socket_manager.disconnect(user_id, websocket)
+
+    except Exception:
+
+        notification_socket_manager.disconnect(user_id, websocket)
 
 
 
@@ -30260,10 +30958,10 @@ async def _load_challenge_stats_map(challenge_ids: list[str]) -> dict[str, dict[
     return stats
 
 
-def _normalize_challenge_plan_days(value: object) -> list[dict]:
-    if not isinstance(value, list):
-        return []
+def _normalize_challenge_plan_days(value: object, duration_days: int | None = None) -> list[dict]:
     normalized_days: list[dict] = []
+    if not isinstance(value, list):
+        value = []
     for index, raw_day in enumerate(value, start=1):
         if isinstance(raw_day, ChallengePlanDay):
             raw_day = raw_day.model_dump()
@@ -30319,6 +31017,20 @@ def _normalize_challenge_plan_days(value: object) -> list[dict]:
                 "sections": sections,
             }
         )
+    if duration_days is None or len(normalized_days) >= duration_days:
+        return normalized_days
+
+    for day_number in range(len(normalized_days) + 1, max(duration_days, 0) + 1):
+        normalized_days.append(
+            {
+                "day_number": max(1, min(day_number, 365)),
+                "title": f"Day {day_number}",
+                "focus": "Training",
+                "notes": "",
+                "sections": [],
+            }
+        )
+
     return normalized_days
 
 
@@ -30353,6 +31065,193 @@ def _build_challenge_plan_text(plan_days: list[dict]) -> str:
 
 def _normalize_challenge_thumbnail(value: object) -> str:
     return str(value or "").strip()
+
+
+def _coerce_utc_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _challenge_difficulty_color(value: object) -> str:
+    difficulty = str(value or "").strip().upper()
+    if difficulty == "ADVANCED":
+        return "#F97316"
+    if difficulty == "INTERMEDIATE":
+        return "#F59E0B"
+    return "#22C55E"
+
+
+async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewResponse:
+    user_id = str(user.get("_id") or "")
+    memberships = await challenge_memberships_collection.find({"user_id": user_id}).to_list(length=None)
+
+    latest_membership_by_challenge: dict[str, dict] = {}
+    for membership in memberships:
+        challenge_id = str(membership.get("challenge_id") or "").strip()
+        if not challenge_id:
+            continue
+        current = latest_membership_by_challenge.get(challenge_id)
+        current_updated = _coerce_utc_datetime((current or {}).get("updated_at")) if current else None
+        next_updated = _coerce_utc_datetime(membership.get("updated_at"))
+        if current is None or (next_updated and (current_updated is None or next_updated >= current_updated)):
+            latest_membership_by_challenge[challenge_id] = membership
+
+    active_memberships = [
+        membership for membership in latest_membership_by_challenge.values()
+        if str(membership.get("status") or "").strip().upper() == "ACTIVE"
+    ]
+    completed_memberships = [
+        membership for membership in latest_membership_by_challenge.values()
+        if str(membership.get("status") or "").strip().upper() == "COMPLETED"
+    ]
+
+    membership_challenge_ids = list(latest_membership_by_challenge.keys())
+    challenge_object_ids = [ObjectId(challenge_id) for challenge_id in membership_challenge_ids if ObjectId.is_valid(challenge_id)]
+    membership_challenges = await challenges_collection.find({"_id": {"$in": challenge_object_ids}}).to_list(length=len(challenge_object_ids))
+
+    ready_challenge_records = await challenges_collection.find(
+        {"status": "ACTIVE"},
+        sort=[("created_at", -1), ("_id", -1)],
+    ).to_list(length=200)
+
+    challenge_map = {str(record.get("_id") or ""): record for record in [*membership_challenges, *ready_challenge_records]}
+    stats_map = await _load_challenge_stats_map(list(challenge_map.keys()))
+    active_limit = _get_user_active_challenge_limit(user)
+    active_membership_count = len(active_memberships)
+
+    active_chats: list[ChallengeChatSummaryResponse] = []
+    for membership in active_memberships:
+        challenge_id = str(membership.get("challenge_id") or "")
+        challenge = challenge_map.get(challenge_id)
+        if not challenge:
+            continue
+        last_message = await challenge_chat_messages_collection.find_one(
+            {"challenge_id": challenge_id},
+            sort=[("created_at", -1), ("_id", -1)],
+        )
+        last_read_at = _coerce_utc_datetime(membership.get("last_read_message_at"))
+        unread_filter: dict[str, object] = {"challenge_id": challenge_id}
+        if last_read_at is not None:
+            unread_filter["created_at"] = {"$gt": last_read_at}
+        unread_count = await challenge_chat_messages_collection.count_documents(unread_filter)
+        active_chats.append(
+            ChallengeChatSummaryResponse(
+                id=challenge_id,
+                challenge_id=challenge_id,
+                name=str(challenge.get("title") or "Challenge"),
+                last_message=str((last_message or {}).get("content") or ""),
+                last_message_at=(last_message or {}).get("created_at"),
+                unread_count=max(int(unread_count or 0), 0),
+                avatar=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+            )
+        )
+
+    active_challenges: list[UserActiveChallengeResponse] = []
+    for membership in active_memberships:
+        challenge_id = str(membership.get("challenge_id") or "")
+        challenge = challenge_map.get(challenge_id)
+        if not challenge:
+            continue
+        duration_days = max(int(challenge.get("duration_days") or 0), 1)
+        completed_days = max(int(membership.get("progress_days_completed") or 0), 0)
+        progress = min(completed_days / duration_days, 1.0)
+        days_left = max(duration_days - completed_days, 0)
+        active_challenges.append(
+            UserActiveChallengeResponse(
+                id=str(membership.get("_id") or challenge_id),
+                challenge_id=challenge_id,
+                title=str(challenge.get("title") or ""),
+                description=str(challenge.get("description") or ""),
+                why_it_matters=str(challenge.get("why_it_matters") or ""),
+                type=str(challenge.get("category") or "Challenge"),
+                plan_text=str(challenge.get("plan_text") or ""),
+                duration_days=duration_days,
+                days_left=days_left,
+                total_days=duration_days,
+                progress=progress,
+                points=max(int(challenge.get("points") or 0), 0),
+                participants=int((stats_map.get(challenge_id) or {}).get("participantCount") or 0),
+                thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+                color="#4F8EF7",
+                created_at=challenge.get("created_at"),
+            )
+        )
+
+    completed_challenges: list[UserCompletedChallengeResponse] = []
+    for membership in completed_memberships:
+        challenge_id = str(membership.get("challenge_id") or "")
+        challenge = challenge_map.get(challenge_id)
+        if not challenge:
+            continue
+        challenge_points = max(int(challenge.get("points") or 0), 0)
+        completed_at = _coerce_utc_datetime(membership.get("completed_at")) or _coerce_utc_datetime(membership.get("updated_at")) or datetime.now(timezone.utc)
+        completed_challenges.append(
+            UserCompletedChallengeResponse(
+                id=str(membership.get("_id") or challenge_id),
+                challenge_id=challenge_id,
+                title=str(challenge.get("title") or ""),
+                description=str(challenge.get("description") or ""),
+                why_it_matters=str(challenge.get("why_it_matters") or ""),
+                duration_days=max(int(challenge.get("duration_days") or 0), 0),
+                type=str(challenge.get("category") or "Challenge"),
+                earned_points=challenge_points,
+                participants=int((stats_map.get(challenge_id) or {}).get("participantCount") or 0),
+                thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+                completed_at=completed_at,
+                color="#22C55E",
+                created_at=challenge.get("created_at"),
+            )
+        )
+
+    ready_to_start: list[UserReadyChallengeResponse] = []
+    for challenge in ready_challenge_records:
+        challenge_id = str(challenge.get("_id") or "")
+        membership = latest_membership_by_challenge.get(challenge_id)
+        membership_status = str((membership or {}).get("status") or "").strip().upper()
+        if membership_status in {"ACTIVE", "COMPLETED"}:
+            continue
+        can_start = active_limit is None or active_membership_count < active_limit
+        ready_to_start.append(
+            UserReadyChallengeResponse(
+                id=challenge_id,
+                title=str(challenge.get("title") or ""),
+                description=str(challenge.get("description") or ""),
+                why_it_matters=str(challenge.get("why_it_matters") or ""),
+                plan_text=str(challenge.get("plan_text") or ""),
+                duration_days=max(int(challenge.get("duration_days") or 0), 0),
+                type=str(challenge.get("category") or "Challenge"),
+                points=max(int(challenge.get("points") or 0), 0),
+                participants=int((stats_map.get(challenge_id) or {}).get("participantCount") or 0),
+                difficulty=str(challenge.get("difficulty") or "BEGINNER"),
+                difficulty_color=_challenge_difficulty_color(challenge.get("difficulty")),
+                status=str(challenge.get("status") or "ACTIVE"),
+                can_start=can_start,
+                thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+                created_at=challenge.get("created_at"),
+            )
+        )
+
+    active_chats.sort(key=lambda item: item.last_message_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    active_challenges.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    completed_challenges.sort(key=lambda item: item.completed_at, reverse=True)
+    ready_to_start.sort(key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+    return ChallengeOverviewResponse(
+        active_chats=active_chats,
+        active_challenges=active_challenges,
+        completed_challenges=completed_challenges,
+        ready_to_start=ready_to_start,
+    )
 
 
 async def _sync_workout_library_from_challenge_plan(plan_days: list[dict], category: str) -> None:

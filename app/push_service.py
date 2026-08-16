@@ -16,6 +16,48 @@ FIREBASE_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 _firebase_access_token: str | None = None
 _firebase_access_token_expires_at = 0.0
 logger = logging.getLogger(__name__)
+_notification_event_listeners = set()
+
+
+def subscribe_notification_events(listener):
+    _notification_event_listeners.add(listener)
+
+    def unsubscribe() -> None:
+        _notification_event_listeners.discard(listener)
+
+    return unsubscribe
+
+
+def _serialize_notification_for_event(notification: dict) -> dict:
+    created_at = notification.get("created_at")
+    if isinstance(created_at, datetime):
+        created_at = created_at.isoformat()
+    return {
+        "id": str(notification.get("id") or ""),
+        "type": str(notification.get("type") or ""),
+        "title": str(notification.get("title") or ""),
+        "message": str(notification.get("message") or ""),
+        "data": notification.get("data") if isinstance(notification.get("data"), dict) else {},
+        "created_at": created_at,
+        "read": bool(notification.get("read")),
+    }
+
+
+async def _emit_notification_event(user_id: str, notification: dict) -> None:
+    if not _notification_event_listeners:
+        return
+
+    payload = {
+        "type": "notification_created",
+        "notification": _serialize_notification_for_event(notification),
+    }
+    results = await asyncio.gather(
+        *(listener(user_id, payload) for listener in list(_notification_event_listeners)),
+        return_exceptions=True,
+    )
+    for result in results:
+        if isinstance(result, Exception):
+            logger.warning("Notification event listener failed: %s", result, exc_info=result)
 
 
 async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> dict:
@@ -23,6 +65,7 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
     notification_data = {**data, "notificationId": notification_id}
     notification = {"id": notification_id, "type": notification_type, "title": title, "message": message, "data": notification_data, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
     await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
+    await _emit_notification_event(str(user["_id"]), notification)
     expo_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
     web_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() == "web" and str(item.get("token") or "").strip()]
     tasks = []
