@@ -9,9 +9,11 @@ from unittest.mock import AsyncMock, Mock, call, patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 backend_module = importlib.import_module("app.main")
 wearables_router_module = importlib.import_module("app.wearables.router")
+websocket_router_module = importlib.import_module("app.api.routers.websockets")
 from app.wearables.service import store_normalized_metrics
 
 
@@ -654,6 +656,23 @@ class FaviconRouteTests(unittest.TestCase):
     def test_favicon_png_returns_content(self) -> None:
         response = self.client.get("/favicon.png")
         self.assertIn(response.status_code, {200, 204})
+
+
+class WebSocketCompatibilityTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.client = TestClient(backend_module.app)
+
+    def test_socket_io_handshake_closes_with_explicit_reason(self) -> None:
+        with self.assertRaises(WebSocketDisconnect) as disconnect_context:
+            with self.client.websocket_connect("/socket.io/?EIO=4&transport=websocket") as websocket:
+                websocket.receive_text()
+
+        self.assertEqual(disconnect_context.exception.code, 1008)
+        self.assertEqual(
+            disconnect_context.exception.reason,
+            websocket_router_module.UNSUPPORTED_SOCKET_IO_REASON,
+        )
 
 
 class StoreNormalizedMetricsTests(unittest.IsolatedAsyncioTestCase):
