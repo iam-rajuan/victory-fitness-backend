@@ -30,6 +30,11 @@ STRIPE_SUBSCRIPTION_UPDATED = "customer.subscription.updated"
 
 
 def _require_stripe_configured() -> None:
+    if settings.phase_one_beta_enabled or not settings.stripe_payments_enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="Stripe payments are temporarily disabled during the Phase 1 beta campaign",
+        )
     if not settings.stripe_secret_key:
         raise HTTPException(status_code=503, detail="Stripe is not configured")
 
@@ -159,6 +164,8 @@ async def construct_stripe_event(request: Request) -> dict[str, Any]:
 
 
 async def handle_stripe_event(event: dict[str, Any]) -> None:
+    if not settings.stripe_payments_enabled:
+        return
     event_id = str(event.get("id") or "")
     if event_id and await payment_events_collection.find_one({"stripe_event_id": event_id}):
         return
@@ -201,6 +208,9 @@ async def _handle_checkout_completed(event_id: str, session: dict[str, Any]) -> 
     user = await users_collection.find_one({"_id": object_id})
     if not user:
         await _record_stripe_payment_event(event_id, STRIPE_CHECKOUT_COMPLETED, session, status="ignored")
+        return
+    if str(user.get("subscription_purchase_source") or "").strip() == "beta_trial":
+        await _record_stripe_payment_event(event_id, STRIPE_CHECKOUT_COMPLETED, session, status="ignored", user_id=user_id, tier=tier)
         return
 
     amount_total = session.get("amount_total")
@@ -261,6 +271,10 @@ async def _handle_subscription_event(event_id: str, event_type: str, subscriptio
         return
 
     stripe_status = str(subscription.get("status") or "").lower()
+    existing_user = await users_collection.find_one({"_id": object_id})
+    if existing_user and str(existing_user.get("subscription_purchase_source") or "").strip() == "beta_trial":
+        await _record_stripe_payment_event(event_id, event_type, subscription, status="ignored", user_id=user_id)
+        return
     if event_type == STRIPE_SUBSCRIPTION_DELETED or stripe_status in {"canceled", "unpaid", "incomplete_expired"}:
         await users_collection.update_one(
             {"_id": object_id, "stripe_subscription_id": str(subscription.get("id") or "")},

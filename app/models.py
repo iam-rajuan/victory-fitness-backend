@@ -15,6 +15,7 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     marketing_consent: bool = False
     signup_source: str = Field(default="organic", max_length=120)
+    beta_access_code: str | None = Field(default=None, min_length=3, max_length=120)
 
     @field_validator("name", "surname", "mobile")
     @classmethod
@@ -103,6 +104,8 @@ class GoldTrialSummaryResponse(BaseModel):
     days_remaining: int = 0
     campaign_days_sent: list[int] = Field(default_factory=list)
     usage: dict[str, Any] = Field(default_factory=dict)
+    trial_type: str | None = None
+    is_beta_tester: bool = False
 
 
 class MeResponse(BaseModel):
@@ -1424,6 +1427,102 @@ class AdminUserDetailResponse(AdminUserListItem):
     subscription_is_purchased: bool = False
     subscription_purchase_source: str = ""
     subscription_access: list[str] = Field(default_factory=list)
+    trial_type: str | None = None
+    is_beta_tester: bool = False
+    trial_start_at: datetime | None = None
+    trial_end_at: datetime | None = None
+    trial_days_remaining: int = 0
+    trial_status: str | None = None
+
+
+class PhaseOneBetaCountryItem(BaseModel):
+    code: str | None = None
+    label: str
+    count: int = 0
+    activeUsers: int = 0
+    aiUsers: int = 0
+    nutritionUsers: int = 0
+    workoutUsers: int = 0
+
+
+class PhaseOneBetaUserActivity(BaseModel):
+    aiConversations: int | None = None
+    aiMessages: int | None = None
+    nutritionPlans: int | None = None
+    nutritionLogs: int | None = None
+    workoutsStarted: int | None = None
+    workoutsCompleted: int | None = None
+    challengesJoined: int | None = None
+    challengesCompleted: int | None = None
+    communityPosts: int | None = None
+    communityComments: int | None = None
+    communityReactions: int | None = None
+    lastActiveAt: datetime | None = None
+    usedAiCoach: bool = False
+    usedNutrition: bool = False
+    usedWorkout: bool = False
+    usedChallenge: bool = False
+    usedCommunity: bool = False
+    usedAnyTrackedFeature: bool = False
+
+
+class PhaseOneBetaFeatureAdoptionMetric(BaseModel):
+    users: int = 0
+    total: int = 0
+    averagePerActiveUser: float = 0
+    neverUsedUsers: int = 0
+
+
+class PhaseOneBetaFeatureAdoptionResponse(BaseModel):
+    aiCoach: PhaseOneBetaFeatureAdoptionMetric = Field(default_factory=PhaseOneBetaFeatureAdoptionMetric)
+    nutrition: PhaseOneBetaFeatureAdoptionMetric = Field(default_factory=PhaseOneBetaFeatureAdoptionMetric)
+    workouts: PhaseOneBetaFeatureAdoptionMetric = Field(default_factory=PhaseOneBetaFeatureAdoptionMetric)
+    challenges: PhaseOneBetaFeatureAdoptionMetric = Field(default_factory=PhaseOneBetaFeatureAdoptionMetric)
+    community: PhaseOneBetaFeatureAdoptionMetric = Field(default_factory=PhaseOneBetaFeatureAdoptionMetric)
+
+
+class PhaseOneBetaCrossFeatureResponse(BaseModel):
+    aiOnly: int = 0
+    nutritionOnly: int = 0
+    workoutOnly: int = 0
+    aiAndNutrition: int = 0
+    aiAndWorkout: int = 0
+    nutritionAndWorkout: int = 0
+    usedThreePlusFeatures: int = 0
+    usedNoTrackedFeature: int = 0
+
+
+class PhaseOneBetaCheckpointItem(BaseModel):
+    day: int
+    eligibleUsers: int = 0
+    activeUsers: int = 0
+    aiUsers: int = 0
+    nutritionUsers: int = 0
+    workoutUsers: int = 0
+    challengeUsers: int = 0
+    communityUsers: int = 0
+    anyFeatureUsers: int = 0
+
+
+class PhaseOneBetaParticipationResponse(BaseModel):
+    enrollmentProgressPct: float = 0
+    activeRatePct: float = 0
+    expiredRatePct: float = 0
+    neverActiveUsers: int = 0
+    usersActiveToday: int = 0
+    usersActiveThisWeek: int = 0
+
+
+class PhaseOneBetaCampaignHealthResponse(BaseModel):
+    zeroActivityUsers: int = 0
+    endingSoonUsers: int = 0
+    usersWithoutAiCoach: int = 0
+    usersWithoutNutrition: int = 0
+
+
+class PhaseOneBetaSupportReferenceResponse(BaseModel):
+    betaUsersWithMessages: int = 0
+    totalSupportMessages: int = 0
 
 
 class AdminUserListResponse(BaseModel):
@@ -1482,6 +1581,44 @@ class AdminTrialDropoutItem(BaseModel):
 class AdminTrialDropoutResponse(BaseModel):
     total: int = 0
     users: list[AdminTrialDropoutItem] = Field(default_factory=list)
+
+
+class PhaseOneBetaUserItem(BaseModel):
+    id: str
+    fullName: str
+    email: EmailStr
+    country: str = ""
+    countryCode: str | None = None
+    plan: str = "GOLD"
+    status: str = "ACTIVE"
+    trialType: str = "beta_trial"
+    isBetaTester: bool = True
+    trialStartedAt: datetime | None = None
+    trialExpiresAt: datetime | None = None
+    daysRemaining: int = 0
+    price: float = 0
+    currency: str = "EUR"
+    paymentRequired: bool = False
+    activity: PhaseOneBetaUserActivity = Field(default_factory=PhaseOneBetaUserActivity)
+
+
+class PhaseOneBetaSummaryResponse(BaseModel):
+    totalBetaUsers: int = 0
+    activeBetaUsers: int = 0
+    expiredBetaUsers: int = 0
+    goldBetaUsers: int = 0
+    limit: int = 300
+    remainingSlots: int = 0
+    averageDaysRemaining: float = 0
+    countriesRepresented: int = 0
+    participation: PhaseOneBetaParticipationResponse = Field(default_factory=PhaseOneBetaParticipationResponse)
+    featureAdoption: PhaseOneBetaFeatureAdoptionResponse = Field(default_factory=PhaseOneBetaFeatureAdoptionResponse)
+    crossFeatureAdoption: PhaseOneBetaCrossFeatureResponse = Field(default_factory=PhaseOneBetaCrossFeatureResponse)
+    checkpoints: list[PhaseOneBetaCheckpointItem] = Field(default_factory=list)
+    campaignHealth: PhaseOneBetaCampaignHealthResponse = Field(default_factory=PhaseOneBetaCampaignHealthResponse)
+    support: PhaseOneBetaSupportReferenceResponse = Field(default_factory=PhaseOneBetaSupportReferenceResponse)
+    countries: list[PhaseOneBetaCountryItem] = Field(default_factory=list)
+    users: list[PhaseOneBetaUserItem] = Field(default_factory=list)
 
 
 class GoldTrialMessageConfig(BaseModel):

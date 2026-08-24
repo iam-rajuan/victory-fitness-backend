@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...utils.country import derive_country_code
 
 router = APIRouter()
 
@@ -29,6 +30,10 @@ async def update_admin_profile(
     if payload.country is not None:
 
         update_doc["country"] = payload.country.strip()
+
+        derived_country_code = derive_country_code(payload.country)
+
+        update_doc["country_code"] = derived_country_code.upper() if derived_country_code else None
 
     if payload.contactNumber is not None:
 

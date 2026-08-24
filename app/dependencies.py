@@ -6,6 +6,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .database import users_collection
 from .security import decode_token
 
+PHASE_ONE_BETA_SUBSCRIPTION_SOURCE = "beta_trial"
+
 
 bearer_scheme = HTTPBearer(auto_error=False)
 SUBSCRIPTION_ACCESS = {
@@ -117,6 +119,14 @@ def _as_utc_datetime(value: object) -> datetime | None:
 
 
 def user_has_active_gold_trial(user: dict, now: datetime | None = None) -> bool:
+    if str(user.get("subscription_purchase_source") or "").strip() == PHASE_ONE_BETA_SUBSCRIPTION_SOURCE:
+        start_at = _as_utc_datetime(user.get("trial_start_at"))
+        end_at = _as_utc_datetime(user.get("trial_end_at"))
+        if not start_at or not end_at:
+            return False
+        current = now or datetime.now(timezone.utc)
+        current = current if current.tzinfo else current.replace(tzinfo=timezone.utc)
+        return start_at <= current < end_at
     if normalize_subscription_tier(user.get("trial_tier_granted")) != "GOLD":
         return False
     if str(user.get("trial_outcome") or "").strip():

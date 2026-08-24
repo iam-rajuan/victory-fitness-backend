@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 GOLD_TRIAL_CONFIG_KEY = "gold_trial_config"
 TRIAL_DURATION_DAYS = 5
+PHASE_ONE_BETA_SUBSCRIPTION_SOURCE = "beta_trial"
 
 CAMPAIGN = {
     0: ("Welcome to Victory Gold", "Hi {name}, your Gold trial is active. Ask Coach Victor one question right now to get your first win."),
@@ -174,6 +175,7 @@ async def process_trial_campaign(
     users = await users_collection.find({
         "marketing_consent": True,
         "trial_tier_granted": "gold",
+        "subscription_purchase_source": {"$ne": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
         "trial_start_at": {"$ne": None},
     }).to_list(length=None)
     for user in users:

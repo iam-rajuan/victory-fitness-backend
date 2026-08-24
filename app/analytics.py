@@ -173,12 +173,22 @@ def _trial_end_at(user: dict, started_at: datetime) -> datetime:
     return _as_utc_datetime(user.get("trial_end_at")) or (started_at + timedelta(days=5))
 
 
+def _is_phase_one_beta_user(user: dict) -> bool:
+    return str(user.get("subscription_purchase_source") or "").strip() == "beta_trial"
+
+
+def _is_paid_subscription(user: dict) -> bool:
+    if _is_phase_one_beta_user(user):
+        return False
+    return bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"}
+
+
 def _trial_user_outcome(user: dict, now: datetime) -> str | None:
     explicit = str(user.get("trial_outcome") or "").strip()
     if explicit:
         return explicit
     tier = str(user.get("subscription_tier") or "").upper()
-    paid = bool(user.get("subscription_is_purchased")) or str(user.get("subscription_status") or "").upper() in {"ACTIVE", "PAID"}
+    paid = _is_paid_subscription(user)
     if paid and tier in {"GOLD", "PLATINUM", "INNER_CIRCLE"}:
         return "converted_gold"
     if paid and tier == "SILVER":
@@ -353,6 +363,7 @@ async def user_stats(
             "subscription_is_purchased": 1,
             "subscription_status": 1,
             "subscription_tier": 1,
+            "subscription_purchase_source": 1,
         },
     )
     completed_trial = converted_trial = 0
@@ -777,6 +788,7 @@ async def revenue_stats(
         _and(
             market_filter(market),
             {"subscription_status": {"$in": ["ACTIVE", "PAID", "active", "paid"]}},
+            {"subscription_purchase_source": {"$ne": "beta_trial"}},
         ),
     )
     arpu = round(sum(mrr_by_country.values()) / active_subs, 2) if active_subs else 0.0
@@ -1189,6 +1201,7 @@ async def retention_cohort(
                 "subscription_started_at": 1,
                 "subscription_status": 1,
                 "subscription_is_purchased": 1,
+                "subscription_purchase_source": 1,
             },
         )
         if not cohort_users:
@@ -1213,9 +1226,7 @@ async def retention_cohort(
             paid = 0
             for user in cohort_users:
                 confirmed_at = _as_utc_datetime(user.get("subscription_confirmed_at"))
-                purchased = bool(user.get("subscription_is_purchased")) or str(
-                    user.get("subscription_status") or ""
-                ).upper() in {"ACTIVE", "PAID"}
+                purchased = _is_paid_subscription(user)
                 if purchased and (confirmed_at is None or confirmed_at <= day30_end):
                     paid += 1
             paid_day30 = round(safe_ratio(paid, new_users), 1)
@@ -1239,16 +1250,35 @@ async def market_breakdown(
     preset: str = Query("this_week"),
     from_date: date | None = Query(default=None, alias="from"),
     to_date: date | None = Query(default=None, alias="to"),
+    country: str | None = Query(default=None),
     _: dict = Depends(require_admin_user),
 ) -> MarketBreakdownResponse:
+    default_map = {"Ghana": "GH", "Germany": "DE", "India": "IN"}
     markets = ["Ghana", "Germany", "India"]
+    if country:
+        from .utils.country import COUNTRY_NAME_TO_CODE, CODE_TO_COUNTRY_NAME
+        norm_country = country.strip()
+        if len(norm_country) == 2:
+            norm_name = CODE_TO_COUNTRY_NAME.get(norm_country.upper(), norm_country.upper())
+        else:
+            norm_name = norm_country.title()
+        if norm_name and norm_name not in markets:
+            markets.append(norm_name)
+
     out: list[MarketBreakdownRow] = []
     start, end, _, _ = parse_time_range(preset, from_date, to_date)
     rng_q = {"created_at": {"$gte": start, "$lte": end}}
     shares_rng = {"$and": [rng_q, {"shared_to_whatsapp": True}]}
     for market_name in markets:
-        market_code = {"Ghana": "GH", "Germany": "DE", "India": "IN"}[market_name]
-        m_filter = {"$or": [{"country_code": market_code}, {"country_code": {"$exists": False}, "country": {"$regex": {"Ghana": "ghana", "Germany": "germany|german", "India": "india|indian"}[market_name], "$options": "i"}}]}
+        if market_name in default_map:
+            market_code = default_map[market_name]
+            regex_str = {"Ghana": "ghana", "Germany": "germany|german", "India": "india|indian"}[market_name]
+            m_filter = {"$or": [{"country_code": market_code}, {"country_code": {"$exists": False}, "country": {"$regex": regex_str, "$options": "i"}}]}
+        else:
+            from .utils.country import COUNTRY_NAME_TO_CODE
+            market_code = COUNTRY_NAME_TO_CODE.get(market_name, market_name[:2].upper())
+            m_filter = {"$or": [{"country_code": market_code}, {"country_code": {"$exists": False}, "country": {"$regex": f"^{market_name}$", "$options": "i"}}]}
+
         activity_market = await _market_user_filter(market_name.lower())
         active = len(await _active_user_ids(start, end, market_name.lower()))
         new_users = await _safe_count(users_collection, {"$and": [m_filter, rng_q]})

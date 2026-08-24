@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...services.beta_analytics import build_phase_one_beta_analytics
 
 router = APIRouter()
 
@@ -35,7 +36,13 @@ async def admin_update_gold_trial_config(
 @router.get("/admin/trials/outcomes", response_model=GoldTrialOutcomeBreakdownResponse)
 async def admin_gold_trial_outcomes(_: dict = Depends(_require_admin_user)) -> GoldTrialOutcomeBreakdownResponse:
     now = datetime.now(timezone.utc)
-    users = await users_collection.find({"is_admin": {"$ne": True}, "trial_tier_granted": GOLD_TRIAL_TIER}).to_list(length=None)
+    users = await users_collection.find(
+        {
+            "is_admin": {"$ne": True},
+            "trial_tier_granted": GOLD_TRIAL_TIER,
+            "subscription_purchase_source": {"$ne": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
+        }
+    ).to_list(length=None)
     total = active = converted = downgraded = lapsed = pending = 0
     for user in users:
         total += 1
@@ -69,6 +76,7 @@ async def admin_trial_cohorts(_: dict = Depends(_require_admin_user)) -> AdminTr
     now = datetime.now(timezone.utc)
     users = await users_collection.find({
         "is_admin": {"$ne": True},
+        "subscription_purchase_source": {"$ne": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
         "$or": [
             {"trial_start_at": {"$ne": None}},
             {"subscription_started_at": {"$ne": None}},
@@ -113,6 +121,7 @@ async def admin_trial_dropouts(
     records = await users_collection.find({
         "is_admin": {"$ne": True},
         "marketing_consent": True,
+        "subscription_purchase_source": {"$ne": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
         "$or": [
             {"trial_start_at": {"$ne": None}},
             {"subscription_started_at": {"$ne": None}},
@@ -139,3 +148,11 @@ async def admin_trial_dropouts(
             campaignDaysSent=sorted({int(day) for day in (user.get("trial_campaign_sent_days") or []) if str(day).isdigit()}),
         ))
     return AdminTrialDropoutResponse(total=len(dropouts), users=dropouts)
+
+
+@router.get("/admin/trials/phase-one-beta", response_model=PhaseOneBetaSummaryResponse)
+async def admin_phase_one_beta_summary(
+    limit: int = 300,
+    _: dict = Depends(_require_admin_user),
+) -> PhaseOneBetaSummaryResponse:
+    return await build_phase_one_beta_analytics(limit=limit)

@@ -110,8 +110,9 @@ CODE_TO_DISPLAY = {
 
 
 def normalize_market(market: str | None) -> str:
-    m = (market or "all").strip().lower()
-    return m if m in VALID_MARKETS else "all"
+    if not market:
+        return "all"
+    return market.strip().lower()
 
 
 def market_filter(market: str | None) -> dict:
@@ -131,13 +132,39 @@ def market_filter(market: str | None) -> dict:
                 {"country_code": {"$exists": False}, "country": {"$regex": code_to_country_regex(code), "$options": "i"}},
             ]
         }
-    # "other" = anything that isn't one of the three primary markets
-    primary_codes = list(MARKET_TO_CODE.values())
+    if m == "other":
+        primary_codes = list(MARKET_TO_CODE.values())
+        return {
+            "$and": [
+                {"country_code": {"$nin": primary_codes + [None, ""]}},
+                {"country": {"$not": {"$regex": r"ghana|germany|india", "$options": "i"}}},
+            ]
+        }
+
+    # Custom country filter
+    if len(m) == 2:
+        code = m.upper()
+        return {
+            "$or": [
+                {"country_code": code},
+                {"country_code": {"$exists": False}, "country": {"$regex": f"^{m}$", "$options": "i"}},
+            ]
+        }
+
+    # Resolve from COUNTRY_NAME_TO_CODE
+    from .country import COUNTRY_NAME_TO_CODE
+    cap_name = market.strip().title()
+    code = COUNTRY_NAME_TO_CODE.get(cap_name)
+    if code:
+        return {
+            "$or": [
+                {"country_code": code},
+                {"country_code": {"$exists": False}, "country": {"$regex": f"^{cap_name}$", "$options": "i"}},
+            ]
+        }
+
     return {
-        "$and": [
-            {"country_code": {"$nin": primary_codes + [None, ""]}},
-            {"country": {"$not": {"$regex": r"ghana|germany|india", "$options": "i"}}},
-        ]
+        "country": {"$regex": f"^{market.strip()}$", "$options": "i"}
     }
 
 

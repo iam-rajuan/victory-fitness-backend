@@ -35,6 +35,7 @@ from urllib.request import Request as UrlRequest, urlopen
 from docx import Document as DocxDocument
 from pypdf import PdfReader
 from bson import ObjectId
+from pymongo import ReturnDocument
 
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security, UploadFile, WebSocket, WebSocketDisconnect, status
 
@@ -261,6 +262,12 @@ from ..models import (
 
     AdminTrialDropoutResponse,
 
+    PhaseOneBetaCountryItem,
+
+    PhaseOneBetaSummaryResponse,
+
+    PhaseOneBetaUserItem,
+
     GoldTrialConfigResponse,
 
     GoldTrialConfigUpdateRequest,
@@ -456,6 +463,7 @@ from ..models import (
 from ..database import (
 
     app_content_collection,
+    phase_one_beta_slots_collection,
 
     challenge_chat_messages_collection,
 
@@ -3960,6 +3968,8 @@ GOLD_TRIAL_CONFIG_KEY = "gold_trial_config"
 GOLD_TRIAL_TIER = "gold"
 GOLD_TRIAL_DURATION_DAYS = 5
 GOLD_TRIAL_OUTCOMES = {"converted_gold", "downgraded_silver", "lapsed"}
+PHASE_ONE_BETA_SUBSCRIPTION_SOURCE = "beta_trial"
+PHASE_ONE_BETA_PLAN_ID = "phase_one_gold_beta"
 
 DEFAULT_GOLD_TRIAL_MESSAGES = [
     {
@@ -4018,6 +4028,169 @@ def _trial_cohort_key(value: datetime) -> str:
 def _trial_datetime(value: object) -> datetime | None:
     return _as_utc(value) if isinstance(value, datetime) else None
 
+def _is_phase_one_beta_enabled() -> bool:
+    return bool(getattr(settings, "phase_one_beta_enabled", False))
+
+def _phase_one_beta_duration_days() -> int:
+    return max(int(getattr(settings, "phase_one_beta_duration_days", 21) or 21), 1)
+
+def _phase_one_beta_max_users() -> int:
+    return max(int(getattr(settings, "phase_one_beta_max_users", 300) or 300), 1)
+
+def _phase_one_beta_access_codes() -> set[str]:
+    return {
+        str(code).strip().upper()
+        for code in getattr(settings, "phase_one_beta_access_codes", []) or []
+        if str(code).strip()
+    }
+
+def _trial_type_for_user(user: dict) -> str | None:
+    if str(user.get("subscription_purchase_source") or "").strip() == PHASE_ONE_BETA_SUBSCRIPTION_SOURCE:
+        return PHASE_ONE_BETA_SUBSCRIPTION_SOURCE
+    if bool((user.get("beta_phase_one") or {}).get("is_beta_tester")):
+        return PHASE_ONE_BETA_SUBSCRIPTION_SOURCE
+    if str(user.get("trial_tier_granted") or "").strip().lower() == GOLD_TRIAL_TIER:
+        return "gold_trial"
+    return None
+
+def _is_phase_one_beta_user(user: dict) -> bool:
+    return _trial_type_for_user(user) == PHASE_ONE_BETA_SUBSCRIPTION_SOURCE
+
+def _phase_one_beta_is_active(user: dict, now: datetime | None = None) -> bool:
+    if not _is_phase_one_beta_user(user):
+        return False
+    started_at = _trial_started_at(user)
+    ended_at = _trial_ended_at(user, started_at)
+    if not started_at or not ended_at:
+        return False
+    current = now or datetime.now(timezone.utc)
+    return started_at <= current < ended_at
+
+def _phase_one_beta_status(user: dict, now: datetime | None = None) -> str:
+    if not _is_phase_one_beta_user(user):
+        return "NONE"
+    return "ACTIVE" if _phase_one_beta_is_active(user, now) else "EXPIRED"
+
+def _is_phase_one_beta_code_valid(code: str | None) -> bool:
+    normalized = str(code or "").strip().upper()
+    valid_codes = _phase_one_beta_access_codes()
+    return bool(normalized and valid_codes and normalized in valid_codes)
+
+async def _claim_phase_one_beta_slot(user_id: str, *, now: datetime | None = None) -> dict[str, Any]:
+    current = now or datetime.now(timezone.utc)
+    existing = await phase_one_beta_slots_collection.find_one(
+        {"campaign": "phase_one_gold_beta", "claimed_by": user_id}
+    )
+    if existing:
+        return existing
+
+    claimed_slot = await phase_one_beta_slots_collection.find_one_and_update(
+        {
+            "campaign": "phase_one_gold_beta",
+            "$or": [{"claimed_by": None}, {"claimed_by": {"$exists": False}}],
+        },
+        {
+            "$set": {
+                "claimed_by": user_id,
+                "claimed_at": current,
+                "updated_at": current,
+            }
+        },
+        sort=[("slot_number", 1)],
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed_slot:
+        raise HTTPException(status_code=409, detail="Phase 1 beta enrollment capacity has been reached")
+    return claimed_slot
+
+async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | None = None) -> dict:
+    current = now or datetime.now(timezone.utc)
+    if _is_phase_one_beta_user(user):
+        return user
+
+    end_at = current + timedelta(days=_phase_one_beta_duration_days())
+    feature_access = _resolve_subscription_access("GOLD")
+    update_doc: dict[str, Any] = {
+        # PHASE 1 BETA:
+        # Stripe payment flow is temporarily disabled.
+        # Re-enable for commercial launch after beta validation.
+        "subscription_tier": "GOLD",
+        "subscription_role": "GOLD",
+        "subscription_status": "ACTIVE",
+        "subscription_billing_cycle": "yearly",
+        "subscription_is_purchased": False,
+        "subscription_purchase_source": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE,
+        "subscription_plan_id": PHASE_ONE_BETA_PLAN_ID,
+        "subscription_price_amount": 0,
+        "subscription_original_price_amount": 0,
+        "subscription_discount_percentage": 100,
+        "subscription_access": feature_access,
+        "subscription_started_at": user.get("subscription_started_at") or current,
+        "subscription_confirmed_at": current,
+        "subscription": {
+            "tier": "GOLD",
+            "role": "GOLD",
+            "status": "ACTIVE",
+            "billing_cycle": "yearly",
+            "is_purchased": False,
+            "purchase_source": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE,
+            "access": feature_access,
+            "started_at": user.get("subscription_started_at") or current,
+            "confirmed_at": current,
+            "trial_type": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE,
+            "payment_required": False,
+            "payment_provider": None,
+            "price": 0,
+            "currency": "EUR",
+            "expires_at": end_at,
+        },
+        "trial_tier_granted": GOLD_TRIAL_TIER,
+        "trial_start_at": current,
+        "trial_end_at": end_at,
+        "trial_outcome": None,
+        "trial_outcome_at": None,
+        "trial_campaign_sent_days": [],
+        "beta_phase_one": {
+            "campaign": "phase_one_gold_beta",
+            "trial_type": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE,
+            "is_beta_tester": True,
+            "price": 0,
+            "currency": "EUR",
+            "payment_required": False,
+            "payment_provider": None,
+            "started_at": current,
+            "expires_at": end_at,
+            "duration_days": _phase_one_beta_duration_days(),
+            "enrolled_at": current,
+            "status": "active",
+        },
+        "updated_at": current,
+    }
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": update_doc,
+            "$unset": {
+                "phase_one_beta_requested_code": "",
+            },
+        },
+    )
+    updated_user = await users_collection.find_one({"_id": user["_id"]})
+    return updated_user or {**user, **update_doc}
+
+async def _maybe_activate_phase_one_beta_subscription(user: dict, *, requested_code: str | None = None) -> dict:
+    if not _is_phase_one_beta_enabled():
+        return user
+    if _is_phase_one_beta_user(user):
+        return user
+
+    candidate_code = requested_code if requested_code is not None else user.get("phase_one_beta_requested_code")
+    if not _is_phase_one_beta_code_valid(candidate_code):
+        return user
+
+    await _claim_phase_one_beta_slot(str(user["_id"]))
+    return await _activate_phase_one_beta_subscription(user)
+
 def _trial_started_at(user: dict) -> datetime | None:
     return _trial_datetime(user.get("trial_start_at") or user.get("subscription_started_at"))
 
@@ -4026,9 +4199,13 @@ def _trial_ended_at(user: dict, started_at: datetime | None = None) -> datetime 
     if explicit:
         return explicit
     started = started_at or _trial_started_at(user)
+    if _is_phase_one_beta_user(user):
+        return started + timedelta(days=_phase_one_beta_duration_days()) if started else None
     return started + timedelta(days=GOLD_TRIAL_DURATION_DAYS) if started else None
 
 def _trial_is_active(user: dict, now: datetime | None = None) -> bool:
+    if _is_phase_one_beta_user(user):
+        return _phase_one_beta_is_active(user, now)
     if str(user.get("trial_tier_granted") or "").strip().lower() != GOLD_TRIAL_TIER:
         return False
     if str(user.get("trial_outcome") or "").strip() in GOLD_TRIAL_OUTCOMES:
@@ -4067,6 +4244,8 @@ def _trial_summary(user: dict, now: datetime | None = None) -> dict[str, Any]:
         "days_remaining": days_remaining,
         "campaign_days_sent": sorted({int(day) for day in (user.get("trial_campaign_sent_days") or []) if str(day).lstrip("-").isdigit()}),
         "usage": _trial_usage_from_user(user),
+        "trial_type": _trial_type_for_user(user),
+        "is_beta_tester": _is_phase_one_beta_user(user),
     }
 
 def _trial_outcome_for_subscription(tier: str, is_purchased: bool) -> str | None:
@@ -4084,7 +4263,8 @@ async def _record_trial_engagement(user: dict, kind: str) -> None:
     if not started_at:
         return
     day = int((datetime.now(timezone.utc) - started_at).total_seconds() // 86400)
-    if day < 0 or day > 5:
+    max_day = _phase_one_beta_duration_days() if _is_phase_one_beta_user(user) else GOLD_TRIAL_DURATION_DAYS
+    if day < 0 or day > max_day:
         return
     update: dict = {
         "$addToSet": {"trial_engagement.days": day},
@@ -8141,6 +8321,11 @@ async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies:
             "subscription_access": profile_summary.get("subscription_access", []),
 
             "subscription": profile_summary.get("subscription", {}),
+            "trial_tier_granted": profile_summary.get("trial_tier_granted"),
+            "trial_start_at": profile_summary.get("trial_start_at"),
+            "trial_end_at": profile_summary.get("trial_end_at"),
+            "trial_outcome": profile_summary.get("trial_outcome"),
+            "gold_trial": profile_summary.get("gold_trial", {}),
             "marketing_consent": bool(user.get("marketing_consent")),
 
         },
@@ -8296,7 +8481,7 @@ def _normalize_subscription_status(value: object, tier: str) -> str:
 
     status = str(value or "").strip().upper().replace(" ", "_")
 
-    if status in {"ACTIVE", "PENDING_PAYMENT", "CANCELLED", "CANCELED"}:
+    if status in {"ACTIVE", "PENDING_PAYMENT", "CANCELLED", "CANCELED", "EXPIRED"}:
 
         return "CANCELLED" if status == "CANCELED" else status
 
@@ -8327,6 +8512,11 @@ def _user_has_subscription_access(user: dict, feature: str) -> bool:
     if not configured_access and isinstance(subscription.get("access"), list):
 
         configured_access = subscription.get("access")
+
+    if _is_phase_one_beta_user(user):
+        if _phase_one_beta_is_active(user):
+            return feature in set(_resolve_subscription_access("GOLD"))
+        return False
 
     if isinstance(configured_access, list) and configured_access:
 
@@ -8481,6 +8671,14 @@ def _build_subscription_summary(record: dict) -> dict:
     else:
 
         access = _resolve_subscription_access(tier)
+
+    if _is_phase_one_beta_user(record):
+        beta_status = _phase_one_beta_status(record)
+        access = _resolve_subscription_access("GOLD") if beta_status == "ACTIVE" else []
+        purchase_source = PHASE_ONE_BETA_SUBSCRIPTION_SOURCE
+        tier = "GOLD"
+        status = beta_status
+        is_purchased = False
 
     if _trial_is_active(record):
 
@@ -8730,6 +8928,7 @@ async def _serialize_me_record(record: dict) -> dict:
     stats = await _calculate_user_fitness_stats(str(record["_id"]))
 
     subscription_summary = _build_subscription_summary(record)
+    trial_summary = _trial_summary(record)
 
     return {
 
@@ -8747,6 +8946,8 @@ async def _serialize_me_record(record: dict) -> dict:
         "is_admin": bool(record.get("is_admin")),
 
         "country": str(record.get("country") or ""),
+
+        "country_code": (str(record.get("country_code") or "").upper() or None),
 
         "profileImage": str(record.get("profile_image") or ""),
 
@@ -8787,11 +8988,11 @@ async def _serialize_me_record(record: dict) -> dict:
         "subscription_access": subscription_summary["access"],
 
         "subscription": subscription_summary,
-        "trial_tier_granted": _trial_summary(record)["tier_granted"],
-        "trial_start_at": _trial_summary(record)["start_at"],
-        "trial_end_at": _trial_summary(record)["end_at"],
-        "trial_outcome": _trial_summary(record)["outcome"],
-        "gold_trial": _trial_summary(record),
+        "trial_tier_granted": trial_summary["tier_granted"],
+        "trial_start_at": trial_summary["start_at"],
+        "trial_end_at": trial_summary["end_at"],
+        "trial_outcome": trial_summary["outcome"],
+        "gold_trial": trial_summary,
         "marketing_consent": bool(record.get("marketing_consent")),
 
     }
@@ -9079,6 +9280,8 @@ def _serialize_admin_user_record(record: dict) -> dict:
     role = str(record.get("role") or ("admin" if record.get("is_admin") else "user"))
 
     subscription_summary = _build_subscription_summary(record)
+    trial_summary = _trial_summary(record)
+    is_beta_tester = bool(trial_summary.get("is_beta_tester"))
 
     return {
 
@@ -9097,6 +9300,8 @@ def _serialize_admin_user_record(record: dict) -> dict:
         "contactNumber": str(record.get("contact_number") or ""),
 
         "country": str(record.get("country") or ""),
+
+        "country_code": (str(record.get("country_code") or "").upper() or None),
 
         "createdAt": created_at,
 
@@ -9121,6 +9326,18 @@ def _serialize_admin_user_record(record: dict) -> dict:
         "subscription_purchase_source": subscription_summary["purchase_source"],
 
         "subscription_access": subscription_summary["access"],
+
+        "trial_type": trial_summary["trial_type"],
+
+        "is_beta_tester": is_beta_tester,
+
+        "trial_start_at": trial_summary["start_at"],
+
+        "trial_end_at": trial_summary["end_at"],
+
+        "trial_days_remaining": int(trial_summary["days_remaining"] or 0),
+
+        "trial_status": subscription_summary["status"] if is_beta_tester else None,
 
     }
 

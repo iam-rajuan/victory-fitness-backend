@@ -10,6 +10,11 @@ async def get_me_gold_trial_status(user: dict = Depends(_require_access_user)) -
 
 @router.post("/me/trial/gold/start", response_model=GoldTrialStartResponse)
 async def start_me_gold_trial(user: dict = Depends(_require_access_user)) -> GoldTrialStartResponse:
+    if _is_phase_one_beta_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="The commercial 5-day Gold trial is disabled during the Phase 1 beta campaign",
+        )
     tier = _normalize_subscription_tier(user.get("subscription_tier"))
     if tier != "NONE":
         raise HTTPException(status_code=409, detail="Users who already selected a tier are not eligible for the undecided Gold trial")

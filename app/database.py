@@ -77,6 +77,7 @@ if settings.mongodb_configured:
     accountability_pairs_collection = db["accountability_pairs"]
     points_log_collection = db["points_log"]
     invites_collection = db["invites"]
+    phase_one_beta_slots_collection = db["phase_one_beta_slots"]
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -120,6 +121,7 @@ else:
     accountability_pairs_collection = _UnconfiguredCollection()
     points_log_collection = _UnconfiguredCollection()
     invites_collection = _UnconfiguredCollection()
+    phase_one_beta_slots_collection = _UnconfiguredCollection()
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -224,6 +226,31 @@ async def ensure_indexes() -> None:
     await users_collection.create_index([("marketing_consent", 1), ("subscription_started_at", -1)])
     await users_collection.create_index([("trial_tier_granted", 1), ("trial_start_at", -1)])
     await users_collection.create_index([("trial_outcome", 1), ("trial_end_at", -1)])
+    await users_collection.create_index([("subscription_purchase_source", 1), ("trial_end_at", -1)])
+    await users_collection.create_index([("beta_phase_one.is_beta_tester", 1), ("trial_start_at", -1)])
+    await phase_one_beta_slots_collection.create_index([("campaign", 1), ("slot_number", 1)], unique=True)
+    await phase_one_beta_slots_collection.create_index(
+        [("campaign", 1), ("claimed_by", 1)],
+        unique=True,
+        partialFilterExpression={"claimed_by": {"$type": "string"}},
+    )
+    phase_one_campaign = "phase_one_gold_beta"
+    phase_one_limit = max(int(getattr(settings, "phase_one_beta_max_users", 300) or 300), 1)
+    for slot_number in range(1, phase_one_limit + 1):
+        await phase_one_beta_slots_collection.update_one(
+            {"campaign": phase_one_campaign, "slot_number": slot_number},
+            {
+                "$setOnInsert": {
+                    "campaign": phase_one_campaign,
+                    "slot_number": slot_number,
+                    "claimed_by": None,
+                    "claimed_at": None,
+                    "created_at": datetime.now(timezone.utc),
+                },
+                "$set": {"updated_at": datetime.now(timezone.utc)},
+            },
+            upsert=True,
+        )
     await client.admin.command("ping")
     await _collapse_health_snapshot_collection(health_metric_current_collection)
     await _collapse_health_snapshot_collection(health_samples_collection)

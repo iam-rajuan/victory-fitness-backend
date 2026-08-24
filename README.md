@@ -9,7 +9,7 @@ FastAPI backend for the Victory Fitness mobile app and admin dashboard. The API 
 - Uvicorn
 - MongoDB Atlas through Motor
 - JWT authentication with access and session tokens
-- SMTP email delivery
+- Resend email delivery
 - OpenAI and Anthropic integrations for AI features
 - Docker and Docker Compose
 - Vercel Python serverless deployment
@@ -126,9 +126,8 @@ Important environment variables:
 | `CORS_ALLOW_ALL` | No | Allows all origins when set to `true`; avoid in production. |
 | `COOKIE_SECURE` | Yes | Use `false` locally and `true` in HTTPS production. |
 | `COOKIE_SAMESITE` | Yes | Use `lax` locally. Use `none` for cross-site HTTPS cookies in production. |
-| `SMTP_HOST`, `SMTP_PORT` | Required for email | SMTP server settings for verification and password reset emails. |
-| `SMTP_USERNAME`, `SMTP_PASSWORD` | Required for email | SMTP credentials. |
-| `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME` | Required for email | Sender identity for outbound emails. |
+| `RESEND_API_KEY` | Required for email | Resend API key used for transactional email delivery. |
+| `RESEND_FROM_EMAIL` | Required for email | Sender identity for outbound emails, for example `Victory Fitness <noreply@victoryfitness.de>`. |
 | `OPENAI_API_KEY` | Required for OpenAI features | Enables Coach Victor, meal analysis, workout plans, and nutrition generation where OpenAI is used. |
 | `OPENAI_MODEL` | No | Main OpenAI model. |
 | `OPENAI_MEAL_ANALYSIS_MODEL` | No | Vision model for meal image analysis. |
@@ -223,6 +222,102 @@ The backend includes endpoints for:
 
 Use `/docs` while the server is running for the complete request and response schema.
 
+## Phase 1 Beta
+
+### Phase 1 — 21-Day Gold Beta Testing Campaign
+
+This pre-launch campaign is separate from the post-launch commercial trial.
+
+- Maximum users: `300`
+- Duration: `21 days`
+- Tier: `Gold`
+- Price: `EUR 0`
+- Payment provider: `None`
+- Stripe: `Disabled`
+- Card required: `No`
+- Automatic payment: `Never`
+- Purpose: pre-launch product validation
+
+After 21 days:
+
+- Beta entitlement expires
+- No payment occurs
+- No Stripe subscription is created
+- No automatic commercial conversion occurs
+
+This campaign should be analyzed through dedicated Phase 1 enrollment and participation analytics such as enrollment totals, active vs. expired beta users, country distribution, and beta-user engagement when reliable data is available.
+
+Phase 1 analytics are exposed through:
+
+- `GET /admin/trials/phase-one-beta`
+
+The endpoint is admin-only and returns Phase 1 beta analytics without mixing in Section 19 commercial trial concepts.
+
+#### Analytics Definitions
+
+- `totalBetaUsers`: enrolled users whose `subscription_purchase_source` is `beta_trial`
+- `remainingSlots`: `300 - totalBetaUsers`
+- `activeBetaUsers`: beta users whose current UTC time is before or on `trial_end_at`
+- `expiredBetaUsers`: beta users whose current UTC time is after `trial_end_at`
+- `goldBetaUsers`: beta users currently entitled to the Gold plan
+- `averageDaysRemaining`: average whole/fractional days remaining across active beta users
+- `countriesRepresented`: unique enrolled countries across beta users
+- `usersActiveToday` / `usersActiveThisWeek`: beta users with meaningful tracked activity in the recent UTC window
+- `neverActiveUsers`: beta users with no meaningful tracked activity during their beta window
+
+#### Meaningful Activity
+
+Phase 1 beta engagement is measured only inside each user's individual beta window:
+
+- start: `trial_start_at`
+- end: `min(now_utc, trial_end_at)`
+
+Tracked meaningful activity currently includes:
+
+- AI Coach user messages
+- Nutrition plan jobs with tracked completion states
+- Meal analysis entries
+- Workout starts and completions
+- Challenge joins and completions
+- Community posts, comments, and reactions
+- Support messages for reference reporting
+
+Authentication/login events are not labeled as beta engagement unless they become a dedicated product requirement with reliable tracking.
+
+#### Checkpoint Definitions
+
+Phase 1 checkpoint analytics use user-relative cohorts, not a single calendar cohort.
+
+- Checkpoints: Day 1, Day 3, Day 7, Day 14, Day 21
+- A user is eligible for a checkpoint only after reaching `trial_start_at + checkpoint_day`
+- Checkpoint counts are cumulative inside the user's beta window up to that checkpoint
+- Supported checkpoint metrics include eligible users, active users, AI usage, nutrition usage, workout usage, challenge usage, community usage, and users with any tracked feature activity
+
+#### Country Analytics
+
+Country reporting is based on enrolled beta users and can include:
+
+- tester count by country
+- active users by country
+- AI usage by country
+- nutrition usage by country
+- workout usage by country
+
+These values reflect only real tracked beta-user activity.
+
+#### Expiration
+
+- Phase 1 beta access expires automatically at `trial_end_at`
+- Expired beta users are shown as `EXPIRED`
+- Active beta users are shown as `ACTIVE`
+- No Stripe subscription is created at expiry
+- No card is required before, during, or after beta access
+- No commercial conversion outcome is generated from Phase 1 expiry
+
+### Section 19 — 5-Day Gold Trial
+
+Section 19 remains a separate post-launch commercial feature for undecided public sign-ups. It keeps its own 5-day lifecycle, Day 0-5 messaging, engagement branching, Silver vs. Gold decision flow, and conversion analytics. Do not change the meaning of Section 19 when documenting or implementing Phase 1 beta behavior.
+
 ## Deployment
 
 This project includes `vercel.json` for Vercel deployment. The Vercel entry point is:
@@ -255,7 +350,7 @@ If browser requests fail because of CORS, add the frontend URL to `CORS_ORIGINS`
 
 If login works locally but cookies do not persist in production, verify `COOKIE_SECURE=true`, `COOKIE_SAMESITE=none`, HTTPS, and the frontend API base URL.
 
-If email verification does not send, check the SMTP variables and confirm that the provider allows app passwords or SMTP authentication.
+If email verification does not send, check the Resend variables, confirm the API key is valid, and verify that `victoryfitness.de` is configured as a verified sending domain in Resend.
 
 If AI routes fail, verify that the required model provider API key is present and valid.
 

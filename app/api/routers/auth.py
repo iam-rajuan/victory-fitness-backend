@@ -46,6 +46,9 @@ def _remember_previous_verification_code(existing_user: dict | None, now: dateti
 async def register(payload: RegisterRequest) -> dict[str, str]:
 
     email = payload.email.lower()
+    normalized_beta_access_code = str(payload.beta_access_code or "").strip().upper()
+    if normalized_beta_access_code and _is_phase_one_beta_enabled() and not _is_phase_one_beta_code_valid(normalized_beta_access_code):
+        raise HTTPException(status_code=400, detail="Invalid Phase 1 beta access code")
 
     logger.info("auth_register_attempt email=%s", email)
 
@@ -76,6 +79,7 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "contact_number": mobile,
             "marketing_consent": payload.marketing_consent,
             "signup_source": payload.signup_source.strip() or "organic",
+            "phase_one_beta_requested_code": normalized_beta_access_code or None,
             "marketing_consent_at": now if payload.marketing_consent else None,
 
             "password_hash": hash_password(payload.password),
@@ -215,6 +219,8 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
     user["is_verified"] = True
 
     logger.info("auth_verify_success email=%s", email)
+
+    user = await _maybe_activate_phase_one_beta_subscription(user)
 
     return await _issue_tokens(user, response)
 

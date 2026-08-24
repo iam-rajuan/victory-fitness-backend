@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...utils.country import derive_country_code
 
 router = APIRouter()
 
@@ -47,6 +48,18 @@ async def update_me(
     if payload.country is not None:
 
         update_doc["country"] = payload.country.strip()
+
+        if payload.country_code is None:
+
+            derived_country_code = derive_country_code(payload.country)
+
+            update_doc["country_code"] = derived_country_code.upper() if derived_country_code else None
+
+    if payload.country_code is not None:
+
+        normalized_country_code = payload.country_code.strip().upper()
+
+        update_doc["country_code"] = normalized_country_code or None
 
     if payload.profileImage is not None:
 
