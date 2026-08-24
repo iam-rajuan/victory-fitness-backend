@@ -1283,6 +1283,60 @@ DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS = [
 
     {
 
+        "id": "plan-gold-beta-21-day",
+
+        "tier": "21-DAY GOLD BETA",
+
+        "description": "Free 21-day Gold beta access for approved testers during Phase 1.",
+
+        "priceMonthly": 0,
+
+        "priceYearly": 0,
+
+        "discountPercentage": None,
+
+        "discountStartDate": None,
+
+        "discountEndDate": None,
+
+        "isApplicationOnly": False,
+
+        "isMostPopular": False,
+
+        "iconType": "gold_medal",
+
+        "features": [
+
+            "All Silver features",
+
+            "Accountability System (Tracking, Reminders)",
+
+            "Community Challenges and Nutrition",
+
+            "Basic wearable data (sleep and activity)",
+
+        ],
+
+        "featureAccess": [
+
+            "home",
+
+            "workout",
+
+            "challenge",
+
+            "community",
+
+            "mealPlan",
+
+            "profile",
+
+        ],
+
+    },
+
+    {
+
         "id": "plan-platinum",
 
         "tier": "VICTORY PLATINUM",
@@ -3088,6 +3142,8 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
         "userId": str(record["_id"]),
         "currentStep": current_step,
         "language": str(state.get("language") or "").strip(),
+        "country": str(state.get("country") or record.get("country") or "").strip(),
+        "countryCode": (str(state.get("countryCode") or record.get("country_code") or "").upper() or None),
         "personalProfile": {
             "age": str(personal_profile.get("age") or metrics.get("age") or "").strip(),
             "gender": str(personal_profile.get("gender") or metrics.get("gender") or "").strip(),
@@ -4149,7 +4205,8 @@ async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | N
         "trial_end_at": end_at,
         "trial_outcome": None,
         "trial_outcome_at": None,
-        "trial_campaign_sent_days": [],
+        "trial_campaign_sent_days": [0],
+        "trial_engagement": {"days": [0], "coach_messages": 0},
         "beta_phase_one": {
             "campaign": "phase_one_gold_beta",
             "trial_type": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE,
@@ -6456,8 +6513,22 @@ async def _get_dashboard_notification_items() -> list[dict]:
 async def _get_dashboard_subscription_plan_items() -> list[dict]:
 
     record = await _ensure_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS)
+    items = [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
+    beta_plan_id = "plan-gold-beta-21-day"
+    if not any(str(item.get("id") or "").strip() == beta_plan_id for item in items):
+        beta_plan = next(
+            (dict(item) for item in DEFAULT_DASHBOARD_SUBSCRIPTION_PLANS if str(item.get("id") or "").strip() == beta_plan_id),
+            None,
+        )
+        if beta_plan:
+            insert_index = next(
+                (index + 1 for index, item in enumerate(items) if str(item.get("id") or "").strip() == "plan-gold"),
+                len(items),
+            )
+            items.insert(insert_index, beta_plan)
+            await _replace_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, items)
 
-    return [dict(item) for item in record.get("items") or [] if isinstance(item, dict)]
+    return items
 
 async def _get_dashboard_masterclass_items() -> list[dict]:
 
@@ -6688,6 +6759,8 @@ def _serialize_admin_subscription_plan_item(item: dict) -> dict:
 def _serialize_app_subscription_plan_item(item: dict, now: datetime | None = None) -> dict:
 
     normalized = _serialize_admin_subscription_plan_item(item)
+    plan_id = str(normalized.get("id") or "").strip()
+    subscription_tier = "GOLD_BETA" if plan_id == "plan-gold-beta-21-day" else _normalize_subscription_plan_tier_key(normalized["tier"])
 
     discount_active = _is_subscription_discount_active(
 
@@ -6709,7 +6782,7 @@ def _serialize_app_subscription_plan_item(item: dict, now: datetime | None = Non
 
         "id": normalized["id"],
 
-        "subscriptionTier": _normalize_subscription_plan_tier_key(normalized["tier"]),
+        "subscriptionTier": subscription_tier,
 
         "title": normalized["tier"],
 

@@ -49,6 +49,41 @@ async def start_me_gold_trial(user: dict = Depends(_require_access_user)) -> Gol
     await _record_analytics_event("gold_trial_started", user_id=str(user["_id"]), market=str(user.get("country_code") or "") or None)
     return GoldTrialStartResponse(trial=GoldTrialSummaryResponse(**_trial_summary(updated_user)))
 
+@router.post("/me/trial/phase-one-beta/start", response_model=MeResponse)
+async def start_me_phase_one_beta(user: dict = Depends(_require_access_user)) -> MeResponse:
+    if not _is_phase_one_beta_enabled():
+        raise HTTPException(status_code=403, detail="The 21-day Phase 1 beta is not enabled")
+
+    if _is_phase_one_beta_user(user):
+        return MeResponse(**(await _serialize_me_record(user)))
+
+    current_tier = _normalize_subscription_tier(user.get("subscription_tier"))
+    if current_tier != "NONE":
+        raise HTTPException(
+            status_code=409,
+            detail="Users who already selected a subscription tier are not eligible for Phase 1 beta activation",
+        )
+
+    await _claim_phase_one_beta_slot(str(user["_id"]))
+    updated_user = await _activate_phase_one_beta_subscription(user)
+    if not updated_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await notify_user(
+        users_collection,
+        updated_user,
+        "21-Day Gold Beta activated",
+        f"Hi {updated_user.get('name') or 'there'}, your 21-day Gold beta access is now active. Open your profile and start using your Gold features.",
+        "phase_one_beta_started",
+        {"route": "/profile", "trialDay": 0, "tier": "gold", "trialType": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
+    )
+    await _record_analytics_event(
+        "phase_one_beta_started",
+        user_id=str(user["_id"]),
+        market=str(updated_user.get("country_code") or user.get("country_code") or "") or None,
+    )
+    return MeResponse(**(await _serialize_me_record(updated_user)))
+
 @router.get("/me/trial/decision", response_model=GoldTrialDecisionResponse)
 async def get_me_gold_trial_decision(user: dict = Depends(_require_access_user)) -> GoldTrialDecisionResponse:
     trial = GoldTrialSummaryResponse(**_trial_summary(user))

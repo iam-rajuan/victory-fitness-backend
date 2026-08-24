@@ -103,6 +103,21 @@ async def update_me_onboarding(
     if payload.language is not None:
         next_state["language"] = payload.language.strip()
 
+    if payload.country is not None:
+        next_state["country"] = payload.country.strip()
+        update_doc["country"] = payload.country.strip()
+
+        if payload.countryCode is None:
+            derived_country_code = derive_country_code(payload.country)
+            normalized_country_code = derived_country_code.upper() if derived_country_code else None
+            next_state["countryCode"] = normalized_country_code
+            update_doc["country_code"] = normalized_country_code
+
+    if payload.countryCode is not None:
+        normalized_country_code = payload.countryCode.strip().upper() or None
+        next_state["countryCode"] = normalized_country_code
+        update_doc["country_code"] = normalized_country_code
+
     if payload.personalProfile is not None:
         personal_profile_update = payload.personalProfile.model_dump()
         next_state["personalProfile"] = {
@@ -129,6 +144,8 @@ async def update_me_onboarding(
         "userId": next_state["userId"],
         "currentStep": next_state["currentStep"],
         "language": next_state["language"],
+        "country": str(next_state.get("country") or "").strip(),
+        "countryCode": (str(next_state.get("countryCode") or "").upper() or None),
         "personalProfile": next_state["personalProfile"],
         "anamnese": next_state["anamnese"],
         "suggestion": next_state["suggestion"],

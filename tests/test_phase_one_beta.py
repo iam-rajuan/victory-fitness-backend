@@ -15,6 +15,7 @@ admin_trials_router_module = importlib.import_module("app.api.routers.admin_tria
 beta_analytics_service_module = importlib.import_module("app.services.beta_analytics")
 payments_router_module = importlib.import_module("app.api.routers.payments")
 stripe_payments_module = importlib.import_module("app.services.stripe_payments")
+trial_router_module = importlib.import_module("app.api.routers.trial")
 dependencies_module = importlib.import_module("app.dependencies")
 
 
@@ -230,6 +231,88 @@ class StripePhaseOneRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"received": True})
+
+
+class PhaseOneBetaActivationRouteTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        app = FastAPI()
+        app.include_router(trial_router_module.router)
+        app.dependency_overrides[trial_router_module._require_access_user] = lambda: {
+            "_id": "beta-user-1",
+            "name": "Beta User",
+            "email": "beta@example.com",
+            "subscription_tier": "NONE",
+            "country_code": "DE",
+            "is_verified": True,
+        }
+        cls.client = TestClient(app)
+
+    def test_phase_one_beta_start_activates_user_without_stripe(self) -> None:
+        now = _utc_now()
+        feature_access = backend_module._resolve_subscription_access("GOLD")
+        updated_user = {
+            "_id": "beta-user-1",
+            "name": "Beta User",
+            "email": "beta@example.com",
+            "is_verified": True,
+            "subscription_tier": "GOLD",
+            "subscription_role": "GOLD",
+            "subscription_status": "ACTIVE",
+            "subscription_billing_cycle": "yearly",
+            "subscription_is_purchased": False,
+            "subscription_purchase_source": "beta_trial",
+            "subscription_access": feature_access,
+            "subscription_started_at": now,
+            "subscription_confirmed_at": now,
+            "trial_tier_granted": "gold",
+            "trial_start_at": now,
+            "trial_end_at": now + timedelta(days=21),
+            "country_code": "DE",
+            "country": "Germany",
+            "beta_phase_one": {"is_beta_tester": True},
+            "subscription": {
+                "tier": "GOLD",
+                "role": "GOLD",
+                "status": "ACTIVE",
+                "billing_cycle": "yearly",
+                "is_purchased": False,
+                "purchase_source": "beta_trial",
+                "access": feature_access,
+                "started_at": now,
+                "confirmed_at": now,
+                "trial_type": "beta_trial",
+                "payment_required": False,
+                "price": 0,
+                "currency": "EUR",
+                "expires_at": now + timedelta(days=21),
+            },
+        }
+
+        with patch.object(trial_router_module, "_is_phase_one_beta_enabled", return_value=True), patch.object(
+            trial_router_module, "_is_phase_one_beta_user", return_value=False
+        ), patch.object(
+            trial_router_module, "_normalize_subscription_tier", return_value="NONE"
+        ), patch.object(
+            trial_router_module, "_claim_phase_one_beta_slot", AsyncMock(return_value={"slot_number": 1})
+        ), patch.object(
+            trial_router_module, "_activate_phase_one_beta_subscription", AsyncMock(return_value=updated_user)
+        ), patch.object(
+            trial_router_module, "_serialize_me_record", AsyncMock(return_value=backend_module._serialize_me_record(updated_user))
+        ), patch.object(
+            trial_router_module, "notify_user", AsyncMock()
+        ) as notify_mock, patch.object(
+            trial_router_module, "_record_analytics_event", AsyncMock()
+        ) as analytics_mock:
+            response = self.client.post("/me/trial/phase-one-beta/start")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["subscription_tier"], "GOLD")
+        self.assertEqual(payload["subscription_purchase_source"], "beta_trial")
+        self.assertFalse(payload["subscription_is_purchased"])
+        notify_mock.assert_awaited()
+        analytics_mock.assert_awaited()
 
 
 class PhaseOneBetaAdminSummaryTests(unittest.IsolatedAsyncioTestCase):

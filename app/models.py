@@ -210,6 +210,8 @@ class OnboardingStateResponse(BaseModel):
     userId: str
     currentStep: int = 0
     language: str = ""
+    country: str = ""
+    countryCode: str | None = None
     personalProfile: OnboardingPersonalProfileResponse = Field(default_factory=OnboardingPersonalProfileResponse)
     anamnese: OnboardingAnamneseResponse = Field(default_factory=OnboardingAnamneseResponse)
     suggestion: OnboardingSuggestionResponse | None = None
@@ -220,6 +222,8 @@ class OnboardingStateResponse(BaseModel):
 class UpdateOnboardingStateRequest(BaseModel):
     currentStep: int | None = Field(default=None, ge=0)
     language: str | None = Field(default=None, max_length=10)
+    country: str | None = Field(default=None, max_length=120)
+    countryCode: str | None = Field(default=None, min_length=2, max_length=2)
     personalProfile: OnboardingPersonalProfileResponse | None = None
     anamnese: OnboardingAnamneseResponse | None = None
     suggestion: OnboardingSuggestionResponse | None = None
