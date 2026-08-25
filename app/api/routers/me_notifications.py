@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...retention_service import record_notification_open
 
 router = APIRouter()
 
@@ -47,6 +48,14 @@ async def mark_app_notification_read(
         {"_id": user["_id"], "app_notifications.id": notification_id},
         {"$set": {"app_notifications.$.read": True}},
     )
+    if result.modified_count:
+        await record_notification_open(user, notification_id)
+        await _record_analytics_event(
+            "notification_opened",
+            user_id=str(user.get("_id") or ""),
+            market=str(user.get("country_code") or "") or None,
+            details={"notification_id": notification_id},
+        )
     return {"read": bool(result.modified_count)}
 
 @router.get("/me/activity-notifications/dismissed")

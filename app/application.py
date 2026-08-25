@@ -16,11 +16,13 @@ from .core.legacy import (
     unhandled_exception_handler,
 )
 from .database import DatabaseNotConfiguredError
+from .observability import init_observability, observability_middleware
 from .wearables import router as wearables_router
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
+    init_observability()
 
     app.include_router(wearables_router)
     app.include_router(analytics_router)
@@ -36,6 +38,7 @@ def create_app() -> FastAPI:
     )
 
     app.middleware("http")(log_requests)
+    app.middleware("http")(observability_middleware)
     app.add_exception_handler(DatabaseNotConfiguredError, database_not_configured_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

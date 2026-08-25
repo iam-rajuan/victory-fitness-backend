@@ -21,6 +21,7 @@ from ..core.legacy import (
 )
 from ..database import payment_events_collection, users_collection
 from ..models import StripeCheckoutSessionRequest, StripeCheckoutSessionResponse
+from ..revenue_service import maybe_grant_referral_reward_for_subscription, record_revenue_entry
 
 
 STRIPE_CHECKOUT_COMPLETED = "checkout.session.completed"
@@ -376,6 +377,30 @@ async def _record_stripe_payment_event(
     }
     await payment_events_collection.insert_one(doc)
     if resolved_user_id and status == "success":
+        if event_type == STRIPE_INVOICE_PAID and amount_value and amount_value > 0:
+            user_doc = None
+            if ObjectId.is_valid(resolved_user_id):
+                user_doc = await users_collection.find_one({"_id": ObjectId(resolved_user_id)})
+            ledger_id = await record_revenue_entry(
+                source="consumer_subscription",
+                gross_amount=amount_value,
+                net_amount=amount_value,
+                currency=doc["currency"],
+                market=str((user_doc or {}).get("country_code") or ""),
+                user_id=resolved_user_id,
+                subscription_tier=resolved_tier,
+                billing_cycle=doc["billing_cycle"],
+                external_ref=event_id or str(obj.get("id") or ""),
+                metadata={"stripe_object_id": doc["stripe_object_id"], "stripe_event_type": event_type},
+            )
+            if user_doc:
+                await maybe_grant_referral_reward_for_subscription(
+                    user=user_doc,
+                    amount=amount_value,
+                    currency=doc["currency"],
+                    subscription_tier=resolved_tier or "",
+                    external_ref=event_id or f"stripe_invoice:{doc['stripe_object_id']}",
+                )
         await _record_analytics_event(
             "payment_subscription_started",
             user_id=resolved_user_id,

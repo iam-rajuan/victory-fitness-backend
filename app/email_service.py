@@ -2,9 +2,25 @@ from __future__ import annotations
 
 import html
 import logging
+from typing import Any
 
-import resend
-from resend.exceptions import ResendError
+try:
+    import resend
+    from resend.exceptions import ResendError
+except ModuleNotFoundError:  # pragma: no cover - local test fallback
+    class ResendError(Exception):
+        pass
+
+    class _ResendEmailsStub:
+        @staticmethod
+        def send(params: dict[str, Any]) -> dict[str, str]:
+            raise ModuleNotFoundError("resend package is not installed")
+
+    class _ResendStub:
+        api_key: str = ""
+        Emails = _ResendEmailsStub
+
+    resend = _ResendStub()
 
 from .config import settings
 
@@ -108,5 +124,28 @@ def send_trial_campaign_email(to_email: str, name: str, day: int, title: str, bo
             f"{body}\n\n"
             "Open Victory Fitness to continue your Gold trial.\n\n"
             f"Day {day} of your 5-day trial"
+        ),
+    )
+
+
+def send_retention_email(
+    *,
+    to_email: str,
+    name: str,
+    subject: str,
+    body: str,
+    flow: str = "retention",
+) -> None:
+    if not to_email or not _is_resend_configured():
+        return
+
+    _send_email(
+        flow=flow,
+        to_email=to_email,
+        subject=subject,
+        text_body=(
+            f"Hi {name},\n\n"
+            f"{body}\n\n"
+            "Open Victory Fitness to continue your progress."
         ),
     )

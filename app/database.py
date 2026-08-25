@@ -78,6 +78,13 @@ if settings.mongodb_configured:
     points_log_collection = db["points_log"]
     invites_collection = db["invites"]
     phase_one_beta_slots_collection = db["phase_one_beta_slots"]
+    revenue_ledger_collection = db["revenue_ledger"]
+    corporate_accounts_collection = db["corporate_accounts"]
+    corporate_seat_assignments_collection = db["corporate_seat_assignments"]
+    marketplace_orders_collection = db["marketplace_orders"]
+    affiliate_conversions_collection = db["affiliate_conversions"]
+    referral_rewards_collection = db["referral_rewards"]
+    feature_flags_collection = db["feature_flags"]
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -122,6 +129,13 @@ else:
     points_log_collection = _UnconfiguredCollection()
     invites_collection = _UnconfiguredCollection()
     phase_one_beta_slots_collection = _UnconfiguredCollection()
+    revenue_ledger_collection = _UnconfiguredCollection()
+    corporate_accounts_collection = _UnconfiguredCollection()
+    corporate_seat_assignments_collection = _UnconfiguredCollection()
+    marketplace_orders_collection = _UnconfiguredCollection()
+    affiliate_conversions_collection = _UnconfiguredCollection()
+    referral_rewards_collection = _UnconfiguredCollection()
+    feature_flags_collection = _UnconfiguredCollection()
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -353,6 +367,37 @@ async def ensure_indexes() -> None:
     await invites_collection.create_index([("created_at", -1)])
     await invites_collection.create_index([("copy_variant", 1), ("created_at", -1)])
     await invites_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await revenue_ledger_collection.create_index([("source", 1), ("created_at", -1)])
+    await revenue_ledger_collection.create_index([("status", 1), ("created_at", -1)])
+    await revenue_ledger_collection.create_index([("market", 1), ("created_at", -1)])
+    await revenue_ledger_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await revenue_ledger_collection.create_index([("organization_id", 1), ("created_at", -1)])
+    await revenue_ledger_collection.create_index(
+        [("external_ref", 1)],
+        unique=True,
+        partialFilterExpression={"external_ref": {"$type": "string"}},
+    )
+    await corporate_accounts_collection.create_index([("status", 1), ("created_at", -1)])
+    await corporate_accounts_collection.create_index([("name", 1)])
+    await corporate_seat_assignments_collection.create_index([("organization_id", 1), ("status", 1), ("created_at", -1)])
+    await corporate_seat_assignments_collection.create_index([("user_id", 1), ("status", 1), ("created_at", -1)])
+    await corporate_seat_assignments_collection.create_index(
+        [("organization_id", 1), ("user_id", 1)],
+        unique=True,
+    )
+    await marketplace_orders_collection.create_index([("created_at", -1)])
+    await marketplace_orders_collection.create_index([("coach_user_id", 1), ("created_at", -1)])
+    await affiliate_conversions_collection.create_index([("partner_name", 1), ("created_at", -1)])
+    await affiliate_conversions_collection.create_index([("attributed_user_id", 1), ("created_at", -1)])
+    await referral_rewards_collection.create_index([("referrer_user_id", 1), ("created_at", -1)])
+    await referral_rewards_collection.create_index([("referred_user_id", 1), ("created_at", -1)])
+    await referral_rewards_collection.create_index(
+        [("referrer_user_id", 1), ("referred_user_id", 1), ("reward_type", 1)],
+        unique=True,
+        partialFilterExpression={"referred_user_id": {"$type": "string"}},
+    )
+    await feature_flags_collection.create_index([("key", 1)], unique=True)
+    await feature_flags_collection.create_index([("updated_at", -1)])
 
 
 async def close_database_connection() -> None:

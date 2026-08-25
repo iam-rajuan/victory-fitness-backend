@@ -2369,6 +2369,8 @@ async def unhandled_exception_handler(
 
     detail = str(exc).strip() or "Internal server error"
 
+    from ..observability import capture_exception
+
     logger.exception(
 
         "unhandled_exception method=%s path=%s detail=%s",
@@ -2379,6 +2381,16 @@ async def unhandled_exception_handler(
 
         detail,
 
+    )
+    capture_exception(
+        exc,
+        context={
+            "method": request.method,
+            "path": request.url.path,
+            "detail": detail,
+            "request_id": getattr(request.state, "request_id", ""),
+            "trace_id": getattr(request.state, "trace_id", ""),
+        },
     )
 
     return _cors_json_response(request, status_code=500, content={"detail": "Internal server error"})

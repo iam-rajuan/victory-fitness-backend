@@ -1,6 +1,9 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...feature_flags import feature_flag_provider_name
+from ...models import InfrastructureStatusResponse
+from ...observability import observability_status
 
 router = APIRouter()
 
@@ -45,3 +48,24 @@ async def root() -> dict[str, str]:
 async def health() -> dict[str, str]:
 
     return {"status": "ok"}
+
+
+@router.get("/system/infrastructure", response_model=InfrastructureStatusResponse)
+async def infrastructure_status() -> InfrastructureStatusResponse:
+    status = observability_status()
+    return InfrastructureStatusResponse(
+        status="ok",
+        featureFlagsProvider=feature_flag_provider_name(),
+        requestAnalyticsEnabled=bool(status["requestAnalyticsEnabled"]),
+        posthogConfigured=bool(status["posthogConfigured"]),
+        plausibleConfigured=bool(status["plausibleConfigured"]),
+        sentryConfigured=bool(status["sentryConfigured"]),
+        otelConfigured=bool(status["otelConfigured"]),
+        aiGenerationJobConcurrency=max(int(getattr(settings, "ai_generation_job_concurrency", 10) or 10), 1),
+        aiGenerationTimeoutSeconds=max(int(getattr(settings, "ai_generation_timeout_seconds", 30) or 30), 1),
+        pushNotificationConcurrency=max(int(getattr(settings, "push_notification_concurrency", 50) or 50), 1),
+        weeklyDigestCronUtc=str(getattr(settings, "weekly_digest_cron_utc", "0 22 * * 0") or "0 22 * * 0"),
+        gcpPrimaryRegion=str(getattr(settings, "gcp_primary_region", "") or ""),
+        gcpSecondaryRegions=list(getattr(settings, "gcp_secondary_regions", []) or []),
+        cloudflareConfigured=bool(status["cloudflareConfigured"]),
+    )

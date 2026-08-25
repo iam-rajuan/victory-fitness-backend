@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Query
 from .database import (
     accountability_pairs_collection,
     analytics_events_collection,
+    corporate_seat_assignments_collection,
     challenges_collection,
     challenge_memberships_collection,
     coach_victor_threads_collection,
@@ -29,6 +30,7 @@ from .database import (
     nutrition_plan_jobs_collection,
     payment_events_collection,
     points_log_collection,
+    revenue_ledger_collection,
     users_collection,
     workout_logs_collection,
     workouts_collection,
@@ -47,6 +49,7 @@ from .models import (
     MarketBreakdownRow,
     MarketFoodItem,
     MarketRevenue,
+    RevenueStreamItem,
     MarketShareSplit,
     MrrTrendPoint,
     NutritionStatsResponse,
@@ -738,27 +741,54 @@ async def revenue_stats(
 ) -> RevenueStatsResponse:
     rng, _, _, *_ = _common_filter(preset, from_date, to_date, market, "created_at")
     activity_market = await _market_user_filter(market)
-    payment_filter = _and(
-        activity_market,
-        {"status": "success"},
-        {"type": "subscription_renewed"},
-    )
+    normalized_market = normalize_market(market)
+    ledger_market_filter: dict[str, Any] = {}
+    if normalized_market in {"ghana", "germany", "india"}:
+        ledger_market_filter = {"market": {"ghana": "GH", "germany": "DE", "india": "IN"}[normalized_market]}
+    elif normalized_market == "other":
+        ledger_market_filter = {"market": {"$nin": ["GH", "DE", "IN", "", None]}}
+    elif normalized_market not in {"", "all"}:
+        ledger_market_filter = {"market": normalized_market.upper()}
+    ledger_filter = _and({"status": "success"}, ledger_market_filter)
     payments = await _safe_find(
-        payment_events_collection,
-        _and(rng, payment_filter),
-        projection={"amount": 1, "currency": 1, "tier": 1, "market": 1, "created_at": 1},
+        revenue_ledger_collection,
+        _and(rng, ledger_filter),
+        projection={
+            "recognized_amount": 1,
+            "gross_amount": 1,
+            "currency": 1,
+            "subscription_tier": 1,
+            "market": 1,
+            "source": 1,
+            "created_at": 1,
+        },
         limit=5000,
     )
+    if not payments:
+        legacy_payment_filter = _and(
+            activity_market,
+            {"status": "success"},
+            {"type": "subscription_renewed"},
+        )
+        payments = await _safe_find(
+            payment_events_collection,
+            _and(rng, legacy_payment_filter),
+            projection={"amount": 1, "currency": 1, "tier": 1, "market": 1, "created_at": 1, "type": 1},
+            limit=5000,
+        )
     by_country: dict[str, float] = defaultdict(float)
     by_tier: dict[str, float] = defaultdict(float)
+    by_stream: dict[str, float] = defaultdict(float)
     daily: dict[str, float] = defaultdict(float)
     for p in payments:
-        amount = float(p.get("amount") or 0)
+        amount = float(p.get("recognized_amount") or p.get("amount") or p.get("gross_amount") or 0)
         currency = str(p.get("currency") or "EUR")
         market_code = str(p.get("market") or "OTHER")
-        tier = str(p.get("tier") or "NONE")
+        tier = str(p.get("subscription_tier") or p.get("tier") or "NONE")
+        source = str(p.get("source") or "consumer_subscription")
         by_country[market_code] += amount
         by_tier[tier] += amount
+        by_stream[source] += amount
         ts = _as_utc_datetime(p.get("created_at"))
         if isinstance(ts, datetime):
             granularity = trend_granularity.lower()
@@ -774,14 +804,32 @@ async def revenue_stats(
     now = datetime.now(timezone.utc)
     month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     mrr_payments = await _safe_find(
-        payment_events_collection,
-        _and({"created_at": {"$gte": month_start, "$lte": now}}, payment_filter),
-        projection={"amount": 1, "market": 1},
+        revenue_ledger_collection,
+        _and(
+            {"created_at": {"$gte": month_start, "$lte": now}},
+            ledger_filter,
+            {"source": {"$in": ["consumer_subscription", "corporate_seat"]}},
+        ),
+        projection={"recognized_amount": 1, "market": 1},
         limit=5000,
     )
+    if not mrr_payments:
+        legacy_payment_filter = _and(
+            activity_market,
+            {"status": "success"},
+            {"type": "subscription_renewed"},
+        )
+        mrr_payments = await _safe_find(
+            payment_events_collection,
+            _and({"created_at": {"$gte": month_start, "$lte": now}}, legacy_payment_filter),
+            projection={"amount": 1, "market": 1},
+            limit=5000,
+        )
     mrr_by_country: dict[str, float] = defaultdict(float)
     for payment in mrr_payments:
-        mrr_by_country[str(payment.get("market") or "OTHER")] += float(payment.get("amount") or 0)
+        mrr_by_country[str(payment.get("market") or "OTHER")] += float(
+            payment.get("recognized_amount") or payment.get("amount") or 0
+        )
     mrr = build_currency_breakdown(mrr_by_country)
     active_subs = await _safe_count(
         users_collection,
@@ -791,8 +839,24 @@ async def revenue_stats(
             {"subscription_purchase_source": {"$ne": "beta_trial"}},
         ),
     )
-    arpu = round(sum(mrr_by_country.values()) / active_subs, 2) if active_subs else 0.0
+    active_corporate_users = await _safe_count(corporate_seat_assignments_collection, {"status": "active"})
+    arpu_base = active_subs + active_corporate_users
+    arpu = round(sum(mrr_by_country.values()) / arpu_base, 2) if arpu_base else 0.0
 
+    revenue_by_stream = [
+        RevenueStreamItem(
+            source=source,
+            label={
+                "consumer_subscription": "Consumer subscriptions",
+                "corporate_seat": "Corporate wellness seats",
+                "coach_marketplace_fee": "Coach marketplace fee",
+                "affiliate_commission": "Supplement affiliate commission",
+                "referral_commission": "Referral reward programme",
+            }.get(source, source.replace("_", " ").title()),
+            amount=round(amount, 2),
+        )
+        for source, amount in sorted(by_stream.items(), key=lambda kv: kv[1], reverse=True)
+    ]
     revenue_by_tier = [
         RevenueTierItem(tier=t, amount=round(amt, 2))
         for t, amt in sorted(by_tier.items(), key=lambda kv: kv[1], reverse=True)
@@ -812,6 +876,7 @@ async def revenue_stats(
 
     return RevenueStatsResponse(
         mrr=mrr,
+        revenueByStream=revenue_by_stream,
         revenueByTier=revenue_by_tier,
         revenueByMarket=revenue_by_market,
         arpu=arpu,

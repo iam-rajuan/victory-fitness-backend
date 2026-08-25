@@ -191,5 +191,11 @@ async def notify_users_of_published_workout(users_collection, workout: dict) -> 
     title = "New workout available"
     message = f"{str(workout.get('title') or 'A new workout')} is now available in Victory Fitness."
     data = {"type": "workout", "workoutId": str(workout.get("_id") or ""), "route": "/workout"}
-    for user in records:
-        await notify_user(users_collection, user, title, message, "workout_published", data)
+    concurrency = max(int(getattr(settings, "push_notification_concurrency", 50) or 50), 1)
+    semaphore = asyncio.Semaphore(concurrency)
+
+    async def _send(user: dict) -> None:
+        async with semaphore:
+            await notify_user(users_collection, user, title, message, "workout_published", data)
+
+    await asyncio.gather(*(_send(user) for user in records), return_exceptions=True)

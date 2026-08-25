@@ -180,6 +180,24 @@ class AppNotificationListResponse(BaseModel):
     items: list[AppNotificationItem] = Field(default_factory=list)
 
 
+class AccountabilityPairItemResponse(BaseModel):
+    pair_id: str
+    partner_user_id: str
+    status: str = "active"
+    created_at: datetime | None = None
+    your_checked_in_today: bool = False
+    partner_checked_in_today: bool = False
+    last_nudged_on: str | None = None
+
+
+class AccountabilityPairListResponse(BaseModel):
+    items: list[AccountabilityPairItemResponse] = Field(default_factory=list)
+
+
+class AccountabilityPairCheckInRequest(BaseModel):
+    completed: bool = True
+
+
 class OnboardingPersonalProfileResponse(BaseModel):
     age: str = ""
     gender: str = ""
@@ -1889,6 +1907,23 @@ class StrengthWorkoutPlanListResponse(BaseModel):
     items: list[StrengthWorkoutPlanResponse] = Field(default_factory=list)
 
 
+class StrengthWorkoutSessionFeedbackRequest(BaseModel):
+    day: str = Field(min_length=1, max_length=40)
+    perceived_difficulty: str = Field(pattern=r"^(easy|good|hard)$")
+    energy: str = Field(default="medium", pattern=r"^(low|medium|high)$")
+    soreness: str = Field(default="medium", pattern=r"^(low|medium|high)$")
+    notes: str = Field(default="", max_length=500)
+
+
+class StrengthWorkoutAdaptiveRecommendationResponse(BaseModel):
+    plan: StrengthWorkoutPlanResponse
+    adjustment_pct: int = 0
+    next_volume_direction: str = "maintain"
+    next_intensity_target: str = ""
+    summary: str = ""
+    updated_at: datetime
+
+
 class StrengthWorkoutPlanCompletionReportResponse(BaseModel):
     file_name: str
     mime_type: str = "image/png"
@@ -2031,6 +2066,12 @@ class RevenueTierItem(BaseModel):
     amount: float
 
 
+class RevenueStreamItem(BaseModel):
+    source: str
+    label: str
+    amount: float
+
+
 class MarketRevenue(BaseModel):
     market: str
     currency: str
@@ -2044,11 +2085,165 @@ class MrrTrendPoint(BaseModel):
 
 class RevenueStatsResponse(BaseModel):
     mrr: dict[str, float] = Field(default_factory=dict)
+    revenueByStream: list[RevenueStreamItem] = Field(default_factory=list)
     revenueByTier: list[RevenueTierItem] = Field(default_factory=list)
     revenueByMarket: list[MarketRevenue] = Field(default_factory=list)
     arpu: float
     mrrTrend: list[MrrTrendPoint] = Field(default_factory=list)
     trendGranularity: str = "weekly"
+
+
+class AdminCorporateAccountRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=160)
+    billingCurrency: str = Field(default="EUR", min_length=3, max_length=3)
+    seatPriceMonthly: float = Field(default=0, ge=0)
+    seatPriceYearly: float = Field(default=0, ge=0)
+    hrDashboardEnabled: bool = True
+    status: str = Field(default="active", pattern=r"^(active|paused|archived)$")
+
+
+class AdminCorporateAccountItem(BaseModel):
+    id: str
+    name: str
+    status: str
+    billingCurrency: str
+    seatPriceMonthly: float = 0
+    seatPriceYearly: float = 0
+    hrDashboardEnabled: bool = True
+    activeSeats: int = 0
+    createdAt: datetime
+
+
+class AdminCorporateAccountListResponse(BaseModel):
+    items: list[AdminCorporateAccountItem] = Field(default_factory=list)
+
+
+class AdminCorporateSeatAssignmentRequest(BaseModel):
+    userId: str = Field(min_length=1, max_length=120)
+    billingCycle: str = Field(default="monthly", pattern=r"^(monthly|yearly)$")
+    status: str = Field(default="active", pattern=r"^(active|paused|cancelled)$")
+
+
+class AdminCorporateSeatAssignmentResponse(BaseModel):
+    seatId: str
+    organizationId: str
+    userId: str
+    billingCycle: str
+    status: str
+    amount: float
+    currency: str
+    createdAt: datetime
+
+
+class AdminCorporateDashboardResponse(BaseModel):
+    organizationId: str
+    organizationName: str
+    totalSeats: int = 0
+    activeSeats: int = 0
+    employeesWithAnyActivity: int = 0
+    anonymizedEngagementPct: float = 0
+    marketBreakdown: dict[str, int] = Field(default_factory=dict)
+    lastUpdated: datetime
+
+
+class AdminMarketplaceOrderRequest(BaseModel):
+    coachName: str = Field(min_length=2, max_length=160)
+    customerUserId: str | None = Field(default=None, max_length=120)
+    coachUserId: str | None = Field(default=None, max_length=120)
+    description: str = Field(default="", max_length=500)
+    amount: float = Field(ge=0)
+    currency: str = Field(default="EUR", min_length=3, max_length=3)
+    market: str = Field(default="OTHER", max_length=16)
+    status: str = Field(default="paid", pattern=r"^(paid|pending|refunded)$")
+
+
+class AdminAffiliateConversionRequest(BaseModel):
+    partnerName: str = Field(min_length=2, max_length=160)
+    productName: str = Field(min_length=2, max_length=160)
+    amount: float = Field(ge=0)
+    currency: str = Field(default="EUR", min_length=3, max_length=3)
+    market: str = Field(default="OTHER", max_length=16)
+    attributedUserId: str | None = Field(default=None, max_length=120)
+    clickId: str | None = Field(default=None, max_length=160)
+    disclosureAccepted: bool = True
+
+
+class AdminReferralRewardRequest(BaseModel):
+    referrerUserId: str = Field(min_length=1, max_length=120)
+    referredUserId: str | None = Field(default=None, max_length=120)
+    amount: float = Field(ge=0)
+    currency: str = Field(default="EUR", min_length=3, max_length=3)
+    market: str = Field(default="OTHER", max_length=16)
+    sourceSubscriptionTier: str = Field(default="", max_length=40)
+
+
+class AdminRevenueActionResponse(BaseModel):
+    id: str
+    ledgerId: str | None = None
+    status: str = "success"
+
+
+class ReferralProgramClaimRequest(BaseModel):
+    code: str = Field(min_length=4, max_length=64)
+
+
+class ReferralProgramStatusResponse(BaseModel):
+    code: str
+    successfulReferrals: int = 0
+    legendUnlocked: bool = False
+    revenueSharePct: int = 0
+    totalEarned: float = 0
+    currency: str = "EUR"
+    referredByCode: str | None = None
+
+
+class AdminFeatureFlagRequest(BaseModel):
+    key: str = Field(min_length=2, max_length=120)
+    description: str = Field(default="", max_length=500)
+    enabled: bool = True
+    rolloutPct: int = Field(default=100, ge=0, le=100)
+    allowedCountries: list[str] = Field(default_factory=list)
+
+
+class AdminFeatureFlagItem(BaseModel):
+    key: str
+    description: str = ""
+    enabled: bool = True
+    rolloutPct: int = 100
+    allowedCountries: list[str] = Field(default_factory=list)
+    updatedAt: datetime
+
+
+class AdminFeatureFlagListResponse(BaseModel):
+    items: list[AdminFeatureFlagItem] = Field(default_factory=list)
+
+
+class RuntimeFeatureFlagItem(BaseModel):
+    key: str
+    enabled: bool = False
+    reason: str = ""
+
+
+class RuntimeFeatureFlagListResponse(BaseModel):
+    provider: str = "growthbook"
+    items: list[RuntimeFeatureFlagItem] = Field(default_factory=list)
+
+
+class InfrastructureStatusResponse(BaseModel):
+    status: str = "ok"
+    featureFlagsProvider: str = "growthbook"
+    requestAnalyticsEnabled: bool = False
+    posthogConfigured: bool = False
+    plausibleConfigured: bool = False
+    sentryConfigured: bool = False
+    otelConfigured: bool = False
+    aiGenerationJobConcurrency: int = 10
+    aiGenerationTimeoutSeconds: int = 30
+    pushNotificationConcurrency: int = 50
+    weeklyDigestCronUtc: str = "0 22 * * 0"
+    gcpPrimaryRegion: str = ""
+    gcpSecondaryRegions: list[str] = Field(default_factory=list)
+    cloudflareConfigured: bool = False
 
 
 class AccountabilityStatsResponse(BaseModel):

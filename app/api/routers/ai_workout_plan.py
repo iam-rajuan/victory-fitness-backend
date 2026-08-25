@@ -1,8 +1,73 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...models import (
+    StrengthWorkoutAdaptiveRecommendationResponse,
+    StrengthWorkoutSessionFeedbackRequest,
+)
 
 router = APIRouter()
+
+
+def _adjust_strength_volume_label(volume_label: str, adjustment_pct: int) -> str:
+    text = str(volume_label or "").strip()
+    if not text or adjustment_pct == 0:
+        return text
+    match = re.match(r"^\s*([\d,]+(?:\.\d+)?)\s*(.*)$", text)
+    if not match:
+        return text
+    try:
+        numeric_value = float(match.group(1).replace(",", ""))
+    except ValueError:
+        return text
+    adjusted_value = max(numeric_value * (1 + (adjustment_pct / 100.0)), 0)
+    suffix = match.group(2).strip()
+    rounded_value = int(round(adjusted_value))
+    formatted = f"{rounded_value:,}" if rounded_value >= 1 else f"{adjusted_value:.1f}".rstrip("0").rstrip(".")
+    return f"{formatted} {suffix}".strip()
+
+
+def _adjust_strength_intensity_label(intensity_label: str, adjustment_pct: int) -> str:
+    text = str(intensity_label or "").strip()
+    if not text or adjustment_pct == 0:
+        return text
+    rpe_match = re.search(r"RPE\s*([0-9]+(?:\.[0-9])?)", text, re.IGNORECASE)
+    if rpe_match:
+        try:
+            current_value = float(rpe_match.group(1))
+        except ValueError:
+            return text
+        delta = 0.5 if adjustment_pct > 0 else -0.5
+        next_value = min(max(current_value + delta, 5.0), 10.0)
+        return re.sub(
+            r"RPE\s*[0-9]+(?:\.[0-9])?",
+            f"RPE {next_value:.1f}",
+            text,
+            count=1,
+            flags=re.IGNORECASE,
+        )
+    replacements = {
+        "moderate": "moderately hard" if adjustment_pct > 0 else "controlled",
+        "hard": "very hard" if adjustment_pct > 0 else "moderate",
+        "controlled": "moderate" if adjustment_pct > 0 else "easy",
+    }
+    lowered = text.lower()
+    for source, target in replacements.items():
+        if source in lowered:
+            pattern = re.compile(re.escape(source), re.IGNORECASE)
+            return pattern.sub(target, text, count=1)
+    return text
+
+
+def _adaptive_workout_adjustment(payload: StrengthWorkoutSessionFeedbackRequest) -> tuple[int, str, str]:
+    perceived = str(payload.perceived_difficulty or "").lower()
+    energy = str(payload.energy or "").lower()
+    soreness = str(payload.soreness or "").lower()
+    if perceived == "hard" or energy == "low" or soreness == "high":
+        return (-10, "decrease", "Reduce the next workout slightly so recovery stays ahead of fatigue.")
+    if perceived == "easy" and energy == "high" and soreness == "low":
+        return (5, "increase", "You handled this session well, so the next workout can progress slightly.")
+    return (0, "maintain", "Keep the next workout steady and reinforce consistency before changing load again.")
 
 @router.get("/ai/workout-plan/strength/{plan_id}/report", response_model=StrengthWorkoutPlanCompletionReportResponse)
 async def workout_strength_plan_completion_report(
@@ -470,6 +535,86 @@ async def workout_strength_plan_progress_update(
     record["updated_at"] = now
 
     return _serialize_strength_workout_plan_record(record)
+
+
+@router.post("/ai/workout-plan/strength/{plan_id}/feedback", response_model=StrengthWorkoutAdaptiveRecommendationResponse)
+async def workout_strength_plan_feedback(
+    plan_id: str,
+    payload: StrengthWorkoutSessionFeedbackRequest,
+    user: dict = Depends(_require_workout_plan_access_user),
+) -> StrengthWorkoutAdaptiveRecommendationResponse:
+    if not ObjectId.is_valid(plan_id):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    record = await strength_workout_plans_collection.find_one(
+        {"_id": ObjectId(plan_id), "user_id": str(user["_id"])},
+    )
+    if not record or not isinstance(record.get("plan"), dict):
+        raise HTTPException(status_code=404, detail="Strength workout plan not found")
+
+    day_key = str(payload.day or "").strip()
+    if not day_key:
+        raise HTTPException(status_code=400, detail="Day is required")
+
+    plan_data = dict(record.get("plan") or {})
+    plan_days = [dict(item) for item in plan_data.get("days") or [] if isinstance(item, dict)]
+    selected_index = next(
+        (index for index, day in enumerate(plan_days) if str(day.get("day") or "").strip() == day_key),
+        -1,
+    )
+    if selected_index < 0:
+        raise HTTPException(status_code=400, detail="Workout day not found")
+
+    adjustment_pct, direction, summary = _adaptive_workout_adjustment(payload)
+    next_intensity_target = ""
+    if selected_index + 1 < len(plan_days):
+        next_day = dict(plan_days[selected_index + 1])
+        next_day["volume"] = _adjust_strength_volume_label(str(next_day.get("volume") or ""), adjustment_pct)
+        next_day["intensity"] = _adjust_strength_intensity_label(str(next_day.get("intensity") or ""), adjustment_pct)
+        next_intensity_target = str(next_day.get("intensity") or "")
+        plan_days[selected_index + 1] = next_day
+        plan_data["days"] = plan_days
+
+    now = datetime.now(timezone.utc)
+    raw_feedback = record.get("session_feedback") or []
+    session_feedback = [item for item in raw_feedback if isinstance(item, dict)]
+    session_feedback.append(
+        {
+            "day": day_key,
+            "perceived_difficulty": payload.perceived_difficulty,
+            "energy": payload.energy,
+            "soreness": payload.soreness,
+            "notes": str(payload.notes or "").strip(),
+            "adjustment_pct": adjustment_pct,
+            "next_volume_direction": direction,
+            "created_at": now,
+        }
+    )
+    session_feedback = session_feedback[-60:]
+
+    await strength_workout_plans_collection.update_one(
+        {"_id": record["_id"]},
+        {
+            "$set": {
+                "plan": plan_data,
+                "session_feedback": session_feedback,
+                "updated_at": now,
+            }
+        },
+    )
+
+    record["plan"] = plan_data
+    record["session_feedback"] = session_feedback
+    record["updated_at"] = now
+
+    return StrengthWorkoutAdaptiveRecommendationResponse(
+        plan=_serialize_strength_workout_plan_record(record),
+        adjustment_pct=adjustment_pct,
+        next_volume_direction=direction,
+        next_intensity_target=next_intensity_target,
+        summary=summary,
+        updated_at=now,
+    )
 
 @router.delete("/ai/workout-plan/strength/latest")
 

@@ -4,6 +4,15 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+
+async def _resolve_me_payload(record: dict) -> dict:
+    payload = _serialize_me_record(record)
+    while inspect.isawaitable(payload):
+        payload = await payload
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="Unable to serialize user profile")
+    return payload
+
 @router.get("/me/trial/status", response_model=GoldTrialSummaryResponse)
 async def get_me_gold_trial_status(user: dict = Depends(_require_access_user)) -> GoldTrialSummaryResponse:
     return GoldTrialSummaryResponse(**_trial_summary(user))
@@ -55,7 +64,7 @@ async def start_me_phase_one_beta(user: dict = Depends(_require_access_user)) ->
         raise HTTPException(status_code=403, detail="The 21-day Phase 1 beta is not enabled")
 
     if _is_phase_one_beta_user(user):
-        return MeResponse(**(await _serialize_me_record(user)))
+        return MeResponse(**(await _resolve_me_payload(user)))
 
     current_tier = _normalize_subscription_tier(user.get("subscription_tier"))
     if current_tier != "NONE":
@@ -82,7 +91,7 @@ async def start_me_phase_one_beta(user: dict = Depends(_require_access_user)) ->
         user_id=str(user["_id"]),
         market=str(updated_user.get("country_code") or user.get("country_code") or "") or None,
     )
-    return MeResponse(**(await _serialize_me_record(updated_user)))
+    return MeResponse(**(await _resolve_me_payload(updated_user)))
 
 @router.get("/me/trial/decision", response_model=GoldTrialDecisionResponse)
 async def get_me_gold_trial_decision(user: dict = Depends(_require_access_user)) -> GoldTrialDecisionResponse:
