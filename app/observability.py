@@ -121,9 +121,78 @@ def _request_ip(request) -> str:
     return request.client.host if request.client else ""
 
 
+def _is_sensitive_path(path: str) -> bool:
+    normalized = str(path or "").strip().lower()
+    return normalized.startswith("/auth/") or normalized in {
+        "/me/profile-image",
+    }
+
+
+def _response_preview(response, path: str) -> str:
+    if _is_sensitive_path(path):
+        return "[redacted]"
+    content_type = str(getattr(response, "headers", {}).get("content-type") or "").lower()
+    body = getattr(response, "body", None)
+    if not isinstance(body, (bytes, bytearray)) or not body:
+        return "-"
+    if len(body) > 2048:
+        return f"[{len(body)} bytes omitted]"
+    if "application/json" not in content_type and "text/" not in content_type:
+        return f"[{content_type or 'binary'} body omitted]"
+    try:
+        decoded = body.decode("utf-8")
+    except UnicodeDecodeError:
+        return "[non-utf8 body omitted]"
+    compact = " ".join(decoded.split())
+    if "application/json" in content_type:
+        try:
+            compact = json.dumps(json.loads(decoded), ensure_ascii=False, separators=(",", ":"))
+        except json.JSONDecodeError:
+            pass
+    return compact[:1200] or "-"
+
+
+def _print_api_hit(
+    *,
+    request_id: str,
+    trace_id: str,
+    method: str,
+    path: str,
+    query: str,
+    status_code: int,
+    duration_ms: float,
+    client_ip: str,
+    content_type: str,
+    content_length: str,
+    response_preview: str,
+) -> None:
+    print(
+        "\n".join(
+            [
+                "",
+                "========== API HIT ==========",
+                f"Method        : {method}",
+                f"Path          : {path}",
+                f"Query         : {query or '-'}",
+                f"Status        : {status_code}",
+                f"Duration(ms)  : {duration_ms}",
+                f"Client IP     : {client_ip or '-'}",
+                f"Request ID    : {request_id}",
+                f"Trace ID      : {trace_id}",
+                f"Content-Type  : {content_type or '-'}",
+                f"Content-Length: {content_length or '-'}",
+                f"Response Body : {response_preview}",
+                "=============================",
+            ]
+        ),
+        flush=True,
+    )
+
+
 async def observability_middleware(request, call_next):
     request_id = str(uuid4())
     trace_id = str(uuid4()).replace("-", "")
+    client_ip = _request_ip(request)
     request.state.request_id = request_id
     request.state.trace_id = trace_id
     started_at = perf_counter()
@@ -138,7 +207,7 @@ async def observability_middleware(request, call_next):
                 "method": request.method,
                 "request_id": request_id,
                 "trace_id": trace_id,
-                "ip": _request_ip(request),
+                "ip": client_ip,
                 "duration_ms": duration_ms,
             },
         )
@@ -146,6 +215,20 @@ async def observability_middleware(request, call_next):
     duration_ms = round((perf_counter() - started_at) * 1000, 2)
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Trace-ID"] = trace_id
+    if request.method != "OPTIONS":
+        _print_api_hit(
+            request_id=request_id,
+            trace_id=trace_id,
+            method=request.method,
+            path=request.url.path,
+            query=str(request.url.query or ""),
+            status_code=response.status_code,
+            duration_ms=duration_ms,
+            client_ip=client_ip,
+            content_type=str(response.headers.get("content-type") or ""),
+            content_length=str(response.headers.get("content-length") or ""),
+            response_preview=_response_preview(response, request.url.path),
+        )
     if settings.request_analytics_enabled:
         asyncio.create_task(
             record_observability_event(
@@ -157,7 +240,7 @@ async def observability_middleware(request, call_next):
                     "path": request.url.path,
                     "status_code": response.status_code,
                     "duration_ms": duration_ms,
-                    "ip": _request_ip(request),
+                    "ip": client_ip,
                     "url": str(request.url),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 },
