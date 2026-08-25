@@ -38,6 +38,13 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
 ]
 
 
+def _is_collection_available(collection: Any) -> bool:
+    try:
+        return bool(collection)
+    except NotImplementedError:
+        return collection is not None
+
+
 def _bucket(*parts: str, modulo: int) -> int:
     seed = ":".join(str(part or "").strip().lower() for part in parts if str(part or "").strip())
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()
@@ -81,7 +88,7 @@ def build_post_workout_upsell_message(user: dict) -> tuple[str, str]:
 
 
 async def ensure_notification_templates() -> list[dict[str, Any]]:
-    if not app_content_collection:
+    if not _is_collection_available(app_content_collection):
         return [dict(item) for item in DEFAULT_NOTIFICATION_TEMPLATES]
     now = datetime.now(timezone.utc)
     await app_content_collection.update_one(
@@ -105,7 +112,7 @@ async def list_notification_templates() -> list[dict[str, Any]]:
 
 
 async def replace_notification_templates(items: list[dict[str, Any]]) -> None:
-    if not app_content_collection:
+    if not _is_collection_available(app_content_collection):
         return
     now = datetime.now(timezone.utc)
     await app_content_collection.update_one(
@@ -133,7 +140,7 @@ async def resolve_notification_variant(user: dict, notification_type: str, fallb
 
 
 async def log_notification_event(user_id: str, notification_id: str, notification_type: str, copy_variant: str, status: str, *, action_taken: bool = False) -> None:
-    if not notification_events_collection:
+    if not _is_collection_available(notification_events_collection):
         return
     await notification_events_collection.insert_one(
         {
@@ -149,7 +156,7 @@ async def log_notification_event(user_id: str, notification_id: str, notificatio
 
 
 async def mark_notification_event_opened(user_id: str, notification_id: str) -> None:
-    if not notification_events_collection:
+    if not _is_collection_available(notification_events_collection):
         return
     await notification_events_collection.update_one(
         {"user_id": user_id, "notification_id": notification_id},
@@ -158,7 +165,7 @@ async def mark_notification_event_opened(user_id: str, notification_id: str) -> 
 
 
 async def mark_notification_event_actioned(user_id: str, notification_id: str) -> None:
-    if not notification_events_collection:
+    if not _is_collection_available(notification_events_collection):
         return
     await notification_events_collection.update_one(
         {"user_id": user_id, "notification_id": notification_id},
