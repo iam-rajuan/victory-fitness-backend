@@ -5,6 +5,18 @@ from ...utils.country import derive_country_code
 
 router = APIRouter()
 
+
+def _validate_minimum_supported_age(age_value: str | None) -> None:
+    normalized = str(age_value or "").strip()
+    if not normalized:
+        return
+    try:
+        age = int(float(normalized))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Age must be a valid number") from exc
+    if age < 16:
+        raise HTTPException(status_code=400, detail="You must be at least 16 years old to use Victory Fitness")
+
 @router.get("/me", response_model=MeResponse)
 
 async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
@@ -67,6 +79,22 @@ async def update_me(
 
         update_doc["motivation_statement"] = motivation_statement or None
         update_doc["onboarding_state.motivationStatement"] = motivation_statement
+
+    if payload.identity_statement is not None:
+        identity_statement = payload.identity_statement.strip()
+        update_doc["identity_statement"] = identity_statement or None
+
+    if payload.workout_unlock_label is not None:
+        workout_unlock_label = payload.workout_unlock_label.strip()
+        update_doc["workout_unlock_label"] = workout_unlock_label or None
+
+    if payload.training_trigger_context is not None:
+        training_trigger_context = payload.training_trigger_context.strip()
+        update_doc["training_trigger_context"] = training_trigger_context or None
+
+    if payload.training_trigger_action is not None:
+        training_trigger_action = payload.training_trigger_action.strip()
+        update_doc["training_trigger_action"] = training_trigger_action or None
 
     if payload.profileImage is not None:
 
@@ -132,6 +160,7 @@ async def update_me_onboarding(
 
     if payload.personalProfile is not None:
         personal_profile_update = payload.personalProfile.model_dump()
+        _validate_minimum_supported_age(personal_profile_update.get("age"))
         next_state["personalProfile"] = {
             **dict(next_state.get("personalProfile") or {}),
             **personal_profile_update,
@@ -311,6 +340,7 @@ async def update_body_metrics(
     next_metrics = dict(user.get("body_metrics") or {})
 
     if payload.age is not None:
+        _validate_minimum_supported_age(payload.age)
 
         next_metrics["age"] = payload.age.strip()
 

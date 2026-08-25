@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from typing import Any
 
@@ -24,6 +25,14 @@ class RegisterRequest(BaseModel):
         if not value:
             raise ValueError("must not be blank")
         return value
+
+    @field_validator("mobile")
+    @classmethod
+    def require_e164_mobile(cls, value: str) -> str:
+        normalized = re.sub(r"[\s()-]+", "", value.strip())
+        if not re.fullmatch(r"^\+[1-9]\d{7,14}$", normalized):
+            raise ValueError("must be a valid E.164 phone number such as +233XXXXXXXXX")
+        return normalized
 
     @field_validator("password")
     @classmethod
@@ -148,6 +157,7 @@ class MeResponse(BaseModel):
     identity_statement: str | None = None
     workout_unlock_label: str | None = None
     training_trigger_context: str | None = None
+    training_trigger_action: str | None = None
 
 
 class UpdateMeRequest(BaseModel):
@@ -161,6 +171,7 @@ class UpdateMeRequest(BaseModel):
     identity_statement: str | None = Field(default=None, max_length=240)
     workout_unlock_label: str | None = Field(default=None, max_length=120)
     training_trigger_context: str | None = Field(default=None, max_length=240)
+    training_trigger_action: str | None = Field(default=None, max_length=240)
 
 
 class PushTokenRequest(BaseModel):
@@ -608,8 +619,22 @@ class CoachingApplicationResponse(BaseModel):
     updated_at: datetime
 
 
+class CoachingApplicationSummaryResponse(BaseModel):
+    totalApplications: int = 0
+    visibleApplications: int = 0
+    newApplications: int = 0
+    reviewingApplications: int = 0
+    approvedApplications: int = 0
+    rejectedApplications: int = 0
+    withPhoneNumber: int = 0
+    submittedLast7Days: int = 0
+
+
 class CoachingApplicationListResponse(BaseModel):
     applications: list[CoachingApplicationResponse] = Field(default_factory=list)
+    summary: CoachingApplicationSummaryResponse = Field(default_factory=CoachingApplicationSummaryResponse)
+    query: str = ""
+    statusFilter: str = "ALL"
 
 
 class AdminCoachingApplicationUpdateRequest(BaseModel):
@@ -635,8 +660,20 @@ class SupportMessageResponse(BaseModel):
     updated_at: datetime
 
 
+class SupportMessageSummaryResponse(BaseModel):
+    totalMessages: int = 0
+    visibleMessages: int = 0
+    openMessages: int = 0
+    inProgressMessages: int = 0
+    resolvedMessages: int = 0
+    submittedLast7Days: int = 0
+
+
 class SupportMessageListResponse(BaseModel):
     messages: list[SupportMessageResponse] = Field(default_factory=list)
+    summary: SupportMessageSummaryResponse = Field(default_factory=SupportMessageSummaryResponse)
+    query: str = ""
+    statusFilter: str = "ALL"
 
 
 class AdminSupportMessageUpdateRequest(BaseModel):
@@ -1438,6 +1475,7 @@ class AdminUserListItem(BaseModel):
     identity_statement: str | None = None
     workout_unlock_label: str | None = None
     training_trigger_context: str | None = None
+    training_trigger_action: str | None = None
     createdAt: datetime
     updatedAt: datetime
     profileImage: str = ""

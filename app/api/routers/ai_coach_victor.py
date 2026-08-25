@@ -86,6 +86,7 @@ async def _coach_user_context(user: dict, recent_messages: list[dict[str, Any]])
             "identity_statement": user.get("identity_statement"),
             "workout_unlock_label": user.get("workout_unlock_label"),
             "training_trigger_context": user.get("training_trigger_context"),
+            "training_trigger_action": user.get("training_trigger_action"),
         },
         "longevity": {
             "completed_habits": [item for item in completed_habits if item],

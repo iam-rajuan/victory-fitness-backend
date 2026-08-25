@@ -571,7 +571,7 @@ async def challenge_stats(
                 pass
         try:
             members = await challenge_memberships_collection.count_documents(
-                _and(membership_filter, {"challenge_id": challenge_id}, {"status": "completed"})
+                _and(membership_filter, {"challenge_id": challenge_id}, {"status": {"$in": ["completed", "COMPLETED"]}})
             )
             completion_rate = safe_ratio(members, max(top.get("count", 0), 1))
         except Exception:
@@ -1172,18 +1172,21 @@ async def whatsapp_tracker_widget(
 
 @router.get("/daily-wins", response_model=DailyWinsFeedResponse)
 async def daily_wins_widget(
+    preset: str = Query("this_week"),
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    market: str = Query("all"),
     _: dict = Depends(require_admin_user),
 ) -> DailyWinsFeedResponse:
-    from datetime import timedelta
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(hours=24)
+    start, end, _, _ = parse_time_range(preset, from_date, to_date)
     rng = {"created_at": {"$gte": start, "$lte": end}}
+    activity_market = await _market_user_filter(market)
     events: list[DailyWinEvent] = []
 
     if completion_cards_collection is not None:
         try:
             pipeline = [
-                {"$match": {"$and": [rng, {"shared_to_whatsapp": True}]}},
+                {"$match": {"$and": [rng, activity_market, {"shared_to_whatsapp": True}]}},
                 {"$group": {"_id": {"$dateToString": {"format": "%Y-%m-%dT%H", "date": "$created_at"}}, "count": {"$sum": 1}}},
                 {"$sort": {"_id": -1}},
                 {"$limit": 5},
@@ -1200,7 +1203,9 @@ async def daily_wins_widget(
 
     if accountability_pairs_collection is not None:
         try:
-            n = await accountability_pairs_collection.count_documents(rng)
+            n = await accountability_pairs_collection.count_documents(
+                {"$and": [rng, await _market_user_filter(market, "user_ids"), {"status": "active"}]}
+            )
             if n:
                 events.append(DailyWinEvent(type="pair_created", label=f"{n} new accountability pair{'s' if n != 1 else ''}", count=n, createdAt=end))
         except Exception:
@@ -1208,7 +1213,9 @@ async def daily_wins_widget(
 
     if challenge_memberships_collection is not None:
         try:
-            n = await challenge_memberships_collection.count_documents({"$and": [rng, {"status": "completed"}]})
+            n = await challenge_memberships_collection.count_documents(
+                {"$and": [rng, activity_market, {"status": {"$in": ["completed", "COMPLETED"]}}]}
+            )
             if n:
                 events.append(DailyWinEvent(type="challenge_completed", label=f"{n} challenge{'s' if n != 1 else ''} completed", count=n, createdAt=end))
         except Exception:
@@ -1218,6 +1225,7 @@ async def daily_wins_widget(
         payment_events_collection,
         _and(
             rng,
+            {"market": normalize_market(market).upper()} if normalize_market(market) in {"gh", "de", "in"} else None,
             {"type": "subscription_started"},
             {"tier": {"$in": ["GOLD", "PLATINUM", "INNER_CIRCLE"]}},
         ),
@@ -1225,7 +1233,7 @@ async def daily_wins_widget(
     if new_subs:
         events.append(DailyWinEvent(type="new_subscriber", label=f"{new_subs} new Gold subscriber{'s' if new_subs != 1 else ''}", count=new_subs, createdAt=end))
 
-    streaks = await _safe_count(analytics_events_collection, {"$and": [rng, {"event_type": "streak_7_day"}]})
+    streaks = await _safe_count(analytics_events_collection, {"$and": [rng, activity_market, {"event_type": "streak_7_day"}]})
     if streaks:
         events.append(DailyWinEvent(type="streak", label=f"{streaks} 7-day streak{'s' if streaks != 1 else ''} achieved", count=streaks, createdAt=end))
 

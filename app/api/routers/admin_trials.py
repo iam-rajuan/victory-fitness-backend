@@ -1,9 +1,60 @@
-from fastapi import APIRouter
+import re
+from datetime import date
+
+from fastapi import APIRouter, Query
 
 from ...core.legacy import *
 from ...services.beta_analytics import build_phase_one_beta_analytics
+from ...utils.analytics import market_filter, parse_time_range
 
 router = APIRouter()
+
+
+def _matches_market(user: dict, market: str) -> bool:
+    scoped_filter = market_filter(market)
+    if not scoped_filter:
+        return True
+
+    country_code = str(user.get("country_code") or "").upper()
+    country = str(user.get("country") or "")
+
+    def _matches_condition(condition: dict) -> bool:
+        for key, expected in condition.items():
+            if key == "$or":
+                return any(_matches_condition(item) for item in expected)
+            if key == "$and":
+                return all(_matches_condition(item) for item in expected)
+            if key == "country_code":
+                if isinstance(expected, dict):
+                    if "$exists" in expected:
+                        exists = bool(country_code)
+                        if exists != bool(expected["$exists"]):
+                            return False
+                    if "$nin" in expected and country_code in {str(item or "").upper() for item in expected["$nin"]}:
+                        return False
+                elif country_code != str(expected).upper():
+                    return False
+            elif key == "country":
+                if not isinstance(expected, dict):
+                    if country.lower() != str(expected).lower():
+                        return False
+                    continue
+                regex = expected.get("$regex")
+                if regex and not re.search(regex, country, re.IGNORECASE):
+                    return False
+                not_clause = expected.get("$not")
+                if isinstance(not_clause, dict):
+                    not_regex = not_clause.get("$regex")
+                    if not_regex and re.search(not_regex, country, re.IGNORECASE):
+                        return False
+        return True
+
+    return _matches_condition(scoped_filter)
+
+
+def _started_in_selected_range(user: dict, start: datetime, end: datetime) -> bool:
+    started_at = _trial_started_at(user)
+    return bool(started_at and start <= started_at <= end)
 
 @router.get("/admin/trials/config", response_model=GoldTrialConfigResponse)
 async def admin_get_gold_trial_config(_: dict = Depends(_require_admin_user)) -> GoldTrialConfigResponse:
@@ -34,8 +85,15 @@ async def admin_update_gold_trial_config(
     return GoldTrialConfigResponse(**_serialize_gold_trial_config(updated))
 
 @router.get("/admin/trials/outcomes", response_model=GoldTrialOutcomeBreakdownResponse)
-async def admin_gold_trial_outcomes(_: dict = Depends(_require_admin_user)) -> GoldTrialOutcomeBreakdownResponse:
+async def admin_gold_trial_outcomes(
+    preset: str = Query("this_week"),
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    market: str = Query("all"),
+    _: dict = Depends(_require_admin_user),
+) -> GoldTrialOutcomeBreakdownResponse:
     now = datetime.now(timezone.utc)
+    start, end, _, _ = parse_time_range(preset, from_date, to_date)
     users = await users_collection.find(
         {
             "is_admin": {"$ne": True},
@@ -45,6 +103,8 @@ async def admin_gold_trial_outcomes(_: dict = Depends(_require_admin_user)) -> G
     ).to_list(length=None)
     total = active = converted = downgraded = lapsed = pending = 0
     for user in users:
+        if not _started_in_selected_range(user, start, end) or not _matches_market(user, market):
+            continue
         total += 1
         summary = _trial_summary(user, now)
         outcome = summary["outcome"]
@@ -72,8 +132,15 @@ async def admin_gold_trial_outcomes(_: dict = Depends(_require_admin_user)) -> G
     )
 
 @router.get("/admin/trials/cohorts", response_model=AdminTrialCohortResponse)
-async def admin_trial_cohorts(_: dict = Depends(_require_admin_user)) -> AdminTrialCohortResponse:
+async def admin_trial_cohorts(
+    preset: str = Query("this_week"),
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    market: str = Query("all"),
+    _: dict = Depends(_require_admin_user),
+) -> AdminTrialCohortResponse:
     now = datetime.now(timezone.utc)
+    start, end, _, _ = parse_time_range(preset, from_date, to_date)
     users = await users_collection.find({
         "is_admin": {"$ne": True},
         "subscription_purchase_source": {"$ne": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
@@ -85,7 +152,7 @@ async def admin_trial_cohorts(_: dict = Depends(_require_admin_user)) -> AdminTr
     grouped: dict[tuple[str, str], dict] = {}
     for user in users:
         started_at = _trial_started_at(user)
-        if not started_at:
+        if not started_at or not (start <= started_at <= end) or not _matches_market(user, market):
             continue
         key = (_trial_cohort_key(started_at), str(user.get("signup_source") or "organic").strip() or "organic")
         bucket = grouped.setdefault(key, {"total": 0, "converted": 0, "dropouts": 0, "engaged": {str(day): 0 for day in range(6)}})
@@ -114,10 +181,15 @@ async def admin_trial_cohorts(_: dict = Depends(_require_admin_user)) -> AdminTr
 
 @router.get("/admin/trials/dropouts", response_model=AdminTrialDropoutResponse)
 async def admin_trial_dropouts(
+    preset: str = Query("this_week"),
+    from_date: date | None = Query(default=None, alias="from"),
+    to_date: date | None = Query(default=None, alias="to"),
+    market: str = Query("all"),
     limit: int = 100,
     _: dict = Depends(_require_admin_user),
 ) -> AdminTrialDropoutResponse:
     now = datetime.now(timezone.utc)
+    start, end, _, _ = parse_time_range(preset, from_date, to_date)
     records = await users_collection.find({
         "is_admin": {"$ne": True},
         "marketing_consent": True,
@@ -130,7 +202,13 @@ async def admin_trial_dropouts(
     dropouts = []
     for user in records:
         started_at = _trial_started_at(user)
-        if not started_at or _trial_user_converted(user) or now < started_at + timedelta(days=5):
+        if (
+            not started_at
+            or not (start <= started_at <= end)
+            or not _matches_market(user, market)
+            or _trial_user_converted(user)
+            or now < started_at + timedelta(days=5)
+        ):
             continue
         engagement = user.get("trial_engagement") or {}
         engagement_days = [int(day) for day in (engagement.get("days") or []) if str(day).isdigit()]
@@ -147,6 +225,8 @@ async def admin_trial_dropouts(
             nutritionPlanCreated=bool(engagement.get("nutrition_plan_created_at")),
             campaignDaysSent=sorted({int(day) for day in (user.get("trial_campaign_sent_days") or []) if str(day).isdigit()}),
         ))
+        if len(dropouts) >= min(max(limit, 1), 500):
+            break
     return AdminTrialDropoutResponse(total=len(dropouts), users=dropouts)
 
 

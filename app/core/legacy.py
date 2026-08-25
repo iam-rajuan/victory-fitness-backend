@@ -6864,23 +6864,21 @@ async def _build_admin_user_summary_response(year: int | None = None) -> AdminUs
     year_start = datetime(selected_year, 1, 1, tzinfo=timezone.utc)
     next_year_start = datetime(selected_year + 1, 1, 1, tzinfo=timezone.utc)
     base_filter = {"is_admin": {"$ne": True}}
-    total_users, active_users, pending_users, yearly_users = await asyncio.gather(
+    active_filter = {
+        "$or": [
+            {"is_verified": True},
+            {"status": {"$regex": "^active$", "$options": "i"}},
+        ]
+    }
+    total_users, active_users, yearly_users = await asyncio.gather(
         users_collection.count_documents(base_filter),
-        users_collection.count_documents({**base_filter, "is_verified": True}),
-        users_collection.count_documents(
-            {
-                **base_filter,
-                "$or": [
-                    {"is_verified": {"$ne": True}},
-                    {"status": {"$regex": "^pending$", "$options": "i"}},
-                ],
-            }
-        ),
+        users_collection.count_documents({"$and": [base_filter, active_filter]}),
         users_collection.find(
             {**base_filter, "created_at": {"$gte": year_start, "$lt": next_year_start}},
             projection={"created_at": 1, "is_verified": 1, "status": 1},
         ).to_list(length=None),
     )
+    pending_users = max(total_users - active_users, 0)
     monthly = {month: {"userCount": 0, "activeUserCount": 0} for month in month_abbr[1:]}
     for record in yearly_users:
         created_at = record.get("created_at")
@@ -9037,6 +9035,10 @@ async def _serialize_me_record(record: dict) -> dict:
 
         "country_code": (str(record.get("country_code") or "").upper() or None),
         "motivation_statement": str(record.get("motivation_statement") or "").strip() or None,
+        "identity_statement": str(record.get("identity_statement") or "").strip() or None,
+        "workout_unlock_label": str(record.get("workout_unlock_label") or "").strip() or None,
+        "training_trigger_context": str(record.get("training_trigger_context") or "").strip() or None,
+        "training_trigger_action": str(record.get("training_trigger_action") or "").strip() or None,
 
         "profileImage": str(record.get("profile_image") or ""),
 

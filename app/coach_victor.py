@@ -94,6 +94,7 @@ def build_coach_victor_system_prompt(
         f"Section 20 habit fields - identity statement: {_safe_text(habit_fields.get('identity_statement'))}.\n"
         f"Section 20 habit fields - workout unlock label: {_safe_text(habit_fields.get('workout_unlock_label'))}.\n"
         f"Section 20 habit fields - training trigger context: {_safe_text(habit_fields.get('training_trigger_context'))}.\n"
+        f"Section 20 habit fields - training trigger action: {_safe_text(habit_fields.get('training_trigger_action'))}.\n"
         f"Section 20 habit fields - completed habits: {json.dumps(longevity.get('completed_habits') or [], ensure_ascii=False)}.\n"
         f"Section 20 habit fields - pending habits: {json.dumps(longevity.get('pending_habits') or [], ensure_ascii=False)}."
     )
