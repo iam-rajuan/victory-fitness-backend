@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...conversion_service import mark_notification_event_actioned, mark_notification_event_opened
 from ...retention_service import record_notification_open
 
 router = APIRouter()
@@ -50,6 +51,7 @@ async def mark_app_notification_read(
     )
     if result.modified_count:
         await record_notification_open(user, notification_id)
+        await mark_notification_event_opened(str(user.get("_id") or ""), notification_id)
         await _record_analytics_event(
             "notification_opened",
             user_id=str(user.get("_id") or ""),
@@ -57,6 +59,21 @@ async def mark_app_notification_read(
             details={"notification_id": notification_id},
         )
     return {"read": bool(result.modified_count)}
+
+
+@router.patch("/me/notifications/{notification_id}/action")
+async def mark_app_notification_actioned(
+    notification_id: str,
+    user: dict = Depends(_require_access_user),
+) -> dict[str, bool]:
+    await mark_notification_event_actioned(str(user.get("_id") or ""), notification_id)
+    await _record_analytics_event(
+        "notification_actioned",
+        user_id=str(user.get("_id") or ""),
+        market=str(user.get("country_code") or "") or None,
+        details={"notification_id": notification_id},
+    )
+    return {"actioned": True}
 
 @router.get("/me/activity-notifications/dismissed")
 async def list_dismissed_activity_notifications(

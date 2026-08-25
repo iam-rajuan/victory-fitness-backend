@@ -79,6 +79,7 @@ async def _coach_user_context(user: dict, recent_messages: list[dict[str, Any]])
         "country": str(user.get("country") or onboarding.get("country") or "").strip(),
         "country_code": str(user.get("country_code") or onboarding.get("countryCode") or "").upper(),
         "subscription_tier": str(user.get("subscription_tier") or "NONE"),
+        "motivation_statement": str(user.get("motivation_statement") or onboarding.get("motivationStatement") or "").strip(),
         "onboarding": onboarding,
         "nutrition_profile": nutrition_profile,
         "habit_fields": {

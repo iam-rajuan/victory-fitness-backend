@@ -90,6 +90,7 @@ def build_coach_victor_system_prompt(
         f"Favorite meals JSON: {json.dumps(nutrition_profile.get('favorite_meals_json') or nutrition_profile.get('favorite_meal') or [], ensure_ascii=False)}.\n"
         f"Allergies: {_safe_text(nutrition_profile.get('allergies'))}.\n"
         f"Health conditions: {json.dumps(nutrition_profile.get('health_conditions') or [], ensure_ascii=False)}.\n"
+        f"Motivation statement: {_safe_text(context.get('motivation_statement'))}.\n"
         f"Section 20 habit fields - identity statement: {_safe_text(habit_fields.get('identity_statement'))}.\n"
         f"Section 20 habit fields - workout unlock label: {_safe_text(habit_fields.get('workout_unlock_label'))}.\n"
         f"Section 20 habit fields - training trigger context: {_safe_text(habit_fields.get('training_trigger_context'))}.\n"

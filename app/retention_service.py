@@ -171,6 +171,7 @@ async def _trial_usage_snapshot(user: dict, start: datetime, end: datetime) -> d
 
 def _build_digest_message(user: dict, usage: dict[str, int], start: datetime, end: datetime) -> tuple[str, str]:
     name = str(user.get("name") or "there").strip() or "there"
+    motivation_statement = str(user.get("motivation_statement") or "").strip()
     workout_count = int(usage.get("workouts") or 0)
     coach_count = int(usage.get("coach_messages") or 0)
     nutrition_count = int(usage.get("nutrition_actions") or 0)
@@ -188,6 +189,7 @@ def _build_digest_message(user: dict, usage: dict[str, int], start: datetime, en
     subject = "Victory Fitness — Your weekly AI coaching digest"
     body = (
         f"{name}, here is your coaching digest for the last 7 days.\n\n"
+        f"{f'You said you want to {motivation_statement}. Keep using that as your anchor this week.\\n\\n' if motivation_statement else ''}"
         f"You logged {summary_text} between {start.strftime('%B %d, %Y')} and {end.strftime('%B %d, %Y')}.\n"
         f"Your current streak is {streak} day{'s' if streak != 1 else ''}.\n\n"
         "Next best move:\n"
@@ -270,6 +272,13 @@ def _build_comeback_message(day: int, usage: dict[str, int]) -> tuple[str, str]:
     return ("Final comeback offer", "This is your final reminder to return and keep building your Victory routine before your momentum goes cold.")
 
 
+def _personalize_comeback_message(user: dict, title: str, body: str) -> tuple[str, str]:
+    motivation_statement = str(user.get("motivation_statement") or "").strip()
+    if not motivation_statement:
+        return title, body
+    return title, f"{body} You told us you want to {motivation_statement}, so start with one small action that still fits that direction."
+
+
 async def _send_comeback_flow(now: datetime) -> int:
     processed = 0
     users = await users_collection.find(
@@ -299,6 +308,7 @@ async def _send_comeback_flow(now: datetime) -> int:
         due_days = [day for day in COMEBACK_DAYS if day <= elapsed_days and day not in sent_days]
         for day in due_days:
             title, body = _build_comeback_message(day, usage)
+            title, body = _personalize_comeback_message(user, title, body)
             route = "/plan" if day in {14, 30} else "/(tabs)"
             await notify_user(
                 users_collection,

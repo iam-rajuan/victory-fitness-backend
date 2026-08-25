@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 from jose import jwt
 
 from .config import settings
+from .conversion_service import log_notification_event, resolve_notification_variant
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 FIREBASE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -62,20 +63,22 @@ async def _emit_notification_event(user_id: str, notification: dict) -> None:
 
 async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> dict:
     notification_id = str(uuid4())
-    notification_data = {**data, "notificationId": notification_id}
-    notification = {"id": notification_id, "type": notification_type, "title": title, "message": message, "data": notification_data, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
+    resolved_title, resolved_message, copy_variant = await resolve_notification_variant(user, notification_type, title, message)
+    notification_data = {**data, "notificationId": notification_id, "copyVariant": copy_variant}
+    notification = {"id": notification_id, "type": notification_type, "title": resolved_title, "message": resolved_message, "data": notification_data, "copy_variant": copy_variant, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
     await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
     await _emit_notification_event(str(user["_id"]), notification)
+    await log_notification_event(str(user["_id"]), notification_id, notification_type, copy_variant, "queued")
     expo_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
     web_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() == "web" and str(item.get("token") or "").strip()]
     tasks = []
     providers = []
     if expo_tokens:
         providers.append("expo")
-        tasks.append(asyncio.to_thread(_send_expo_push, list(dict.fromkeys(expo_tokens)), title, message, data))
+        tasks.append(asyncio.to_thread(_send_expo_push, list(dict.fromkeys(expo_tokens)), resolved_title, resolved_message, notification_data))
     if web_tokens:
         providers.append("firebase")
-        tasks.append(asyncio.to_thread(_send_firebase_web_push, list(dict.fromkeys(web_tokens)), title, message, data))
+        tasks.append(asyncio.to_thread(_send_firebase_web_push, list(dict.fromkeys(web_tokens)), resolved_title, resolved_message, notification_data))
     delivery_status = "inbox_only" if not tasks else "sent"
     failed_providers = []
     if tasks:
@@ -95,6 +98,7 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
         {"_id": user["_id"], "app_notifications.id": notification["id"]},
         {"$set": {"app_notifications.$.delivery": delivery}},
     )
+    await log_notification_event(str(user["_id"]), notification_id, notification_type, copy_variant, delivery_status)
     return delivery
 
 

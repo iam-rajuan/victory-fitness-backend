@@ -61,6 +61,13 @@ async def update_me(
 
         update_doc["country_code"] = normalized_country_code or None
 
+    if payload.motivation_statement is not None:
+
+        motivation_statement = payload.motivation_statement.strip()
+
+        update_doc["motivation_statement"] = motivation_statement or None
+        update_doc["onboarding_state.motivationStatement"] = motivation_statement
+
     if payload.profileImage is not None:
 
         update_doc["profile_image"] = payload.profileImage.strip()
@@ -118,6 +125,11 @@ async def update_me_onboarding(
         next_state["countryCode"] = normalized_country_code
         update_doc["country_code"] = normalized_country_code
 
+    if payload.motivationStatement is not None:
+        motivation_statement = payload.motivationStatement.strip()
+        next_state["motivationStatement"] = motivation_statement
+        update_doc["motivation_statement"] = motivation_statement or None
+
     if payload.personalProfile is not None:
         personal_profile_update = payload.personalProfile.model_dump()
         next_state["personalProfile"] = {
@@ -146,6 +158,7 @@ async def update_me_onboarding(
         "language": next_state["language"],
         "country": str(next_state.get("country") or "").strip(),
         "countryCode": (str(next_state.get("countryCode") or "").upper() or None),
+        "motivationStatement": str(next_state.get("motivationStatement") or "").strip(),
         "personalProfile": next_state["personalProfile"],
         "anamnese": next_state["anamnese"],
         "suggestion": next_state["suggestion"],

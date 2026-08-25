@@ -85,6 +85,7 @@ if settings.mongodb_configured:
     affiliate_conversions_collection = db["affiliate_conversions"]
     referral_rewards_collection = db["referral_rewards"]
     feature_flags_collection = db["feature_flags"]
+    notification_events_collection = db["notification_events"]
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -136,6 +137,7 @@ else:
     affiliate_conversions_collection = _UnconfiguredCollection()
     referral_rewards_collection = _UnconfiguredCollection()
     feature_flags_collection = _UnconfiguredCollection()
+    notification_events_collection = _UnconfiguredCollection()
     wearable_connections_collection = user_provider_connections_collection
     health_metric_history_collection = health_samples_collection
     health_metrics_collection = health_metric_current_collection
@@ -398,6 +400,9 @@ async def ensure_indexes() -> None:
     )
     await feature_flags_collection.create_index([("key", 1)], unique=True)
     await feature_flags_collection.create_index([("updated_at", -1)])
+    await notification_events_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await notification_events_collection.create_index([("type", 1), ("copy_variant", 1), ("created_at", -1)])
+    await notification_events_collection.create_index([("status", 1), ("created_at", -1)])
 
 
 async def close_database_connection() -> None:

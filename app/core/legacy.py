@@ -675,11 +675,13 @@ class _CompletionCardRequest(BaseModel):
     workout_id: str = Field(min_length=1, max_length=120)
     shared_to_whatsapp: bool = False
     image_url: str | None = Field(default=None, max_length=500)
+    upsell_shown: bool = False
+    upsell_clicked: bool = False
 
 class _InviteRequest(BaseModel):
     recipient_email: EmailStr | None = None
     recipient_phone: str | None = Field(default=None, max_length=40)
-    copy_variant: str = Field(default="a", pattern=r"^[a-z]$")
+    copy_variant: str | None = Field(default=None, pattern=r"^[a-z]$")
 
 class _PaymentEventRequest(BaseModel):
     amount: str | float = Field(...)
@@ -3156,6 +3158,7 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
         "language": str(state.get("language") or "").strip(),
         "country": str(state.get("country") or record.get("country") or "").strip(),
         "countryCode": (str(state.get("countryCode") or record.get("country_code") or "").upper() or None),
+        "motivationStatement": str(state.get("motivationStatement") or record.get("motivation_statement") or "").strip(),
         "personalProfile": {
             "age": str(personal_profile.get("age") or metrics.get("age") or "").strip(),
             "gender": str(personal_profile.get("gender") or metrics.get("gender") or "").strip(),
@@ -9033,6 +9036,7 @@ async def _serialize_me_record(record: dict) -> dict:
         "country": str(record.get("country") or ""),
 
         "country_code": (str(record.get("country_code") or "").upper() or None),
+        "motivation_statement": str(record.get("motivation_statement") or "").strip() or None,
 
         "profileImage": str(record.get("profile_image") or ""),
 

@@ -1,8 +1,38 @@
+from __future__ import annotations
+
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...conversion_service import list_notification_templates, replace_notification_templates
+from ...models import (
+    AdminNotificationTemplateItem,
+    AdminNotificationTemplateListResponse,
+    AdminNotificationTemplateRequest,
+    NotificationTemplateVariantItem,
+)
 
 router = APIRouter()
+
+
+def _serialize_notification_template_items(templates: list[dict]) -> list[AdminNotificationTemplateItem]:
+    return [
+        AdminNotificationTemplateItem(
+            id=str(item.get("id") or item.get("type") or ""),
+            type=str(item.get("type") or "").strip(),
+            title=str(item.get("title") or "").strip(),
+            frequencyCapHours=max(int(item.get("frequencyCapHours") or 24), 1),
+            variants=[
+                NotificationTemplateVariantItem(
+                    key=str(variant.get("key") or "a").strip().lower(),
+                    title=str(variant.get("title") or "").strip(),
+                    message=str(variant.get("message") or "").strip(),
+                )
+                for variant in (item.get("variants") or [])
+                if isinstance(variant, dict)
+            ],
+        )
+        for item in templates
+    ]
 
 @router.get("/admin/notifications", response_model=AdminNotificationListResponse)
 
@@ -88,3 +118,38 @@ async def admin_mark_all_notifications_read(
     await _replace_items_record(DASHBOARD_NOTIFICATIONS_KEY, items)
 
     return AdminNotificationListResponse(items=[AdminNotificationItem(**item) for item in items])
+
+
+@router.get("/admin/notification-templates", response_model=AdminNotificationTemplateListResponse)
+async def admin_list_notification_templates(
+    _: dict = Depends(_require_admin_user),
+) -> AdminNotificationTemplateListResponse:
+    templates = await list_notification_templates()
+    return AdminNotificationTemplateListResponse(items=_serialize_notification_template_items(templates))
+
+
+@router.put("/admin/notification-templates", response_model=AdminNotificationTemplateListResponse)
+async def admin_replace_notification_templates(
+    payload: list[AdminNotificationTemplateRequest],
+    _: dict = Depends(_require_admin_user),
+) -> AdminNotificationTemplateListResponse:
+    normalized_items = []
+    for item in payload:
+        normalized_items.append(
+            {
+                "id": item.id.strip(),
+                "type": item.type.strip(),
+                "title": item.title.strip(),
+                "frequencyCapHours": max(int(item.frequencyCapHours or 24), 1),
+                "variants": [
+                    {
+                        "key": variant.key.strip().lower(),
+                        "title": variant.title.strip(),
+                        "message": variant.message.strip(),
+                    }
+                    for variant in item.variants
+                ],
+            }
+        )
+    await replace_notification_templates(normalized_items)
+    return AdminNotificationTemplateListResponse(items=_serialize_notification_template_items(normalized_items))

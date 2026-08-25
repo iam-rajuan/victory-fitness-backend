@@ -144,6 +144,7 @@ class MeResponse(BaseModel):
     marketing_consent: bool = False
     onboarding_completed: bool = False
     country_code: str | None = None
+    motivation_statement: str | None = None
     identity_statement: str | None = None
     workout_unlock_label: str | None = None
     training_trigger_context: str | None = None
@@ -156,6 +157,7 @@ class UpdateMeRequest(BaseModel):
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
     profileImage: str | None = Field(default=None, max_length=500)
     onboarding_completed: bool | None = None
+    motivation_statement: str | None = Field(default=None, max_length=240)
     identity_statement: str | None = Field(default=None, max_length=240)
     workout_unlock_label: str | None = Field(default=None, max_length=120)
     training_trigger_context: str | None = Field(default=None, max_length=240)
@@ -230,6 +232,7 @@ class OnboardingStateResponse(BaseModel):
     language: str = ""
     country: str = ""
     countryCode: str | None = None
+    motivationStatement: str = ""
     personalProfile: OnboardingPersonalProfileResponse = Field(default_factory=OnboardingPersonalProfileResponse)
     anamnese: OnboardingAnamneseResponse = Field(default_factory=OnboardingAnamneseResponse)
     suggestion: OnboardingSuggestionResponse | None = None
@@ -242,6 +245,7 @@ class UpdateOnboardingStateRequest(BaseModel):
     language: str | None = Field(default=None, max_length=10)
     country: str | None = Field(default=None, max_length=120)
     countryCode: str | None = Field(default=None, min_length=2, max_length=2)
+    motivationStatement: str | None = Field(default=None, max_length=240)
     personalProfile: OnboardingPersonalProfileResponse | None = None
     anamnese: OnboardingAnamneseResponse | None = None
     suggestion: OnboardingSuggestionResponse | None = None
@@ -2244,6 +2248,51 @@ class InfrastructureStatusResponse(BaseModel):
     gcpPrimaryRegion: str = ""
     gcpSecondaryRegions: list[str] = Field(default_factory=list)
     cloudflareConfigured: bool = False
+
+
+class NotificationTemplateVariantItem(BaseModel):
+    key: str = Field(pattern=r"^[a-z]$")
+    title: str = Field(min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class AdminNotificationTemplateItem(BaseModel):
+    id: str
+    type: str
+    title: str
+    frequencyCapHours: int = 0
+    variants: list[NotificationTemplateVariantItem] = Field(default_factory=list)
+    updatedAt: datetime
+
+
+class AdminNotificationTemplateListResponse(BaseModel):
+    items: list[AdminNotificationTemplateItem] = Field(default_factory=list)
+
+
+class AdminNotificationTemplateRequest(BaseModel):
+    type: str = Field(min_length=2, max_length=80)
+    title: str = Field(min_length=1, max_length=200)
+    frequencyCapHours: int = Field(default=0, ge=0, le=720)
+    variants: list[NotificationTemplateVariantItem] = Field(default_factory=list)
+
+
+class CompletionCardUpsellStateRequest(BaseModel):
+    shown: bool = False
+    clicked: bool = False
+    source: str = Field(default="completion_card", max_length=80)
+
+
+class CompletionCardUpsellDecisionResponse(BaseModel):
+    show: bool = False
+    cardId: str | None = None
+    source: str = "completion_card"
+    title: str = ""
+    message: str = ""
+    dismissible: bool = True
+
+
+class InviteAcceptRequest(BaseModel):
+    accepted: bool = True
 
 
 class AccountabilityStatsResponse(BaseModel):
