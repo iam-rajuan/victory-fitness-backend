@@ -538,32 +538,14 @@ async def challenge_stats(
     activity_market = await _market_user_filter(market)
     membership_filter = _and(rng, activity_market)
 
-    # Most popular challenge in range (by member count)
-    pipeline = []
-    if challenge_memberships_collection is not None:
-        try:
-            pipeline = [
-                {"$match": membership_filter},
-                {"$group": {"_id": "$challenge_id", "count": {"$sum": 1}}},
-                {"$sort": {"count": -1}},
-                {"$limit": 1},
-            ]
-            top_rows = await challenge_memberships_collection.aggregate(pipeline).to_list(length=1)
-        except Exception:
-            top_rows = []
-    else:
-        top_rows = []
-
-    most_popular: PopularChallengeItem | None = None
-    if top_rows:
-        top = top_rows[0]
-        challenge_id = top.get("_id")
+    async def _build_popular_challenge_item(row: dict[str, Any]) -> PopularChallengeItem:
+        challenge_id = row.get("_id")
         title = str(challenge_id or "—")
         category = None
         completion_rate = 0.0
         if challenges_collection is not None:
             try:
-                ch = await challenges_collection.find_one({"_id": challenge_id})
+                ch = await _find_by_id(challenges_collection, str(challenge_id or ""))
                 if ch:
                     title = str(ch.get("title") or title)
                     category = ch.get("category")
@@ -571,18 +553,45 @@ async def challenge_stats(
                 pass
         try:
             members = await challenge_memberships_collection.count_documents(
-                _and(membership_filter, {"challenge_id": challenge_id}, {"status": {"$in": ["completed", "COMPLETED"]}})
+                _and(
+                    membership_filter,
+                    {"challenge_id": challenge_id},
+                    {"status": {"$in": ["completed", "COMPLETED"]}},
+                )
             )
-            completion_rate = safe_ratio(members, max(top.get("count", 0), 1))
+            completion_rate = safe_ratio(members, max(row.get("count", 0), 1))
         except Exception:
             pass
-        most_popular = PopularChallengeItem(
+        return PopularChallengeItem(
             challengeId=str(challenge_id) if challenge_id else None,
             title=title,
             category=category,
-            participants=top.get("count", 0),
+            participants=row.get("count", 0),
             completionRate=round(completion_rate, 1),
         )
+
+    # Most popular / top challenges in range (by member count)
+    pipeline = []
+    if challenge_memberships_collection is not None:
+        try:
+            pipeline = [
+                {"$match": membership_filter},
+                {"$group": {"_id": "$challenge_id", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+                {"$limit": 5},
+            ]
+            top_rows = await challenge_memberships_collection.aggregate(pipeline).to_list(length=5)
+        except Exception:
+            top_rows = []
+    else:
+        top_rows = []
+
+    most_popular: PopularChallengeItem | None = None
+    top_challenges: list[PopularChallengeItem] = []
+    if top_rows:
+        for row in top_rows:
+            top_challenges.append(await _build_popular_challenge_item(row))
+        most_popular = top_challenges[0]
 
     invite_rng = {"created_at": {"$gte": start, "$lte": end}}
     prev_invite_rng = {"created_at": {"$gte": prev_start, "$lte": prev_end}}
@@ -614,6 +623,7 @@ async def challenge_stats(
 
     return ChallengeStatsResponse(
         mostPopular=most_popular,
+        topChallenges=top_challenges,
         invitesSent=invites_sent,
         invitesSentChangePct=round(pct_change(invites_sent, prev_invites_sent), 1),
         inviteConversionRate=round(invite_conversion, 1),

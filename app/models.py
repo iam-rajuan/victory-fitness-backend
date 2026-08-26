@@ -2097,6 +2097,7 @@ class InviteAbVariant(BaseModel):
 
 class ChallengeStatsResponse(BaseModel):
     mostPopular: PopularChallengeItem | None = None
+    topChallenges: list[PopularChallengeItem] = Field(default_factory=list)
     invitesSent: int
     invitesSentChangePct: float
     inviteConversionRate: float
