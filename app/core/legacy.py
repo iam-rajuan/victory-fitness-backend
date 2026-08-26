@@ -8445,7 +8445,9 @@ async def _seed_admin_user() -> None:
 
         return
 
-    if not settings.admin_email or not settings.admin_password:
+    admin_accounts = list(getattr(settings, "admin_seed_accounts", []) or [])
+
+    if not admin_accounts:
 
         logger.info("admin_seed_skipped reason=missing_credentials")
 
@@ -8453,118 +8455,134 @@ async def _seed_admin_user() -> None:
 
     now = datetime.now(timezone.utc)
 
-    existing_user = await users_collection.find_one({"email": settings.admin_email})
+    def _default_admin_display_name(email: str) -> str:
+        local_part = str(email or "").split("@")[0].strip()
+        if not local_part:
+            return "Victory Admin"
+        normalized = re.sub(r"[^a-zA-Z0-9]+", " ", local_part).strip()
+        if not normalized:
+            return "Victory Admin"
+        return " ".join(segment.capitalize() for segment in normalized.split())
 
-    if existing_user:
-        current_password_hash = str(existing_user.get("password_hash") or "").strip()
-        password_matches_seed = bool(current_password_hash) and verify_password(settings.admin_password, current_password_hash)
-        should_sync_password = settings.admin_seed_sync_password and not password_matches_seed
+    for account in admin_accounts:
+        admin_email = str(account.get("email") or "").strip().lower()
+        admin_password = str(account.get("password") or "").strip()
+        admin_name = _default_admin_display_name(admin_email)
+        if not admin_email or not admin_password:
+            continue
 
-        logger.info(
-            "admin_seed_validation email=%s exists=true password_hash_present=%s password_matches_seed=%s sync_password=%s",
-            settings.admin_email,
-            bool(current_password_hash),
-            password_matches_seed,
-            should_sync_password,
-        )
+        existing_user = await users_collection.find_one({"email": admin_email})
 
-        await users_collection.update_one(
+        if existing_user:
+            current_password_hash = str(existing_user.get("password_hash") or "").strip()
+            password_matches_seed = bool(current_password_hash) and verify_password(admin_password, current_password_hash)
+            should_sync_password = settings.admin_seed_sync_password and not password_matches_seed
 
-            {"_id": existing_user["_id"]},
+            logger.info(
+                "admin_seed_validation email=%s exists=true password_hash_present=%s password_matches_seed=%s sync_password=%s",
+                admin_email,
+                bool(current_password_hash),
+                password_matches_seed,
+                should_sync_password,
+            )
+
+            await users_collection.update_one(
+
+                {"_id": existing_user["_id"]},
+
+                {
+
+                    "$set": {
+
+                        "name": existing_user.get("name") or admin_name,
+
+                        "email": admin_email,
+
+                        "role": "admin",
+
+                        "is_admin": True,
+
+                        "is_verified": True,
+
+                        "subscription_tier": "INNER_CIRCLE",
+
+                        "subscription_role": "INNER_CIRCLE",
+
+                        "subscription_status": "ACTIVE",
+
+                        "subscription_billing_cycle": "yearly",
+
+                        "subscription_is_purchased": True,
+
+                        "subscription_purchase_source": "admin_seed",
+
+                        "password_hash": hash_password(admin_password) if should_sync_password else current_password_hash,
+
+                        "updated_at": now,
+
+                    },
+
+                    "$unset": {
+
+                        "verification_code_hash": "",
+
+                        "verification_code_expires_at": "",
+
+                    },
+
+                },
+
+            )
+
+            logger.info(
+                "admin_seed_exists email=%s login_ready=%s",
+                admin_email,
+                password_matches_seed or should_sync_password,
+            )
+
+            continue
+
+        await users_collection.insert_one(
 
             {
 
-                "$set": {
+                "name": admin_name,
 
-                    "name": existing_user.get("name") or settings.admin_name,
+                "email": admin_email,
 
-                    "email": settings.admin_email,
+                "password_hash": hash_password(admin_password),
 
-                    "role": "admin",
+                "is_verified": True,
 
-                    "is_admin": True,
+                "role": "admin",
 
-                    "is_verified": True,
+                "is_admin": True,
 
-                    "subscription_tier": "INNER_CIRCLE",
+                "subscription_tier": "INNER_CIRCLE",
 
-                    "subscription_role": "INNER_CIRCLE",
+                "subscription_role": "INNER_CIRCLE",
 
-                    "subscription_status": "ACTIVE",
+                "subscription_status": "ACTIVE",
 
-                    "subscription_billing_cycle": "yearly",
+                "subscription_billing_cycle": "yearly",
 
-                    "subscription_is_purchased": True,
+                "subscription_is_purchased": True,
 
-                    "subscription_purchase_source": "admin_seed",
+                "subscription_purchase_source": "admin_seed",
 
-                    "password_hash": hash_password(settings.admin_password) if should_sync_password else current_password_hash,
+                "created_at": now,
 
-                    "updated_at": now,
+                "updated_at": now,
 
-                },
-
-                "$unset": {
-
-                    "verification_code_hash": "",
-
-                    "verification_code_expires_at": "",
-
-                },
-
-            },
+            }
 
         )
 
         logger.info(
-            "admin_seed_exists email=%s login_ready=%s",
-            settings.admin_email,
-            password_matches_seed or should_sync_password,
+            "admin_seed_validation email=%s exists=false password_hash_present=true password_matches_seed=true sync_password=true",
+            admin_email,
         )
-
-        return
-
-    await users_collection.insert_one(
-
-        {
-
-            "name": settings.admin_name,
-
-            "email": settings.admin_email,
-
-            "password_hash": hash_password(settings.admin_password),
-
-            "is_verified": True,
-
-            "role": "admin",
-
-            "is_admin": True,
-
-            "subscription_tier": "INNER_CIRCLE",
-
-            "subscription_role": "INNER_CIRCLE",
-
-            "subscription_status": "ACTIVE",
-
-            "subscription_billing_cycle": "yearly",
-
-            "subscription_is_purchased": True,
-
-            "subscription_purchase_source": "admin_seed",
-
-            "created_at": now,
-
-            "updated_at": now,
-
-        }
-
-    )
-
-    logger.info(
-        "admin_seed_validation email=%s exists=false password_hash_present=true password_matches_seed=true sync_password=true",
-        settings.admin_email,
-    )
-    logger.info("admin_seed_created email=%s", settings.admin_email)
+        logger.info("admin_seed_created email=%s", admin_email)
 
 def _normalize_admin_user_status(record: dict) -> str:
 

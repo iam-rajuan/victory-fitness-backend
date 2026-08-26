@@ -138,8 +138,8 @@ Important environment variables:
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_PROJECT_ID` | Optional | Google OAuth settings. |
 | `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | Optional | Firebase auth and push notification credentials. |
 | `ADMIN_SEED_ENABLED` | No | Seeds an admin user on startup when enabled. |
-| `ADMIN_NAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Required when admin seed is enabled | Initial admin account details. |
-| `ADMIN_SEED_SYNC_PASSWORD` | No | Keeps the seeded admin password synchronized with `ADMIN_PASSWORD`. |
+| `ADMIN_EMAIL_Primary`, `ADMIN_PASSWORD_Primary`, `ADMIN_EMAIL_DEV`, `ADMIN_PASSWORD_DEV` | Required when admin seed is enabled | Admin dashboard accounts seeded on startup. |
+| `ADMIN_SEED_SYNC_PASSWORD` | No | Keeps the seeded admin passwords synchronized with the configured env values. |
 
 Do not commit `.env`. It contains secrets and is ignored by Git.
 

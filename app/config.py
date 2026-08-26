@@ -157,10 +157,8 @@ class Settings:
         self.aws_s3_prefix = _get_str("AWS_S3_PREFIX", "coach-archives").strip("/")
 
         self.admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)
-        self.admin_name = _get_str("ADMIN_NAME", "Victory Admin")
-        self.admin_email = _get_str("ADMIN_EMAIL", "admin@victoryfitness.com").lower()
-        self.admin_password = _get_secret("ADMIN_PASSWORD")
         self.admin_seed_sync_password = _get_bool("ADMIN_SEED_SYNC_PASSWORD", True)
+        self.admin_seed_accounts = self._build_admin_seed_accounts()
 
         self.wearable_token_encryption_key = _get_secret("WEARABLE_TOKEN_ENCRYPTION_KEY")
         self.encryption_key = _get_secret("ENCRYPTION_KEY", self.wearable_token_encryption_key)
@@ -197,6 +195,41 @@ class Settings:
         self.sync_retry_backoff_ms = _get_int("SYNC_RETRY_BACKOFF_MS", 5000)
         self.rate_limit_ttl = _get_int("RATE_LIMIT_TTL", 60)
         self.rate_limit_max = _get_int("RATE_LIMIT_MAX", 100)
+
+    def _build_admin_seed_accounts(self) -> list[dict[str, str]]:
+        accounts: list[dict[str, str]] = []
+
+        def add_account(email: str, password: str) -> None:
+            normalized_email = str(email or "").strip().lower()
+            normalized_password = str(password or "").strip()
+            if not normalized_email or not normalized_password:
+                return
+            if any(existing["email"] == normalized_email for existing in accounts):
+                return
+            accounts.append(
+                {
+                    "email": normalized_email,
+                    "password": normalized_password,
+                }
+            )
+
+        add_account(
+            _get_str("ADMIN_EMAIL_Primary").lower(),
+            _get_secret("ADMIN_PASSWORD_Primary"),
+        )
+        add_account(
+            _get_str("ADMIN_EMAIL_DEV").lower(),
+            _get_secret("ADMIN_PASSWORD_DEV"),
+        )
+        add_account(
+            _get_str("ADMIN_EMAIL_PRIMARY").lower(),
+            _get_secret("ADMIN_PASSWORD_PRIMARY"),
+        )
+        add_account(
+            _get_str("ADMIN_EMAIL_DEV").lower(),
+            _get_secret("ADMIN_PASSWORD_DEV"),
+        )
+        return accounts
 
         self.fitbit_client_id = _get_secret("FITBIT_CLIENT_ID")
         self.fitbit_client_secret = _get_secret("FITBIT_CLIENT_SECRET")
