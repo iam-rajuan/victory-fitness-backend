@@ -10,10 +10,118 @@ PHASE_ONE_BETA_SUBSCRIPTION_SOURCE = "beta_trial"
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+SUBSCRIPTION_FEATURE_CATALOG = [
+    {
+        "key": "home",
+        "label": "Home Dashboard",
+        "description": "Main home feed, highlights, and entry overview cards.",
+        "category": "Core Access",
+        "defaultTiers": ["SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/"],
+    },
+    {
+        "key": "workout",
+        "label": "Workout Library",
+        "description": "Workout browsing, workout detail screens, and published training videos.",
+        "category": "Core Access",
+        "defaultTiers": ["SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/workout", "/workout-library"],
+    },
+    {
+        "key": "challenge",
+        "label": "Challenges",
+        "description": "Challenge catalog, joining challenges, progress tracking, and day completion.",
+        "category": "Core Access",
+        "defaultTiers": ["SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/challenge", "/challenges"],
+    },
+    {
+        "key": "community",
+        "label": "Community Feed",
+        "description": "Community posts, challenge chat, reactions, comments, and shared accountability feed.",
+        "category": "Core Access",
+        "defaultTiers": ["SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/community", "/challenges", "/challenge"],
+    },
+    {
+        "key": "mealPlan",
+        "label": "Meal Plan",
+        "description": "Nutrition plan generation, meal plan dashboard, and guided nutrition onboarding flows.",
+        "category": "Nutrition",
+        "defaultTiers": ["GOLD", "PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/mealPlan"],
+    },
+    {
+        "key": "nutrition_tracker",
+        "label": "Nutrition Tracker",
+        "description": "Meal logging, daily nutrition tracking, and tracker-specific insights within meal planning.",
+        "category": "Nutrition",
+        "defaultTiers": ["PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/mealPlan"],
+    },
+    {
+        "key": "meal_analysis",
+        "label": "AI Meal Analysis",
+        "description": "AI meal image and document analysis with saved analysis history.",
+        "category": "Nutrition",
+        "defaultTiers": ["PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/mealPlan"],
+    },
+    {
+        "key": "profile",
+        "label": "Profile",
+        "description": "Profile screen, rank, settings, and subscription summary access.",
+        "category": "Core Access",
+        "defaultTiers": ["SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/profile"],
+    },
+    {
+        "key": "workoutplan",
+        "label": "Workout Plan AI",
+        "description": "Personalized multi-day workout plan generation, saved plans, and adaptive progress reports.",
+        "category": "Advanced Coaching",
+        "defaultTiers": ["PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/workoutplan"],
+    },
+    {
+        "key": "longevity",
+        "label": "Longevity OS",
+        "description": "Longevity dashboard, health insights, wearable sync, habits, and recovery views.",
+        "category": "Advanced Coaching",
+        "defaultTiers": ["PLATINUM", "INNER_CIRCLE"],
+        "routeHints": ["/profile/longevity-os"],
+    },
+    {
+        "key": "application",
+        "label": "Coaching Application",
+        "description": "Application form access for premium/direct coaching programmes.",
+        "category": "Premium Coaching",
+        "defaultTiers": ["INNER_CIRCLE"],
+        "routeHints": ["/profile/application"],
+    },
+    {
+        "key": "coach_victor",
+        "label": "Coach Victor",
+        "description": "AI Coach Victor chat, conversation history, and direct coaching entry points.",
+        "category": "Premium Coaching",
+        "defaultTiers": ["INNER_CIRCLE"],
+        "routeHints": ["/chat"],
+    },
+    {
+        "key": "longevity_plan",
+        "label": "Longevity Plan AI",
+        "description": "AI-generated weekly longevity plans and health-profile-based recommendation plans.",
+        "category": "Premium Coaching",
+        "defaultTiers": ["INNER_CIRCLE"],
+        "routeHints": ["/profile/longevity-os", "/profile/heal/[id]"],
+    },
+]
+SUBSCRIPTION_FEATURE_KEYS = {item["key"] for item in SUBSCRIPTION_FEATURE_CATALOG}
 SUBSCRIPTION_ACCESS = {
     "NONE": [],
     "SILVER": ["home", "workout", "challenge", "community", "profile"],
     "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
+    "GOLD_BETA": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
     "PLATINUM": [
         "home",
         "workout",
@@ -42,6 +150,49 @@ SUBSCRIPTION_ACCESS = {
         "longevity_plan",
     ],
 }
+
+
+def list_subscription_feature_catalog() -> list[dict[str, object]]:
+    return [
+        {
+            "key": item["key"],
+            "label": item["label"],
+            "description": item["description"],
+            "category": item["category"],
+            "defaultTiers": list(item["defaultTiers"]),
+            "routeHints": list(item["routeHints"]),
+        }
+        for item in SUBSCRIPTION_FEATURE_CATALOG
+    ]
+
+
+def find_invalid_subscription_features(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    invalid: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        if value not in SUBSCRIPTION_FEATURE_KEYS:
+            invalid.append(value)
+    return invalid
+
+
+def normalize_subscription_feature_access(values: object) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        value = str(item or "").strip()
+        if not value or value in seen or value not in SUBSCRIPTION_FEATURE_KEYS:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
 
 def _get_auth_session_version(user: dict) -> int:
     try:
@@ -105,6 +256,8 @@ async def require_admin_user(user: dict = Security(require_access_user)) -> dict
 
 def normalize_subscription_tier(value: object) -> str:
     tier = str(value or "").strip().upper().replace(" ", "_")
+    if tier == "GOLD_BETA":
+        return "GOLD_BETA"
     return tier if tier in SUBSCRIPTION_ACCESS else "NONE"
 
 

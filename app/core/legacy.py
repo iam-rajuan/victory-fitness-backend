@@ -90,10 +90,13 @@ from ..database import DatabaseNotConfiguredError, close_database_connection, en
 from ..dependencies import (
 
     bearer_scheme,
+    find_invalid_subscription_features as dependency_find_invalid_subscription_features,
 
     get_verified_user as dependency_get_verified_user,
 
     get_verified_user_from_access_token as dependency_get_verified_user_from_access_token,
+    list_subscription_feature_catalog as dependency_list_subscription_feature_catalog,
+    normalize_subscription_feature_access as dependency_normalize_subscription_feature_access,
 
     require_access_user as dependency_require_access_user,
 
@@ -233,6 +236,10 @@ from ..models import (
     AdminSubscriberItem,
 
     AdminSubscriberListResponse,
+
+    AdminSubscriptionFeatureItem,
+
+    AdminSubscriptionFeatureListResponse,
 
     AdminSubscriptionPlanItem,
 
@@ -806,6 +813,8 @@ SUBSCRIPTION_ACCESS = {
     "SILVER": ["home", "workout", "challenge", "community", "profile"],
 
     "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
+
+    "GOLD_BETA": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
 
     "PLATINUM": [
 
@@ -4040,7 +4049,7 @@ GOLD_TRIAL_TIER = "gold"
 GOLD_TRIAL_DURATION_DAYS = 5
 GOLD_TRIAL_OUTCOMES = {"converted_gold", "downgraded_silver", "lapsed"}
 PHASE_ONE_BETA_SUBSCRIPTION_SOURCE = "beta_trial"
-PHASE_ONE_BETA_PLAN_ID = "phase_one_gold_beta"
+PHASE_ONE_BETA_PLAN_ID = "plan-gold-beta-21-day"
 
 DEFAULT_GOLD_TRIAL_MESSAGES = [
     {
@@ -4181,12 +4190,23 @@ async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | N
 
     end_at = current + timedelta(days=_phase_one_beta_duration_days())
     feature_access = _resolve_subscription_access("GOLD")
+    dashboard_plans = await _get_dashboard_subscription_plan_items()
+    beta_plan = next(
+        (
+            _serialize_admin_subscription_plan_item(item)
+            for item in dashboard_plans
+            if str(item.get("id") or "").strip() == PHASE_ONE_BETA_PLAN_ID
+        ),
+        None,
+    )
+    if beta_plan and isinstance(beta_plan.get("featureAccess"), list) and beta_plan.get("featureAccess"):
+        feature_access = [str(item).strip() for item in beta_plan["featureAccess"] if str(item).strip()]
     update_doc: dict[str, Any] = {
         # PHASE 1 BETA:
         # Stripe payment flow is temporarily disabled.
         # Re-enable for commercial launch after beta validation.
-        "subscription_tier": "GOLD",
-        "subscription_role": "GOLD",
+        "subscription_tier": "GOLD_BETA",
+        "subscription_role": "GOLD_BETA",
         "subscription_status": "ACTIVE",
         "subscription_billing_cycle": "yearly",
         "subscription_is_purchased": False,
@@ -4199,8 +4219,8 @@ async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | N
         "subscription_started_at": user.get("subscription_started_at") or current,
         "subscription_confirmed_at": current,
         "subscription": {
-            "tier": "GOLD",
-            "role": "GOLD",
+            "tier": "GOLD_BETA",
+            "role": "GOLD_BETA",
             "status": "ACTIVE",
             "billing_cycle": "yearly",
             "is_purchased": False,
@@ -6713,21 +6733,17 @@ def _normalize_plan_feature_access(item: dict) -> list[str]:
 
         return _resolve_subscription_access(tier)
 
-    normalized = []
+    return dependency_normalize_subscription_feature_access(features)
 
-    seen = set()
+def _find_invalid_plan_feature_access(item: dict) -> list[str]:
 
-    for feature in features:
+    features = item.get("featureAccess") or item.get("feature_access")
 
-        value = str(feature).strip()
+    return dependency_find_invalid_subscription_features(features)
 
-        if value and value not in seen:
+def _get_subscription_feature_catalog() -> list[dict[str, object]]:
 
-            normalized.append(value)
-
-            seen.add(value)
-
-    return normalized
+    return dependency_list_subscription_feature_catalog()
 
 def _serialize_admin_subscription_plan_item(item: dict) -> dict:
 
@@ -7031,6 +7047,9 @@ def _normalize_challenge_plan_days(value: object, duration_days: int | None = No
                 "sections": sections,
             }
         )
+    if not normalized_days:
+        return []
+
     if duration_days is None or len(normalized_days) >= duration_days:
         return normalized_days
 
@@ -8599,14 +8618,14 @@ def _user_has_subscription_access(user: dict, feature: str) -> bool:
 
         configured_access = subscription.get("access")
 
+    if isinstance(configured_access, list) and configured_access:
+
+        return feature in {str(item).strip() for item in configured_access if str(item).strip()}
+
     if _is_phase_one_beta_user(user):
         if _phase_one_beta_is_active(user):
             return feature in set(_resolve_subscription_access("GOLD"))
         return False
-
-    if isinstance(configured_access, list) and configured_access:
-
-        return feature in {str(item).strip() for item in configured_access if str(item).strip()}
 
     if _trial_is_active(user) and feature in _resolve_subscription_access("GOLD"):
 
@@ -8760,13 +8779,14 @@ def _build_subscription_summary(record: dict) -> dict:
 
     if _is_phase_one_beta_user(record):
         beta_status = _phase_one_beta_status(record)
-        access = _resolve_subscription_access("GOLD") if beta_status == "ACTIVE" else []
+        if beta_status != "ACTIVE":
+            access = []
         purchase_source = PHASE_ONE_BETA_SUBSCRIPTION_SOURCE
-        tier = "GOLD"
+        tier = "GOLD_BETA"
         status = beta_status
         is_purchased = False
 
-    if _trial_is_active(record):
+    if not _is_phase_one_beta_user(record) and _trial_is_active(record):
 
         access = sorted(set(access) | set(_resolve_subscription_access("GOLD")))
 

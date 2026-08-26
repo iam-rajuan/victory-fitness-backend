@@ -10,8 +10,6 @@ async def nutrition_plan(
 
     payload: NutritionPlanRequest,
 
-    background_tasks: BackgroundTasks,
-
     user: dict = Depends(_require_meal_plan_access_user),
 
 ) -> NutritionPlanSaveResponse:
@@ -35,6 +33,15 @@ async def nutrition_plan(
         plan_data = dict(cached_record["plan"])
 
         plan_data["plan_id"] = str(cached_record["_id"])
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {
+                "$set": {
+                    "nutrition_onboarding_profile": payload.model_dump(),
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
 
         logger.info(
 
@@ -64,24 +71,36 @@ async def nutrition_plan(
         raise HTTPException(status_code=502, detail=f"Nutrition plan unavailable: {exc}") from exc
 
     plan = NutritionPlanResponse(**result.data, profile=payload.model_dump())
+    created_at = datetime.now(timezone.utc)
+    insert_result = await nutrition_plans_collection.insert_one(
+        {
+            "user_id": str(user["_id"]),
+            "profile_hash": profile_hash,
+            "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
+            "plan": plan.model_dump(),
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+    plan.plan_id = str(insert_result.inserted_id)
 
-    background_tasks.add_task(
-
-        _persist_nutrition_plan_record,
-
-        str(user["_id"]),
-
-        profile_hash,
-
-        plan.model_dump(),
-
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "nutrition_onboarding_profile": payload.model_dump(),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
     )
 
     logger.info(
 
-        "nutrition_plan_generated user_id=%s days=%s",
+        "nutrition_plan_generated user_id=%s plan_id=%s days=%s",
 
         str(user["_id"]),
+
+        plan.plan_id,
 
         len(plan.days),
 

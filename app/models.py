@@ -1377,6 +1377,19 @@ class AdminSubscriptionPlanListResponse(BaseModel):
     items: list[AdminSubscriptionPlanItem] = Field(default_factory=list)
 
 
+class AdminSubscriptionFeatureItem(BaseModel):
+    key: str
+    label: str
+    description: str = ""
+    category: str = ""
+    defaultTiers: list[str] = Field(default_factory=list)
+    routeHints: list[str] = Field(default_factory=list)
+
+
+class AdminSubscriptionFeatureListResponse(BaseModel):
+    items: list[AdminSubscriptionFeatureItem] = Field(default_factory=list)
+
+
 class AdminSubscriptionPlanRequest(BaseModel):
     tier: str = Field(min_length=1, max_length=120)
     description: str = Field(min_length=1, max_length=1000)

@@ -289,7 +289,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
     plan_text = _generate_nutrition_plan_json(prompt)
     plan = _parse_or_repair_nutrition_plan(plan_text)
     if plan is None:
-        raise RuntimeError("The nutrition model did not return valid plan JSON")
+        plan = _build_fallback_nutrition_plan(payload)
 
     _NUTRITION_PLAN_MEMORY_CACHE[cache_key] = deepcopy(plan)
     return NutritionResult(data=plan)
@@ -363,6 +363,165 @@ def build_nutrition_plan_signature(payload: dict) -> str:
     }
     payload_json = json.dumps(normalized_profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return sha256(payload_json.encode("utf-8")).hexdigest()
+
+
+def _build_fallback_nutrition_plan(payload: dict) -> dict:
+    goal_code = _normalize_text(payload.get("goal"), "").lower()
+    diet_code = _normalize_text(payload.get("diet"), "").lower()
+    cuisine = _normalize_text(payload.get("cuisine"), "your preferred cuisine")
+    favorite_meal = _normalize_text(payload.get("favorite_meal"), "balanced meals")
+    allergies = _normalize_text(payload.get("allergies"), "").lower()
+    health_conditions = _normalize_string_list(payload.get("health_conditions"))
+
+    goal_label_map = {
+        "g1": "Weight Loss",
+        "g2": "Muscle Building",
+        "g3": "Weight Maintenance",
+        "g4": "Flexibility & Mobility",
+        "g5": "Energy & Endurance",
+    }
+    goal_label = goal_label_map.get(goal_code, "Personalized Nutrition Plan")
+
+    protein_name = "Chicken breast"
+    breakfast_protein = "Greek yogurt"
+    if diet_code in {"d2", "vegetarian"}:
+        protein_name = "Paneer and lentils"
+        breakfast_protein = "Greek yogurt"
+    elif diet_code in {"d3", "vegan"}:
+        protein_name = "Tofu and chickpeas"
+        breakfast_protein = "Soy yogurt"
+    elif diet_code in {"d4", "keto / low-carb", "keto", "low-carb"}:
+        protein_name = "Eggs and salmon"
+        breakfast_protein = "Eggs"
+
+    if "nut" in allergies or "peanut" in allergies:
+        breakfast_side = "berries"
+    else:
+        breakfast_side = "berries and seeds"
+
+    summary = (
+        f"This fallback 7-day plan supports {goal_label.lower()} with practical {cuisine} inspired meals, "
+        f"balanced portions, and a repeatable structure around {favorite_meal.lower()}."
+    )
+    if health_conditions:
+        summary += f" It also stays mindful of: {', '.join(health_conditions[:3])}."
+
+    day_templates = [
+        ("Mon", "Protein oats bowl", "Grilled protein rice bowl", "Vegetable skillet and protein"),
+        ("Tue", "Egg and toast plate", "Lentil grain lunch", "Roasted protein and greens"),
+        ("Wed", "Yogurt fruit cup", "Wrap with protein and salad", "Stir-fry dinner bowl"),
+        ("Thu", "Smoothie breakfast", "Rice, vegetables, and protein", "Soup and side plate"),
+        ("Fri", "Overnight oats", "Chickpea power bowl", "Baked protein and vegetables"),
+        ("Sat", "Whole-grain pancakes", "Sandwich and salad", "Pasta and protein plate"),
+        ("Sun", "French toast and fruit", "Bean burrito bowl", "Roast dinner plate"),
+    ]
+
+    days: list[dict] = []
+    for index, (day_name, breakfast_name, lunch_name, dinner_name) in enumerate(day_templates):
+        base_kcal = 380 + (index % 3) * 20
+        protein_target = 24 if goal_code == "g1" else 32 if goal_code == "g2" else 28
+        carb_target = 28 if diet_code in {"d4", "keto / low-carb", "keto", "low-carb"} else 44 + (index % 2) * 6
+
+        days.append(
+            {
+                "day": day_name,
+                "breakfast": {
+                    "name": breakfast_name,
+                    "desc": f"A simple breakfast built around {breakfast_protein.lower()} for steady energy.",
+                    "kcal": base_kcal,
+                    "p": protein_target,
+                    "c": carb_target,
+                    "f": 14,
+                    "ingredients": [
+                        breakfast_protein,
+                        "Oats or whole grains",
+                        breakfast_side,
+                        "Cinnamon",
+                    ],
+                    "instructions": [
+                        "Prepare the base ingredients in a practical single serving.",
+                        "Add fruit and season lightly.",
+                        "Portion the meal to match the day target.",
+                    ],
+                },
+                "lunch": {
+                    "name": lunch_name,
+                    "desc": f"A balanced lunch using {protein_name.lower()} with grains and vegetables.",
+                    "kcal": base_kcal + 170,
+                    "p": protein_target + 10,
+                    "c": carb_target + 18,
+                    "f": 16,
+                    "ingredients": [
+                        protein_name,
+                        "Rice or quinoa",
+                        "Mixed vegetables",
+                        "Olive oil",
+                        "Herbs and spices",
+                    ],
+                    "instructions": [
+                        "Cook the grain until tender.",
+                        "Prepare the protein with simple seasoning.",
+                        "Serve with vegetables and a measured portion of oil.",
+                    ],
+                },
+                "dinner": {
+                    "name": dinner_name,
+                    "desc": "A lighter evening meal focused on recovery, satiety, and consistency.",
+                    "kcal": base_kcal + 80,
+                    "p": protein_target + 6,
+                    "c": max(18, carb_target - 8),
+                    "f": 15,
+                    "ingredients": [
+                        protein_name,
+                        "Leafy greens",
+                        "Seasonal vegetables",
+                        "Garlic",
+                        "Lemon or yogurt sauce",
+                    ],
+                    "instructions": [
+                        "Cook the protein through with moderate seasoning.",
+                        "Steam or roast the vegetables.",
+                        "Plate the meal with a lighter evening portion.",
+                    ],
+                },
+            }
+        )
+
+    shopping_list = [
+        {
+            "category": "Proteins",
+            "items": [
+                {"name": breakfast_protein, "qty": "5-7 servings"},
+                {"name": protein_name, "qty": "7 servings"},
+                {"name": "Eggs or tofu backup", "qty": "1 pack"},
+            ],
+        },
+        {
+            "category": "Carbohydrates",
+            "items": [
+                {"name": "Oats", "qty": "1 large pack"},
+                {"name": "Rice or quinoa", "qty": "1-2 kg"},
+                {"name": "Whole-grain bread or wraps", "qty": "1 pack"},
+            ],
+        },
+        {
+            "category": "Produce",
+            "items": [
+                {"name": "Mixed vegetables", "qty": "7-10 cups"},
+                {"name": "Leafy greens", "qty": "4-5 bags"},
+                {"name": "Fruit for breakfast", "qty": "7 servings"},
+            ],
+        },
+    ]
+
+    return _validate_nutrition_plan(
+        {
+            "summary": summary,
+            "goal_label": goal_label,
+            "days": days,
+            "shopping_list": shopping_list,
+        }
+    )
 
 
 def generate_nutrition_advice(payload: dict) -> NutritionAdviceResult:

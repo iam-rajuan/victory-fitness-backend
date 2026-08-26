@@ -4,6 +4,21 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+def _validate_subscription_plan_feature_access(payload: AdminSubscriptionPlanRequest) -> None:
+    invalid_features = _find_invalid_plan_feature_access(payload.model_dump())
+    if invalid_features:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unknown subscription feature keys: {', '.join(invalid_features)}",
+        )
+
+@router.get("/admin/subscription-features", response_model=AdminSubscriptionFeatureListResponse)
+async def admin_list_subscription_features(
+    _: dict = Depends(_require_admin_user),
+) -> AdminSubscriptionFeatureListResponse:
+    items = [AdminSubscriptionFeatureItem(**item) for item in _get_subscription_feature_catalog()]
+    return AdminSubscriptionFeatureListResponse(items=items)
+
 @router.get("/admin/subscription-plans", response_model=AdminSubscriptionPlanListResponse)
 
 async def admin_list_subscription_plans(
@@ -25,6 +40,7 @@ async def admin_create_subscription_plan(
     _: dict = Depends(_require_admin_user),
 
 ) -> AdminSubscriptionPlanItem:
+    _validate_subscription_plan_feature_access(payload)
 
     items = [_serialize_admin_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
 
@@ -57,6 +73,7 @@ async def admin_update_subscription_plan(
     _: dict = Depends(_require_admin_user),
 
 ) -> AdminSubscriptionPlanItem:
+    _validate_subscription_plan_feature_access(payload)
 
     items = [_serialize_admin_subscription_plan_item(item) for item in await _get_dashboard_subscription_plan_items()]
 
@@ -79,7 +96,17 @@ async def admin_update_subscription_plan(
     await _replace_items_record(DASHBOARD_SUBSCRIPTION_PLANS_KEY, items)
 
     await users_collection.update_many(
-        {"subscription_plan_id": plan_id, "subscription_status": "ACTIVE"},
+        {
+            "subscription_status": "ACTIVE",
+            "$or": [
+                {"subscription_plan_id": plan_id},
+                *(
+                    [{"subscription_purchase_source": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE}]
+                    if plan_id == PHASE_ONE_BETA_PLAN_ID
+                    else []
+                ),
+            ],
+        },
         {
             "$set": {
                 "subscription_access": updated_plan["featureAccess"],

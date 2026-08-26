@@ -4,6 +4,245 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+
+def _challenge_message_mentions_coach(content: str) -> bool:
+    normalized = " ".join(str(content or "").strip().lower().split())
+    if not normalized:
+        return False
+    coach_triggers = (
+        "@coach",
+        "@victor",
+        "coach victor",
+        "victor coach",
+    )
+    return any(trigger in normalized for trigger in coach_triggers)
+
+
+async def _safe_notify_challenge_chat_participants(
+    challenge_id: str,
+    author_id: str,
+    challenge_title: str,
+    content: str,
+) -> None:
+    try:
+        await _notify_challenge_chat_participants(challenge_id, author_id, challenge_title, content)
+    except Exception as exc:
+        logger.warning("challenge_chat_notification_task_failed challenge_id=%s error=%s", challenge_id, exc)
+
+
+def _get_report_font(size: int, bold: bool = False) -> Any:
+    _require_pillow()
+    try:
+        font_name = "arialbd.ttf" if bold else "arial.ttf"
+        return ImageFont.truetype(font_name, size)
+    except Exception:
+        return ImageFont.load_default()
+
+
+def _wrap_report_text_lines(draw: Any, text: str, font: Any, max_width: int, max_lines: int) -> list[str]:
+    normalized = " ".join(str(text or "").split()).strip()
+    if not normalized:
+        return []
+    words = normalized.split(" ")
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}".strip()
+        box = draw.textbbox((0, 0), candidate, font=font)
+        if box[2] - box[0] <= max_width:
+            current = candidate
+            continue
+        lines.append(current)
+        current = word
+        if len(lines) >= max_lines - 1:
+            break
+    if len(lines) < max_lines:
+        lines.append(current)
+    remaining_words = words[len(" ".join(lines).split(" ")):]
+    if remaining_words and lines:
+        lines[-1] = lines[-1].rstrip(" .") + "..."
+    return lines[:max_lines]
+
+
+def _build_challenge_progress_report_png(
+    challenge: dict,
+    membership: dict,
+    viewer_name: str,
+    selected_day_number: int | None = None,
+) -> tuple[bytes, str]:
+    _require_pillow()
+
+    plan_days = _get_normalized_plan_days(challenge)
+    total_days = max(len(plan_days), int(challenge.get("duration_days") or 0), 1)
+    viewer_plan_progress = _build_viewer_plan_progress(plan_days, membership or {})
+    progress_by_day = {item.day_number: item for item in viewer_plan_progress}
+    completed_days = _count_completed_plan_days_from_start(plan_days, membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {})
+    challenge_points = max(int(challenge.get("points") or 0), 0)
+    points_earned = _calculate_challenge_points_earned(plan_days, membership or {}, challenge_points)
+
+    selected_day = None
+    if selected_day_number is not None:
+      selected_day = next((day for day in plan_days if int(day.get("day_number") or 0) == selected_day_number), None)
+    if selected_day is None:
+      selected_day = next((day for day in reversed(plan_days) if progress_by_day.get(int(day.get("day_number") or 0)) and progress_by_day[int(day.get("day_number") or 0)].completed), None)
+    if selected_day is None and plan_days:
+      selected_day = plan_days[0]
+
+    selected_progress = progress_by_day.get(int(selected_day.get("day_number") or 0)) if selected_day else None
+    completed_section_ids = set(selected_progress.completed_section_ids if selected_progress else [])
+    completed_exercise_ids = set(selected_progress.completed_exercise_ids if selected_progress else [])
+
+    exercise_entries: list[str] = []
+    for section in (selected_day or {}).get("sections") or []:
+        section_exercises = section.get("exercises") or []
+        if completed_section_ids and str(section.get("id") or "") in completed_section_ids:
+            exercise_entries.extend(str(exercise.get("name") or "Exercise") for exercise in section_exercises)
+            continue
+        for exercise in section_exercises:
+            if not completed_exercise_ids or str(exercise.get("id") or "") in completed_exercise_ids:
+                exercise_entries.append(str(exercise.get("name") or "Exercise"))
+    exercise_entries = exercise_entries[:5]
+    if not exercise_entries:
+        exercise_entries = ["Keep going. Your progress is building day by day."]
+
+    width, height = 1080, 1350
+    image = Image.new("RGB", (width, height), "#06111D")
+    draw = ImageDraw.Draw(image)
+
+    cyan = "#21D4FD"
+    cyan_soft = "#0E7490"
+    white = "#F8FAFC"
+    muted = "#94A3B8"
+    muted_soft = "#CBD5E1"
+    gold = "#F59E0B"
+    pink = "#FF5C8A"
+    navy_panel = "#0D1726"
+    navy_card = "#121D30"
+    outline = "#23344D"
+    progress_track = "#1E293B"
+
+    title_font = _get_report_font(60, bold=True)
+    challenge_font = _get_report_font(40, bold=True)
+    heading_font = _get_report_font(34, bold=True)
+    section_font = _get_report_font(24, bold=True)
+    body_font = _get_report_font(22, bold=False)
+    small_font = _get_report_font(18, bold=False)
+    micro_font = _get_report_font(16, bold=False)
+
+    def center_text(y: int, text: str, font: Any, fill: str) -> None:
+        box = draw.textbbox((0, 0), text, font=font)
+        draw.text(((width - (box[2] - box[0])) / 2, y), text, font=font, fill=fill)
+
+    for dot_x in range(44, width - 44, 56):
+        for dot_y in range(34, height - 34, 56):
+            draw.ellipse((dot_x, dot_y, dot_x + 4, dot_y + 4), fill="#0C3A55")
+
+    header_top = 88
+    draw.rounded_rectangle((100, header_top, width - 100, 184), radius=28, fill=navy_panel, outline=outline, width=2)
+    draw.rounded_rectangle((126, 108, 208, 160), radius=18, fill=cyan)
+    draw.text((148, 118), "VF", font=_get_report_font(28, bold=True), fill="#04141D")
+    draw.text((238, 110), "VICTORY FITNESS", font=section_font, fill=white)
+    draw.text((238, 142), "Challenge Progress Card", font=small_font, fill=muted)
+
+    center_text(228, "YOUR VICTORY", title_font, white)
+    center_text(298, "CHALLENGE COMPLETED", section_font, cyan)
+
+    challenge_title = str(challenge.get("title") or "Challenge").strip() or "Challenge"
+    title_lines = _wrap_report_text_lines(draw, challenge_title.upper(), challenge_font, 760, 2)
+    title_y = 360
+    for line in title_lines:
+        center_text(title_y, line, challenge_font, white)
+        title_y += 48
+
+    day_number = int(selected_day.get("day_number") or selected_day_number or 1) if selected_day else 1
+    day_title = str(selected_day.get("title") or f"Day {day_number}").strip() if selected_day else f"Day {day_number}"
+    day_focus = str(selected_day.get("focus") or "").strip() if selected_day else ""
+    center_text(title_y + 8, f"DAY {day_number}", heading_font, gold)
+    if day_title:
+        day_title_lines = _wrap_report_text_lines(draw, day_title, body_font, 760, 2)
+        line_y = title_y + 62
+        for line in day_title_lines:
+            center_text(line_y, line, body_font, muted_soft)
+            line_y += 30
+    if day_focus:
+        focus_lines = _wrap_report_text_lines(draw, day_focus, small_font, 760, 2)
+        line_y += 6
+        for line in focus_lines:
+            center_text(line_y, line, small_font, muted)
+            line_y += 24
+
+    content_top = 570
+    draw.rounded_rectangle((84, content_top, width - 84, 980), radius=36, fill=navy_panel, outline=outline, width=2)
+
+    progress_left = 132
+    progress_top = content_top + 34
+    draw.text((progress_left, progress_top), "PROGRAM PROGRESS", font=small_font, fill=cyan)
+    progress_ratio = min(max(completed_days / max(total_days, 1), 0), 1)
+    draw.rounded_rectangle((progress_left, progress_top + 36, width - 132, progress_top + 58), radius=11, fill=progress_track)
+    draw.rounded_rectangle(
+        (progress_left, progress_top + 36, progress_left + int((width - 264) * progress_ratio), progress_top + 58),
+        radius=11,
+        fill=cyan,
+    )
+    progress_summary = f"{completed_days}/{total_days} DAYS COMPLETE  •  {points_earned}/{max(challenge_points, 1)} PTS"
+    draw.text((progress_left, progress_top + 74), progress_summary, font=micro_font, fill=muted_soft)
+
+    exercise_block_top = progress_top + 136
+    draw.text((progress_left, exercise_block_top), "HIGHLIGHTED COMPLETIONS", font=section_font, fill=white)
+    row_y = exercise_block_top + 46
+    for entry in exercise_entries[:4]:
+        draw.rounded_rectangle((progress_left, row_y - 6, width - 132, row_y + 38), radius=16, fill=navy_card, outline="#1E2F49")
+        draw.ellipse((progress_left + 16, row_y + 7, progress_left + 30, row_y + 21), fill=cyan)
+        entry_lines = _wrap_report_text_lines(draw, entry, body_font, width - 264 - 60, 1)
+        draw.text((progress_left + 48, row_y), entry_lines[0] if entry_lines else entry, font=body_font, fill=white)
+        row_y += 60
+
+    stat_top = 1018
+    stat_width = 272
+    stat_gap = 24
+    stat_x_positions = [84, 84 + stat_width + stat_gap, 84 + (stat_width + stat_gap) * 2]
+
+    streak_value = str(max(completed_days, int(selected_day.get("day_number") or 0) if selected_progress and selected_progress.completed else 0, 0))
+    exercise_total = sum(len(section.get("exercises") or []) for section in (selected_day or {}).get("sections") or [])
+    exercise_done = len(completed_exercise_ids) if completed_exercise_ids else exercise_total if selected_progress and selected_progress.completed else 0
+    stat_cards = [
+        ("STREAK", f"{streak_value} DAY", cyan),
+        ("INTENSITY", str(challenge.get("difficulty") or "INTERMEDIATE").upper(), pink),
+        ("EXERCISES", f"{exercise_done}/{max(exercise_total, 1)}", gold),
+    ]
+
+    for index, (label, value, color) in enumerate(stat_cards):
+        x = stat_x_positions[index]
+        draw.rounded_rectangle((x, stat_top, x + stat_width, stat_top + 132), radius=26, fill=navy_panel, outline=outline, width=2)
+        draw.text((x + 24, stat_top + 24), label, font=small_font, fill=muted)
+        value_lines = _wrap_report_text_lines(draw, value, heading_font, stat_width - 48, 2)
+        value_y = stat_top + 58
+        for line in value_lines:
+            draw.text((x + 24, value_y), line, font=heading_font, fill=color)
+            value_y += 34
+
+    draw.rounded_rectangle((240, 1196, width - 240, 1278), radius=40, fill=cyan)
+    member_name = str(viewer_name or "Victory Member").upper()
+    member_lines = _wrap_report_text_lines(draw, member_name, section_font, width - 560, 1)
+    member_label = member_lines[0] if member_lines else member_name
+    member_box = draw.textbbox((0, 0), member_label, font=section_font)
+    draw.text(((width - (member_box[2] - member_box[0])) / 2, 1222), member_label, font=section_font, fill="#04141D")
+    center_text(1300, "VICTORY-FITNESS.APP", section_font, muted_soft)
+
+    summary_title = str(challenge.get("title") or "Challenge").strip() or "Challenge"
+    share_message = "\n".join(
+        [
+            "Victory Fitness",
+            f"{summary_title} progress update by {viewer_name or 'Victory Member'}",
+            f"Completed {completed_days}/{total_days} days · {points_earned}/{challenge_points} pts",
+            f"Highlighted day: Day {day_number}",
+        ]
+    )
+
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue(), share_message
+
 @router.get("/challenges/overview", response_model=ChallengeOverviewResponse)
 
 async def get_challenge_overview(
@@ -494,31 +733,35 @@ async def create_challenge_chat_message(
 
     )
 
-    await _broadcast_challenge_chat_event("message_created", challenge_id, document)
+    try:
+        await _broadcast_challenge_chat_event("message_created", challenge_id, document)
+    except Exception as exc:
+        logger.warning("challenge_chat_broadcast_failed challenge_id=%s error=%s", challenge_id, exc)
 
     background_tasks.add_task(
-        _notify_challenge_chat_participants,
+        _safe_notify_challenge_chat_participants,
         challenge_id,
         str(user["_id"]),
         str(challenge.get("title") or "Your challenge"),
         content or "Sent an image in the challenge chat.",
     )
 
-    if _challenge_message_mentions_coach(content):
+    coach_reply_handler = globals().get("_create_challenge_coach_reply")
+    if _challenge_message_mentions_coach(content) and callable(coach_reply_handler):
+        try:
+            await coach_reply_handler(
+                challenge=challenge,
+                membership=membership,
+                user=user,
+                trigger_message=document,
+            )
+        except Exception as exc:
+            logger.warning("challenge_chat_coach_reply_failed challenge_id=%s message_id=%s error=%s", challenge_id, str(document["_id"]), exc)
+    elif _challenge_message_mentions_coach(content):
+        logger.warning("challenge_chat_coach_reply_unavailable challenge_id=%s message_id=%s", challenge_id, str(document["_id"]))
 
-        await _create_challenge_coach_reply(
-
-            challenge=challenge,
-
-            membership=membership,
-
-            user=user,
-
-            trigger_message=document,
-
-        )
-
-    return ChallengeChatMessageResponse(**_serialize_challenge_chat_message(document, user, str(user["_id"])))
+    serialized_message = await _serialize_single_challenge_chat_message(document, str(user["_id"]))
+    return ChallengeChatMessageResponse(**serialized_message)
 
 @router.patch("/challenges/{challenge_id}/chat/messages/{message_id}", response_model=ChallengeChatMessageResponse)
 
@@ -869,12 +1112,38 @@ async def complete_challenge_plan_section(
     prior_completed = bool(isinstance(existing_day_progress, dict) and existing_day_progress.get("completed"))
 
     if payload.completed:
+        completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
 
-        completed_section_ids = list(valid_section_ids)
+            existing_day_progress,
 
-        completed_exercise_ids = list(valid_exercise_ids)
+            valid_section_ids,
 
-        will_complete_day = True
+            valid_exercise_ids,
+
+        )
+
+        section_record = _get_plan_section_or_404(plan_day, section_id)
+
+        section_exercise_ids = _get_section_exercise_ids(section_record)
+
+        if section_exercise_ids:
+
+            completed_section_exercise_ids = {
+                exercise_id for exercise_id in completed_exercise_ids if exercise_id in section_exercise_ids
+            }
+
+            if len(completed_section_exercise_ids) < len(section_exercise_ids):
+
+                raise HTTPException(
+                    status_code=400,
+                    detail="Complete every exercise in this section before marking the section complete",
+                )
+
+        if section_id not in completed_section_ids:
+
+            completed_section_ids.append(section_id)
+
+        will_complete_day = False
 
     else:
 
@@ -1175,6 +1444,7 @@ async def post_challenge_progress_update(
 async def get_challenge_progress_report(
 
     challenge_id: str,
+    day: int | None = None,
 
     user: dict = Depends(_require_challenge_access_user),
 
@@ -1236,7 +1506,7 @@ async def get_challenge_progress_report(
 
     viewer_name = str(user.get("name") or "Victory Member").strip() or "Victory Member"
 
-    png_bytes, share_message = _build_challenge_progress_report_png(challenge, membership, viewer_name)
+    png_bytes, share_message = _build_challenge_progress_report_png(challenge, membership, viewer_name, day)
 
     return ChallengeProgressReportResponse(
 

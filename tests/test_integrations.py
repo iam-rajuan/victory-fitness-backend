@@ -14,6 +14,7 @@ from starlette.websockets import WebSocketDisconnect
 backend_module = importlib.import_module("app.main")
 wearables_router_module = importlib.import_module("app.wearables.router")
 websocket_router_module = importlib.import_module("app.api.routers.websockets")
+challenge_router_module = importlib.import_module("app.api.routers.challenges")
 from app.wearables.service import store_normalized_metrics
 
 
@@ -574,6 +575,183 @@ class ChallengeStartTests(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["status"], "success")
         self.assertEqual(response.json()["membership_id"], "membership-1")
+
+
+class ChallengeChatMessageTests(unittest.TestCase):
+    def _build_client(self) -> TestClient:
+        app = FastAPI()
+        app.include_router(backend_module.app.router)
+        app.dependency_overrides[backend_module._require_challenge_access_user] = lambda: {
+            "_id": "user-1",
+            "name": "Test User",
+            "is_verified": True,
+            "subscription_tier": "GOLD",
+        }
+        return TestClient(app)
+
+    def test_create_chat_message_returns_created_even_if_broadcast_fails(self) -> None:
+        client = self._build_client()
+        challenge_id = "6a25c55f6dbb4f1f0f4d1111"
+        challenge = {
+            "_id": backend_module.ObjectId(challenge_id),
+            "title": "Iron 21",
+            "status": "ACTIVE",
+        }
+        membership = {
+            "_id": "membership-1",
+            "user_id": "user-1",
+            "challenge_id": challenge_id,
+            "status": "ACTIVE",
+        }
+        serialized_message = {
+            "id": "message-1",
+            "challenge_id": challenge_id,
+            "author_id": "user-1",
+            "author_name": "Test User",
+            "author_role": "member",
+            "author_profile_image": "",
+            "message_type": "message",
+            "content": "test message hi",
+            "image_url": "",
+            "reply_to_message_id": None,
+            "progress_payload": None,
+            "created_at": _utc_now().isoformat(),
+            "updated_at": _utc_now().isoformat(),
+            "can_delete": True,
+            "can_edit": True,
+            "is_edited": False,
+            "is_deleted": False,
+            "reactions": [],
+        }
+
+        with patch.object(backend_module, "_get_challenge_or_404", AsyncMock(return_value=challenge)), patch.object(
+            backend_module, "_get_challenge_membership_or_403", AsyncMock(return_value=membership)
+        ), patch.object(
+            backend_module, "_ensure_challenge_chat_write_access", lambda *_args, **_kwargs: None
+        ), patch.object(
+            backend_module,
+            "challenge_chat_messages_collection",
+            SimpleNamespace(insert_one=AsyncMock()),
+        ), patch.object(
+            backend_module,
+            "challenge_memberships_collection",
+            SimpleNamespace(update_one=AsyncMock()),
+        ), patch.object(
+            backend_module,
+            "_broadcast_challenge_chat_event",
+            AsyncMock(side_effect=RuntimeError("socket send failed")),
+        ), patch.object(
+            backend_module,
+            "_challenge_message_mentions_coach",
+            Mock(return_value=False),
+            create=True,
+        ), patch.object(
+            backend_module,
+            "_serialize_single_challenge_chat_message",
+            AsyncMock(return_value=serialized_message),
+        ):
+            response = client.post(
+                f"/challenges/{challenge_id}/chat/messages",
+                json={"content": "test message hi"},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["content"], "test message hi")
+
+
+class ChallengeProgressReportTests(unittest.TestCase):
+    def _build_client(self) -> TestClient:
+        app = FastAPI()
+        app.include_router(challenge_router_module.router)
+        app.dependency_overrides[challenge_router_module._require_challenge_access_user] = lambda: {
+            "_id": "user-1",
+            "name": "Test User Four",
+            "is_verified": True,
+            "subscription_tier": "GOLD",
+        }
+        return TestClient(app)
+
+    def test_progress_report_returns_png_payload(self) -> None:
+        client = self._build_client()
+        challenge_id = "6a25c55f6dbb4f1f0f4d1111"
+        challenge = {
+            "_id": challenge_router_module.ObjectId(challenge_id),
+            "title": "Dopamine Detox",
+            "description": "Reset your focus.",
+            "duration_days": 21,
+            "points": 1000,
+            "difficulty": "Intermediate",
+            "status": "ACTIVE",
+            "plan_days": [
+                {
+                    "day_number": 1,
+                    "title": "Day 1",
+                    "focus": "Mindfulness",
+                    "notes": "",
+                    "sections": [
+                        {
+                            "id": "d1-s1",
+                            "title": "Morning block",
+                            "description": "",
+                            "estimated_minutes": 20,
+                            "exercises": [
+                                {"id": "ex-1", "name": "Phone-free morning", "details": "", "notes": "", "workout_id": "", "workout_title": "", "workout_vimeo_id": "", "workout_video_url": "", "workout_video_source": "", "workout_thumbnail": ""},
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "day_number": 2,
+                    "title": "Day 2",
+                    "focus": "Consistency",
+                    "notes": "",
+                    "sections": [
+                        {
+                            "id": "d2-s1",
+                            "title": "Focus block",
+                            "description": "",
+                            "estimated_minutes": 20,
+                            "exercises": [
+                                {"id": "ex-2", "name": "Deep work block", "details": "", "notes": "", "workout_id": "", "workout_title": "", "workout_vimeo_id": "", "workout_video_url": "", "workout_video_source": "", "workout_thumbnail": ""},
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+        membership = {
+            "_id": "membership-1",
+            "user_id": "user-1",
+            "challenge_id": challenge_id,
+            "status": "ACTIVE",
+            "started_at": _utc_now().isoformat(),
+            "plan_progress": {
+                "1": {
+                    "completed": True,
+                    "completed_section_ids": ["d1-s1"],
+                    "completed_exercise_ids": ["ex-1"],
+                },
+                "2": {
+                    "completed": True,
+                    "completed_section_ids": ["d2-s1"],
+                    "completed_exercise_ids": ["ex-2"],
+                },
+            },
+            "challenge_points": 1000,
+        }
+
+        with patch.object(challenge_router_module, "_get_challenge_or_404", AsyncMock(return_value=challenge)), patch.object(
+            challenge_router_module, "_get_challenge_membership_or_403", AsyncMock(return_value=membership)
+        ), patch.object(
+            challenge_router_module, "_ensure_challenge_read_access", lambda *_args, **_kwargs: None
+        ):
+            response = client.get(f"/challenges/{challenge_id}/progress/report?day=2")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["mime_type"], "image/png")
+        self.assertTrue(body["image_base64"])
+        self.assertIn("Dopamine Detox", body["share_message"])
 
 
 class AdminSeedTests(unittest.IsolatedAsyncioTestCase):

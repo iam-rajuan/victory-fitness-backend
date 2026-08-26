@@ -4,6 +4,61 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+
+def _validate_admin_challenge_plan_for_publish(
+    *,
+    status_value: str,
+    duration_days: int,
+    plan_days: list[dict],
+) -> None:
+
+    normalized_status = str(status_value or "").upper()
+
+    if normalized_status not in {"ACTIVE", "UPCOMING"}:
+
+        return
+
+    expected_duration = max(int(duration_days or 0), 0)
+
+    if not plan_days:
+
+        raise HTTPException(status_code=400, detail="Active or upcoming challenges must include configured plan days")
+
+    if expected_duration and len(plan_days) != expected_duration:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Active or upcoming challenges must include all {expected_duration} configured days",
+        )
+
+    for day in plan_days:
+
+        day_number = int(day.get("day_number") or 0)
+
+        sections = day.get("sections") if isinstance(day.get("sections"), list) else []
+
+        if not sections:
+
+            raise HTTPException(
+                status_code=400,
+                detail=f"Day {day_number} must include at least one section before publishing",
+            )
+
+        exercise_count = 0
+
+        for section in sections:
+
+            exercises = section.get("exercises") if isinstance(section.get("exercises"), list) else []
+
+            exercise_count += len(exercises)
+
+        if exercise_count <= 0:
+
+            raise HTTPException(
+                status_code=400,
+                detail=f"Day {day_number} must include at least one exercise before publishing",
+            )
+
 @router.get("/admin/challenges", response_model=AdminChallengeListResponse)
 
 async def admin_list_challenges(
@@ -118,6 +173,12 @@ async def admin_create_challenge(
     plan_days = _normalize_challenge_plan_days(payload.planDays)
 
     derived_duration_days = max(_extract_plan_day_numbers(plan_days), default=payload.durationDays)
+
+    _validate_admin_challenge_plan_for_publish(
+        status_value=payload.status,
+        duration_days=derived_duration_days,
+        plan_days=plan_days,
+    )
 
     plan_text = _build_challenge_plan_text(plan_days) if plan_days else str(payload.planText or "").strip()
 
@@ -248,6 +309,12 @@ async def admin_update_challenge(
     plan_days = _normalize_challenge_plan_days(payload.planDays)
 
     derived_duration_days = max(_extract_plan_day_numbers(plan_days), default=payload.durationDays)
+
+    _validate_admin_challenge_plan_for_publish(
+        status_value=payload.status,
+        duration_days=derived_duration_days,
+        plan_days=plan_days,
+    )
 
     plan_text = _build_challenge_plan_text(plan_days) if plan_days else str(payload.planText or "").strip()
 
