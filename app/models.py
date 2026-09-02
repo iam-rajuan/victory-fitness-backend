@@ -597,6 +597,18 @@ class CoachingApplicationCreateRequest(BaseModel):
     additional_notes: str | None = Field(default=None, max_length=4000)
     agreement_accepted: bool = True
 
+    @field_validator("phone_number")
+    @classmethod
+    def require_e164_phone_number_when_provided(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = re.sub(r"[\s()-]+", "", value.strip())
+        if not normalized:
+            return None
+        if not re.fullmatch(r"^\+[1-9]\d{7,14}$", normalized):
+            raise ValueError("must be a valid E.164 phone number such as +233XXXXXXXXX")
+        return normalized
+
 
 class CoachingApplicationResponse(BaseModel):
     id: str
