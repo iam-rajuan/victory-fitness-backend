@@ -158,102 +158,9 @@ class Settings:
 
         self.admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)
         self.admin_seed_sync_password = _get_bool("ADMIN_SEED_SYNC_PASSWORD", True)
-        self.admin_seed_accounts = self._build_admin_seed_accounts()
-
-        self.wearable_token_encryption_key = _get_secret("WEARABLE_TOKEN_ENCRYPTION_KEY")
-        self.encryption_key = _get_secret("ENCRYPTION_KEY", self.wearable_token_encryption_key)
-        self.health_native_upload_secret = _get_secret("HEALTH_NATIVE_UPLOAD_SECRET")
-        self.webhook_signing_secret = _get_secret("WEBHOOK_SIGNING_SECRET")
-        self.cron_secret = _get_secret("CRON_SECRET")
-        self.ai_generation_job_concurrency = _get_int("AI_GENERATION_JOB_CONCURRENCY", 10)
-        self.ai_generation_timeout_seconds = _get_int("AI_GENERATION_TIMEOUT_SECONDS", 30)
-        self.push_notification_concurrency = _get_int("PUSH_NOTIFICATION_CONCURRENCY", 50)
-        self.weekly_digest_cron_utc = _get_str("WEEKLY_DIGEST_CRON_UTC", "0 22 * * 0")
-        self.feature_flags_provider = _get_str("FEATURE_FLAGS_PROVIDER", "growthbook").lower()
-        self.growthbook_api_host = _get_str("GROWTHBOOK_API_HOST")
-        self.growthbook_client_key = _get_secret("GROWTHBOOK_CLIENT_KEY")
-        self.posthog_api_host = _get_str("POSTHOG_API_HOST", "https://app.posthog.com")
-        self.posthog_api_key = _get_secret("POSTHOG_API_KEY")
-        self.posthog_project_id = _get_str("POSTHOG_PROJECT_ID")
-        self.plausible_api_host = _get_str("PLAUSIBLE_API_HOST", "https://plausible.io")
-        self.plausible_domain = _get_str("PLAUSIBLE_DOMAIN")
-        self.plausible_api_key = _get_secret("PLAUSIBLE_API_KEY")
-        self.request_analytics_enabled = _get_bool("REQUEST_ANALYTICS_ENABLED", True)
-        self.sentry_dsn = _get_secret("SENTRY_DSN")
-        self.otel_service_name = _get_str("OTEL_SERVICE_NAME", "victory-fitness-backend")
-        self.otel_exporter_otlp_endpoint = _get_str("OTEL_EXPORTER_OTLP_ENDPOINT")
-        self.gcp_primary_region = _get_str("GCP_PRIMARY_REGION", "europe-west1")
-        self.gcp_secondary_regions = _get_csv_list("GCP_SECONDARY_REGIONS", "asia-south1,us-central1")
-        self.cloudflare_zone = _get_str("CLOUDFLARE_ZONE")
-        self.cloudflare_zero_trust_aud = _get_str("CLOUDFLARE_ZERO_TRUST_AUD")
-        self.trusted_proxy_header = _get_str("TRUSTED_PROXY_HEADER", "CF-Connecting-IP")
-        self.wearable_scheduler_enabled = _get_bool("WEARABLE_SCHEDULER_ENABLED", True)
-        self.wearable_scheduler_interval_minutes = _get_int("WEARABLE_SCHEDULER_INTERVAL_MINUTES", 30)
-        self.wearable_scheduler_lookback_days = _get_int("WEARABLE_SCHEDULER_LOOKBACK_DAYS", 1)
-        self.sync_queue_concurrency = _get_int("SYNC_QUEUE_CONCURRENCY", 5)
-        self.sync_retry_attempts = _get_int("SYNC_RETRY_ATTEMPTS", 3)
-        self.sync_retry_backoff_ms = _get_int("SYNC_RETRY_BACKOFF_MS", 5000)
-        self.rate_limit_ttl = _get_int("RATE_LIMIT_TTL", 60)
-        self.rate_limit_max = _get_int("RATE_LIMIT_MAX", 100)
-
-    def _build_admin_seed_accounts(self) -> list[dict[str, str]]:
-        accounts: list[dict[str, str]] = []
-
-        def add_account(email: str, password: str) -> None:
-            normalized_email = str(email or "").strip().lower()
-            normalized_password = str(password or "").strip()
-            if not normalized_email or not normalized_password:
-                return
-            if any(existing["email"] == normalized_email for existing in accounts):
-                return
-            accounts.append(
-                {
-                    "email": normalized_email,
-                    "password": normalized_password,
-                }
-            )
-
-        add_account(
-            _get_str("ADMIN_EMAIL_Primary").lower(),
-            _get_secret("ADMIN_PASSWORD_Primary"),
-        )
-        add_account(
-            _get_str("ADMIN_EMAIL_DEV").lower(),
-            _get_secret("ADMIN_PASSWORD_DEV"),
-        )
-        add_account(
-            _get_str("ADMIN_EMAIL_PRIMARY").lower(),
-            _get_secret("ADMIN_PASSWORD_PRIMARY"),
-        )
-        add_account(
-            _get_str("ADMIN_EMAIL_DEV").lower(),
-            _get_secret("ADMIN_PASSWORD_DEV"),
-        )
-        return accounts
-
-        self.fitbit_client_id = _get_secret("FITBIT_CLIENT_ID")
-        self.fitbit_client_secret = _get_secret("FITBIT_CLIENT_SECRET")
-        self.fitbit_redirect_uri = _get_str("FITBIT_REDIRECT_URI")
-        self.fitbit_auth_url = _get_str("FITBIT_AUTH_URL", "https://www.fitbit.com/oauth2/authorize")
-        self.fitbit_token_url = _get_str("FITBIT_TOKEN_URL", "https://api.fitbit.com/oauth2/token")
-        self.fitbit_api_base_url = _get_str("FITBIT_API_BASE_URL", "https://api.fitbit.com").rstrip("/")
-        self.fitbit_scopes = _get_csv_list("FITBIT_SCOPES", "activity,heartrate,sleep,profile")
-
-        self.garmin_enabled = _get_bool("GARMIN_ENABLED", False)
-        self.garmin_client_id = _get_secret("GARMIN_CLIENT_ID")
-        self.garmin_client_secret = _get_secret("GARMIN_CLIENT_SECRET")
-        self.garmin_consumer_key = _get_secret("GARMIN_CONSUMER_KEY")
-        self.garmin_consumer_secret = _get_secret("GARMIN_CONSUMER_SECRET")
-        self.garmin_redirect_uri = _get_str("GARMIN_REDIRECT_URI")
-        self.garmin_authorize_url = _get_str("GARMIN_AUTHORIZE_URL")
-        self.garmin_token_url = _get_str("GARMIN_TOKEN_URL")
-        self.garmin_api_base_url = _get_str("GARMIN_API_BASE_URL")
-        self.garmin_daily_summary_path = _get_str("GARMIN_DAILY_SUMMARY_PATH", "/wellness-api/rest/dailies")
-        self.garmin_scopes = _get_csv_list("GARMIN_SCOPES")
-        self.garmin_webhook_secret = _get_secret("GARMIN_WEBHOOK_SECRET")
-
         self.google_client_id = _get_secret("GOOGLE_CLIENT_ID")
         self.google_client_secret = _get_secret("GOOGLE_CLIENT_SECRET")
+        self.google_redirect_uri = _get_str("GOOGLE_REDIRECT_URI")
         self.google_project_id = _get_str("GOOGLE_PROJECT_ID")
         self.firebase_project_id = _get_str("FIREBASE_PROJECT_ID", self.google_project_id)
         # Deployment-safe Firebase credentials. Vercel cannot read a developer's
@@ -296,6 +203,97 @@ class Settings:
             "GOOGLE_FIT_SCOPES",
             "https://www.googleapis.com/auth/fitness.activity.read,https://www.googleapis.com/auth/fitness.location.read,https://www.googleapis.com/auth/fitness.heart_rate.read",
         )
+        self.admin_seed_accounts = self._build_admin_seed_accounts()
+
+        self.wearable_token_encryption_key = _get_secret("WEARABLE_TOKEN_ENCRYPTION_KEY")
+        self.encryption_key = _get_secret("ENCRYPTION_KEY", self.wearable_token_encryption_key)
+        self.health_native_upload_secret = _get_secret("HEALTH_NATIVE_UPLOAD_SECRET")
+        self.webhook_signing_secret = _get_secret("WEBHOOK_SIGNING_SECRET")
+        self.cron_secret = _get_secret("CRON_SECRET")
+        self.ai_generation_job_concurrency = _get_int("AI_GENERATION_JOB_CONCURRENCY", 10)
+        self.ai_generation_timeout_seconds = _get_int("AI_GENERATION_TIMEOUT_SECONDS", 30)
+        self.push_notification_concurrency = _get_int("PUSH_NOTIFICATION_CONCURRENCY", 50)
+        self.weekly_digest_cron_utc = _get_str("WEEKLY_DIGEST_CRON_UTC", "0 22 * * 0")
+        self.feature_flags_provider = _get_str("FEATURE_FLAGS_PROVIDER", "growthbook").lower()
+        self.growthbook_api_host = _get_str("GROWTHBOOK_API_HOST")
+        self.growthbook_client_key = _get_secret("GROWTHBOOK_CLIENT_KEY")
+        self.posthog_api_host = _get_str("POSTHOG_API_HOST", "https://app.posthog.com")
+        self.posthog_api_key = _get_secret("POSTHOG_API_KEY")
+        self.posthog_project_id = _get_str("POSTHOG_PROJECT_ID")
+        self.plausible_api_host = _get_str("PLAUSIBLE_API_HOST", "https://plausible.io")
+        self.plausible_domain = _get_str("PLAUSIBLE_DOMAIN")
+        self.plausible_api_key = _get_secret("PLAUSIBLE_API_KEY")
+        self.request_analytics_enabled = _get_bool("REQUEST_ANALYTICS_ENABLED", True)
+        self.sentry_dsn = _get_secret("SENTRY_DSN")
+        self.otel_service_name = _get_str("OTEL_SERVICE_NAME", "victory-fitness-backend")
+        self.otel_exporter_otlp_endpoint = _get_str("OTEL_EXPORTER_OTLP_ENDPOINT")
+        self.gcp_primary_region = _get_str("GCP_PRIMARY_REGION", "europe-west1")
+        self.gcp_secondary_regions = _get_csv_list("GCP_SECONDARY_REGIONS", "asia-south1,us-central1")
+        self.cloudflare_zone = _get_str("CLOUDFLARE_ZONE")
+        self.cloudflare_zero_trust_aud = _get_str("CLOUDFLARE_ZERO_TRUST_AUD")
+        self.trusted_proxy_header = _get_str("TRUSTED_PROXY_HEADER", "CF-Connecting-IP")
+        self.wearable_scheduler_enabled = _get_bool("WEARABLE_SCHEDULER_ENABLED", True)
+        self.wearable_scheduler_interval_minutes = _get_int("WEARABLE_SCHEDULER_INTERVAL_MINUTES", 30)
+        self.wearable_scheduler_lookback_days = _get_int("WEARABLE_SCHEDULER_LOOKBACK_DAYS", 1)
+        self.sync_queue_concurrency = _get_int("SYNC_QUEUE_CONCURRENCY", 5)
+        self.sync_retry_attempts = _get_int("SYNC_RETRY_ATTEMPTS", 3)
+        self.sync_retry_backoff_ms = _get_int("SYNC_RETRY_BACKOFF_MS", 5000)
+        self.rate_limit_ttl = _get_int("RATE_LIMIT_TTL", 60)
+        self.rate_limit_max = _get_int("RATE_LIMIT_MAX", 100)
+        self.fitbit_client_id = _get_secret("FITBIT_CLIENT_ID")
+        self.fitbit_client_secret = _get_secret("FITBIT_CLIENT_SECRET")
+        self.fitbit_redirect_uri = _get_str("FITBIT_REDIRECT_URI")
+        self.fitbit_auth_url = _get_str("FITBIT_AUTH_URL", "https://www.fitbit.com/oauth2/authorize")
+        self.fitbit_token_url = _get_str("FITBIT_TOKEN_URL", "https://api.fitbit.com/oauth2/token")
+        self.fitbit_api_base_url = _get_str("FITBIT_API_BASE_URL", "https://api.fitbit.com").rstrip("/")
+        self.fitbit_scopes = _get_csv_list("FITBIT_SCOPES", "activity,heartrate,sleep,profile")
+        self.garmin_enabled = _get_bool("GARMIN_ENABLED", False)
+        self.garmin_client_id = _get_secret("GARMIN_CLIENT_ID")
+        self.garmin_client_secret = _get_secret("GARMIN_CLIENT_SECRET")
+        self.garmin_consumer_key = _get_secret("GARMIN_CONSUMER_KEY")
+        self.garmin_consumer_secret = _get_secret("GARMIN_CONSUMER_SECRET")
+        self.garmin_redirect_uri = _get_str("GARMIN_REDIRECT_URI")
+        self.garmin_authorize_url = _get_str("GARMIN_AUTHORIZE_URL")
+        self.garmin_token_url = _get_str("GARMIN_TOKEN_URL")
+        self.garmin_api_base_url = _get_str("GARMIN_API_BASE_URL")
+        self.garmin_daily_summary_path = _get_str("GARMIN_DAILY_SUMMARY_PATH", "/wellness-api/rest/dailies")
+        self.garmin_scopes = _get_csv_list("GARMIN_SCOPES")
+        self.garmin_webhook_secret = _get_secret("GARMIN_WEBHOOK_SECRET")
+
+    def _build_admin_seed_accounts(self) -> list[dict[str, str]]:
+        accounts: list[dict[str, str]] = []
+
+        def add_account(email: str, password: str) -> None:
+            normalized_email = str(email or "").strip().lower()
+            normalized_password = str(password or "").strip()
+            if not normalized_email or not normalized_password:
+                return
+            if any(existing["email"] == normalized_email for existing in accounts):
+                return
+            accounts.append(
+                {
+                    "email": normalized_email,
+                    "password": normalized_password,
+                }
+            )
+
+        add_account(
+            _get_str("ADMIN_EMAIL_Primary").lower(),
+            _get_secret("ADMIN_PASSWORD_Primary"),
+        )
+        add_account(
+            _get_str("ADMIN_EMAIL_DEV").lower(),
+            _get_secret("ADMIN_PASSWORD_DEV"),
+        )
+        add_account(
+            _get_str("ADMIN_EMAIL_PRIMARY").lower(),
+            _get_secret("ADMIN_PASSWORD_PRIMARY"),
+        )
+        add_account(
+            _get_str("ADMIN_EMAIL_DEV").lower(),
+            _get_secret("ADMIN_PASSWORD_DEV"),
+        )
+        return accounts
 
 
 settings = Settings()

@@ -418,7 +418,11 @@ async def firebase_login(payload: FirebaseAuthRequest, response: Response) -> To
 
 @router.post("/auth/google", response_model=TokenResponse)
 
-async def google_login(payload: GoogleAuthRequest, response: Response) -> TokenResponse:
+async def google_login(
+    payload: GoogleAuthRequest,
+    response: Response,
+    x_victory_client: str | None = Header(default=None, alias="X-Victory-Client"),
+) -> TokenResponse:
 
     profile, provider = _resolve_google_profile(payload)
 
@@ -430,9 +434,11 @@ async def google_login(payload: GoogleAuthRequest, response: Response) -> TokenR
 
         user = await _upsert_google_user(profile)
 
+    user = await _maybe_activate_phase_one_beta_subscription(user)
+
     logger.info("auth_google_login_success provider=%s email=%s", provider, str(profile.get("email") or "").lower())
 
-    return await _issue_tokens(user, response)
+    return await _issue_tokens(user, response, issue_cookies=not _is_app_client_request(x_victory_client))
 
 @router.post("/auth/refresh", response_model=TokenResponse)
 

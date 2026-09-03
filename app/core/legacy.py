@@ -2638,6 +2638,99 @@ def _verify_google_id_token(id_token: str) -> dict[str, Any]:
 
     return payload
 
+def _bool_from_provider_claim(value: Any) -> bool:
+
+    if isinstance(value, bool):
+
+        return value
+
+    if isinstance(value, str):
+
+        return value.strip().lower() == "true"
+
+    return False
+
+def _split_display_name(display_name: str, email: str) -> tuple[str, str, str]:
+
+    normalized_display_name = str(display_name or "").strip()
+
+    if not normalized_display_name:
+
+        local_part = str(email or "").split("@")[0].strip()
+
+        normalized_display_name = local_part or "Victory Fitness User"
+
+    parts = [segment for segment in normalized_display_name.split() if segment]
+
+    first_name = parts[0] if parts else normalized_display_name
+
+    last_name = " ".join(parts[1:]).strip() if len(parts) > 1 else ""
+
+    full_name = f"{first_name} {last_name}".strip() or normalized_display_name
+
+    return first_name, last_name, full_name
+
+def _provider_identity_field(auth_provider: str) -> str:
+
+    if auth_provider == "google":
+
+        return "google_sub"
+
+    return "firebase_uid"
+
+def _provider_identity_query(auth_provider: str, provider_user_id: str) -> dict[str, Any]:
+
+    normalized_provider_user_id = str(provider_user_id or "").strip()
+
+    if not normalized_provider_user_id:
+
+        return {}
+
+    if auth_provider == "google":
+
+        return {
+            "$or": [
+                {"google_sub": normalized_provider_user_id},
+                {"auth_provider": "google", "auth_provider_user_id": normalized_provider_user_id},
+                {"auth_provider": "google", "firebase_uid": normalized_provider_user_id},
+            ]
+        }
+
+    return {
+        "$or": [
+            {"firebase_uid": normalized_provider_user_id},
+            {"auth_provider": "firebase", "auth_provider_user_id": normalized_provider_user_id},
+        ]
+    }
+
+def _merge_google_profiles(id_token_profile: dict[str, Any], access_token_profile: dict[str, Any] | None) -> dict[str, Any]:
+
+    if not access_token_profile:
+
+        return id_token_profile
+
+    merged = dict(access_token_profile)
+
+    merged.update({key: value for key, value in id_token_profile.items() if value not in (None, "")})
+
+    id_email = str(id_token_profile.get("email") or "").strip().lower()
+
+    access_email = str(access_token_profile.get("email") or "").strip().lower()
+
+    if id_email and access_email and id_email != access_email:
+
+        raise HTTPException(status_code=401, detail="Google account details did not match")
+
+    id_sub = str(id_token_profile.get("sub") or "").strip()
+
+    access_sub = str(access_token_profile.get("sub") or "").strip()
+
+    if id_sub and access_sub and id_sub != access_sub:
+
+        raise HTTPException(status_code=401, detail="Google account details did not match")
+
+    return merged
+
 def _fetch_google_userinfo(access_token: str) -> dict[str, Any]:
 
     token = str(access_token or "").strip()
@@ -2672,9 +2765,7 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
 
         raise HTTPException(status_code=401, detail="Google account is missing an email")
 
-    email_verified = profile.get("email_verified")
-
-    if email_verified is False:
+    if not _bool_from_provider_claim(profile.get("email_verified")):
 
         raise HTTPException(status_code=401, detail="Google account email is not verified")
 
@@ -2682,19 +2773,35 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
 
     photo_url = str(profile.get("picture") or profile.get("photoUrl") or "").strip()
 
-    firebase_uid = str(profile.get("sub") or profile.get("user_id") or profile.get("localId") or "").strip()
+    provider_user_id = str(profile.get("sub") or profile.get("user_id") or profile.get("localId") or "").strip()
+
+    if not provider_user_id:
+
+        raise HTTPException(status_code=401, detail="Google account is missing a provider user ID")
+
+    provider_identity_field = _provider_identity_field(auth_provider)
+    first_name, last_name, full_name = _split_display_name(display_name, email)
 
     now = datetime.now(timezone.utc)
 
-    existing_user = await users_collection.find_one({"email": email})
+    existing_user = await users_collection.find_one(_provider_identity_query(auth_provider, provider_user_id))
+
+    if not existing_user:
+
+        existing_user = await users_collection.find_one({"email": email})
 
     if not existing_user:
 
         user_doc = {
 
-            "name": display_name,
+            "name": full_name,
+            "first_name": first_name,
+            "last_name": last_name,
 
             "email": email,
+            "contact_number": "",
+            "marketing_consent": False,
+            "signup_source": f"{auth_provider}_oauth",
 
             "is_verified": True,
 
@@ -2718,7 +2825,9 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
 
             "auth_provider": auth_provider,
 
-            "firebase_uid": firebase_uid,
+            "auth_providers": [auth_provider],
+            "auth_provider_user_id": provider_user_id,
+            provider_identity_field: provider_user_id,
 
             "profile_image": photo_url,
 
@@ -2738,23 +2847,36 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
 
         "is_verified": True,
 
-        "auth_provider": auth_provider,
+        "auth_provider": str(existing_user.get("auth_provider") or auth_provider),
+        "auth_provider_user_id": provider_user_id,
+        provider_identity_field: provider_user_id,
+        "auth_providers": sorted(
+            {
+                str(item).strip()
+                for item in [*(existing_user.get("auth_providers") or []), existing_user.get("auth_provider"), auth_provider]
+                if str(item).strip()
+            }
+        ),
 
         "updated_at": now,
 
     }
 
-    if display_name and not str(existing_user.get("name") or "").strip():
+    if full_name and not str(existing_user.get("name") or "").strip():
 
-        update_doc["name"] = display_name
+        update_doc["name"] = full_name
+
+    if first_name and not str(existing_user.get("first_name") or "").strip():
+
+        update_doc["first_name"] = first_name
+
+    if last_name and not str(existing_user.get("last_name") or "").strip():
+
+        update_doc["last_name"] = last_name
 
     if photo_url:
 
         update_doc["profile_image"] = photo_url
-
-    if firebase_uid:
-
-        update_doc["firebase_uid"] = firebase_uid
 
     await users_collection.update_one(
 
@@ -2769,6 +2891,10 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
                 "verification_code_hash": "",
 
                 "verification_code_expires_at": "",
+
+                "previous_verification_code_hash": "",
+
+                "previous_verification_code_expires_at": "",
 
                 "profileImage": "",
 
@@ -2794,51 +2920,55 @@ def _resolve_google_profile(payload: GoogleAuthRequest) -> tuple[dict[str, Any],
 
     access_token = str(payload.access_token or "").strip()
 
-    if not id_token and not access_token:
+    if not id_token:
 
-        raise HTTPException(status_code=400, detail="Missing Google token")
+        raise HTTPException(status_code=400, detail="Missing Google ID token")
 
-    if id_token:
+    google_exc: HTTPException | None = None
 
-        try:
+    try:
 
-            profile = _verify_google_id_token(id_token)
+        profile = _verify_google_id_token(id_token)
 
-            return profile, "google"
+        if access_token:
 
-        except HTTPException as exc:
+            try:
 
-            if access_token or exc.status_code >= 500:
+                profile = _merge_google_profiles(profile, _fetch_google_userinfo(access_token))
 
-                logger.warning("auth_google_id_token_verify_failed detail=%s", exc.detail)
+            except HTTPException as exc:
 
-            else:
+                if exc.status_code >= 500:
 
-                try:
+                    logger.warning("auth_google_userinfo_merge_failed detail=%s", exc.detail)
 
-                    profile = _verify_firebase_id_token(id_token)
+                else:
 
-                    return profile, "firebase"
+                    raise
 
-                except HTTPException:
+        return profile, "google"
 
-                    raise exc
+    except HTTPException as exc:
 
-        try:
+        google_exc = exc
 
-            profile = _verify_firebase_id_token(id_token)
+        if exc.status_code >= 500:
 
-            return profile, "firebase"
+            logger.warning("auth_google_id_token_verify_failed detail=%s", exc.detail)
 
-        except HTTPException as firebase_exc:
+    try:
 
-            if not access_token:
+        profile = _verify_firebase_id_token(id_token)
 
-                raise firebase_exc
+        return profile, "firebase"
 
-    profile = _fetch_google_userinfo(access_token)
+    except HTTPException as firebase_exc:
 
-    return profile, "google"
+        if google_exc and google_exc.status_code < 500:
+
+            raise google_exc
+
+        raise firebase_exc
 
 async def startup() -> None:
 
