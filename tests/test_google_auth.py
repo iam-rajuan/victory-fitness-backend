@@ -173,6 +173,80 @@ class GoogleRouteTests(unittest.TestCase):
 
 
 class GoogleOAuthCallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_google_start_uses_request_host_when_configured_redirect_is_localhost(self) -> None:
+        app = FastAPI()
+        app.include_router(auth_router_module.router)
+        client = TestClient(app)
+
+        with patch.object(auth_router_module.settings, "google_client_id", "google-client-id"), patch.object(
+            auth_router_module.settings, "google_redirect_uri", "http://localhost:8000/auth/google/callback"
+        ), patch.object(
+            auth_router_module, "_is_allowed_google_return_origin", return_value=True
+        ), patch.object(
+            auth_router_module, "create_token", return_value="state-token"
+        ):
+            response = client.get(
+                "/auth/google/start?return_origin=https%3A%2F%2Fvictory-fitness-app.vercel.app&flow_id=flow-123456789",
+                headers={"host": "victory-fitness-backend.onrender.com", "x-forwarded-proto": "https"},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 307)
+        self.assertIn(
+            "redirect_uri=https%3A%2F%2Fvictory-fitness-backend.onrender.com%2Fauth%2Fgoogle%2Fcallback",
+            response.headers["location"],
+        )
+
+    async def test_google_callback_exchange_uses_request_host_when_configured_redirect_is_localhost(self) -> None:
+        user = {
+            "_id": "google-user-4",
+            "email": "callback-host@example.com",
+            "name": "Callback Host",
+            "is_verified": True,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        token_response = legacy_module.TokenResponse(
+            access_token="access-token",
+            session_token="session-token",
+            expires_in=600,
+            user={"id": "google-user-4", "name": "Callback Host", "email": "callback-host@example.com", "is_verified": True},
+            returning_user=None,
+        )
+        app = FastAPI()
+        app.include_router(auth_router_module.router)
+        client = TestClient(app)
+
+        with patch.object(auth_router_module.settings, "google_redirect_uri", "http://localhost:8000/auth/google/callback"), patch.object(
+            auth_router_module, "decode_token", return_value={"sub": "https://victory-fitness-app.vercel.app", "flow_id": "flow-123456789"}
+        ), patch.object(
+            auth_router_module, "_is_allowed_google_return_origin", return_value=True
+        ), patch.object(
+            auth_router_module, "_exchange_google_oauth_code", return_value={"id_token": "id-token"}
+        ) as exchange_google_oauth_code, patch.object(
+            auth_router_module,
+            "_verify_google_id_token",
+            return_value={"sub": "google-sub-4", "email": "callback-host@example.com", "email_verified": True, "name": "Callback Host"},
+        ), patch.object(
+            auth_router_module, "_upsert_google_user", AsyncMock(return_value=user)
+        ), patch.object(
+            auth_router_module, "_maybe_activate_phase_one_beta_subscription", AsyncMock(return_value=user)
+        ), patch.object(
+            auth_router_module, "_issue_tokens", AsyncMock(return_value=token_response)
+        ), patch.object(
+            auth_router_module, "_store_google_oauth_result"
+        ):
+            response = client.get(
+                "/auth/google/callback?code=code&state=state",
+                headers={"host": "victory-fitness-backend.onrender.com", "x-forwarded-proto": "https"},
+                follow_redirects=False,
+            )
+
+        self.assertEqual(response.status_code, 307)
+        exchange_google_oauth_code.assert_called_once_with(
+            "code",
+            "https://victory-fitness-backend.onrender.com/auth/google/callback",
+        )
+
     async def test_google_callback_saves_userinfo_picture_before_issuing_tokens(self) -> None:
         user = {
             "_id": "google-user-3",
@@ -222,7 +296,11 @@ class GoogleOAuthCallbackTests(unittest.IsolatedAsyncioTestCase):
         ), patch.object(
             auth_router_module, "_store_google_oauth_result"
         ):
-            response = await auth_router_module.google_oauth_callback(code="code", state="state")
+            response = await auth_router_module.google_oauth_callback(
+                request=SimpleNamespace(headers={}, base_url="http://testserver/"),
+                code="code",
+                state="state",
+            )
 
         self.assertEqual(response.status_code, 307)
         profile = upsert_google_user.await_args.args[0]

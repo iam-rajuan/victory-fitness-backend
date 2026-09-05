@@ -4,7 +4,7 @@ from datetime import timedelta
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request as UrlRequest, urlopen
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import RedirectResponse, Response as FastAPIResponse
 
 from ...core.legacy import *
@@ -12,6 +12,35 @@ from ...core.legacy import *
 router = APIRouter()
 
 GOOGLE_OAUTH_RESULTS: dict[str, dict] = {}
+
+
+def _is_local_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.hostname in {"localhost", "127.0.0.1", "0.0.0.0"}
+
+
+def _request_origin(request: Request | None) -> str:
+    if request is None:
+        return ""
+
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",")[0].strip()
+    forwarded_host = str(request.headers.get("x-forwarded-host") or request.headers.get("host") or "").split(",")[0].strip()
+    if forwarded_proto and forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}".rstrip("/")
+
+    return str(request.base_url).rstrip("/")
+
+
+def _resolve_google_redirect_uri(request: Request | None = None) -> str:
+    configured = str(getattr(settings, "google_redirect_uri", "") or "").strip()
+    if configured and not _is_local_url(configured):
+        return configured
+
+    origin = _request_origin(request)
+    if origin and not _is_local_url(origin):
+        return f"{origin}/auth/google/callback"
+
+    return configured
 
 
 def _is_allowed_google_return_origin(origin: str) -> bool:
@@ -116,12 +145,12 @@ def _get_google_oauth_result(flow_id: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _exchange_google_oauth_code(code: str) -> dict:
+def _exchange_google_oauth_code(code: str, redirect_uri: str | None = None) -> dict:
     client_id = str(getattr(settings, "google_client_id", "") or "").strip()
     client_secret = str(getattr(settings, "google_client_secret", "") or "").strip()
-    redirect_uri = str(getattr(settings, "google_redirect_uri", "") or "").strip()
+    resolved_redirect_uri = str(redirect_uri or _resolve_google_redirect_uri() or "").strip()
     token_uri = str(getattr(settings, "google_token_uri", "") or "https://oauth2.googleapis.com/token").strip()
-    if not client_id or not client_secret or not redirect_uri:
+    if not client_id or not client_secret or not resolved_redirect_uri:
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
 
     body = urlencode(
@@ -129,7 +158,7 @@ def _exchange_google_oauth_code(code: str) -> dict:
             "code": code,
             "client_id": client_id,
             "client_secret": client_secret,
-            "redirect_uri": redirect_uri,
+            "redirect_uri": resolved_redirect_uri,
             "grant_type": "authorization_code",
         }
     ).encode("utf-8")
@@ -148,6 +177,7 @@ def _exchange_google_oauth_code(code: str) -> dict:
 
 @router.get("/auth/google/start")
 async def google_oauth_start(
+    request: Request,
     return_origin: str = Query(..., min_length=8, max_length=300),
     flow_id: str = Query(..., min_length=12, max_length=120),
 ) -> RedirectResponse:
@@ -156,7 +186,7 @@ async def google_oauth_start(
         raise HTTPException(status_code=400, detail="Invalid Google sign-in return origin")
 
     client_id = str(getattr(settings, "google_client_id", "") or "").strip()
-    redirect_uri = str(getattr(settings, "google_redirect_uri", "") or "").strip()
+    redirect_uri = _resolve_google_redirect_uri(request)
     auth_uri = str(getattr(settings, "google_auth_uri", "") or "https://accounts.google.com/o/oauth2/auth").strip()
     if not client_id or not redirect_uri:
         raise HTTPException(status_code=500, detail="Google OAuth is not configured")
@@ -183,6 +213,7 @@ async def google_oauth_result(flow_id: str = Query(..., min_length=12, max_lengt
 
 @router.get("/auth/google/callback")
 async def google_oauth_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
@@ -210,7 +241,7 @@ async def google_oauth_callback(
             _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": "Google authorization code was missing."})
             return _google_oauth_result_redirect(origin, flow_id)
 
-        token_response = _exchange_google_oauth_code(code)
+        token_response = _exchange_google_oauth_code(code, _resolve_google_redirect_uri(request))
         id_token = str(token_response.get("id_token") or "").strip()
         if not id_token:
             _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": "Google did not return an ID token."})
