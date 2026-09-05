@@ -115,8 +115,8 @@ class Settings:
         self.jwt_algorithm = _get_str("JWT_ALGORITHM", "HS256")
         self.jwt_secret = _get_secret("JWT_SECRET", self.jwt_secret_key)
         self.session_secret = _get_secret("SESSION_SECRET", self.jwt_secret_key)
-        self.access_token_expire_minutes = _get_int("ACCESS_TOKEN_EXPIRE_MINUTES", 10)
-        self.session_token_expire_days = _get_int("SESSION_TOKEN_EXPIRE_DAYS", 30)
+        self.access_token_expire_minutes = _get_int("ACCESS_TOKEN_EXPIRE_MINUTES", 1440)
+        self.session_token_expire_days = _get_int("SESSION_TOKEN_EXPIRE_DAYS", 1)
 
         self.cors_origin, self.cors_allow_all, self.cors_origins, self.cors_origin_regex = _get_cors_origins()
         self.cookie_secure = _get_bool("COOKIE_SECURE", self.environment == "production")
