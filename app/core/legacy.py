@@ -3377,7 +3377,7 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
     return {
         "userId": str(record["_id"]),
         "currentStep": current_step,
-        "language": str(state.get("language") or "").strip(),
+        "language": str(state.get("language") or record.get("preferred_language") or "").strip(),
         "country": str(state.get("country") or record.get("country") or "").strip(),
         "countryCode": (str(state.get("countryCode") or record.get("country_code") or "").upper() or None),
         "motivationStatement": str(state.get("motivationStatement") or record.get("motivation_statement") or "").strip(),
@@ -9294,6 +9294,7 @@ async def _serialize_me_record(record: dict) -> dict:
         "profileImage": str(record.get("profile_image") or ""),
 
         "onboarding_completed": bool(record.get("onboarding_completed", False)),
+        "preferred_language": str(record.get("preferred_language") or (record.get("onboarding_state") or {}).get("language") or "").strip(),
 
         "points": stats["points"],
 

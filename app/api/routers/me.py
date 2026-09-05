@@ -73,6 +73,17 @@ async def update_me(
 
         update_doc["country_code"] = normalized_country_code or None
 
+    if payload.preferred_language is not None:
+
+        preferred_language = payload.preferred_language.strip().lower()
+
+        if preferred_language and preferred_language not in {"en", "de"}:
+
+            raise HTTPException(status_code=400, detail="Unsupported language")
+
+        update_doc["preferred_language"] = preferred_language
+        update_doc["onboarding_state.language"] = preferred_language
+
     if payload.motivation_statement is not None:
 
         motivation_statement = payload.motivation_statement.strip()
@@ -136,7 +147,13 @@ async def update_me_onboarding(
         next_state["currentStep"] = payload.currentStep
 
     if payload.language is not None:
-        next_state["language"] = payload.language.strip()
+        preferred_language = payload.language.strip().lower()
+
+        if preferred_language and preferred_language not in {"en", "de"}:
+            raise HTTPException(status_code=400, detail="Unsupported language")
+
+        next_state["language"] = preferred_language
+        update_doc["preferred_language"] = preferred_language
 
     if payload.country is not None:
         next_state["country"] = payload.country.strip()

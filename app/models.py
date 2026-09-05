@@ -152,6 +152,7 @@ class MeResponse(BaseModel):
     gold_trial: GoldTrialSummaryResponse = Field(default_factory=GoldTrialSummaryResponse)
     marketing_consent: bool = False
     onboarding_completed: bool = False
+    preferred_language: str = ""
     country_code: str | None = None
     motivation_statement: str | None = None
     identity_statement: str | None = None
@@ -165,6 +166,7 @@ class UpdateMeRequest(BaseModel):
     email: EmailStr | None = None
     country: str | None = Field(default=None, max_length=120)
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    preferred_language: str | None = Field(default=None, max_length=10)
     profileImage: str | None = Field(default=None, max_length=500)
     onboarding_completed: bool | None = None
     motivation_statement: str | None = Field(default=None, max_length=240)
