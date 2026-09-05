@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -52,6 +52,7 @@ class GoogleIdentityUpsertTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(insert_doc["auth_providers"], ["google"])
         self.assertEqual(insert_doc["signup_source"], "google_oauth")
         self.assertEqual(insert_doc["password_hash"], "")
+        self.assertEqual(insert_doc["profile_image"], "https://example.com/avatar.jpg")
         self.assertFalse(insert_doc["onboarding_completed"])
 
     async def test_existing_email_password_user_is_linked_without_duplicate_insert(self) -> None:
@@ -82,6 +83,7 @@ class GoogleIdentityUpsertTests(unittest.IsolatedAsyncioTestCase):
                     "email": "linked@example.com",
                     "email_verified": True,
                     "name": "Linked User",
+                    "picture": "https://example.com/linked-avatar.jpg",
                 }
             )
 
@@ -91,6 +93,34 @@ class GoogleIdentityUpsertTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update_doc["google_sub"], "google-sub-2")
         self.assertEqual(update_doc["auth_provider_user_id"], "google-sub-2")
         self.assertEqual(update_doc["auth_providers"], ["google"])
+        self.assertEqual(update_doc["profile_image"], "https://example.com/linked-avatar.jpg")
+
+
+class GoogleTokenVerificationTests(unittest.TestCase):
+    def test_tokeninfo_fallback_validates_google_claims(self) -> None:
+        expires_at = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+
+        with patch.object(
+            legacy_module,
+            "_read_json_url",
+            return_value={
+                "aud": "google-client-id",
+                "iss": "https://accounts.google.com",
+                "exp": str(expires_at),
+                "sub": "google-sub-3",
+                "email": "verified@example.com",
+                "email_verified": "true",
+                "name": "Verified User",
+            },
+        ):
+            profile = legacy_module._verify_google_id_token_with_tokeninfo(
+                "id-token-value",
+                "google-client-id",
+                fallback_reason="local_verify_failed",
+            )
+
+        self.assertEqual(profile["sub"], "google-sub-3")
+        self.assertEqual(profile["email"], "verified@example.com")
 
 
 class GoogleRouteTests(unittest.TestCase):
@@ -140,3 +170,60 @@ class GoogleRouteTests(unittest.TestCase):
         upsert_google_user.assert_awaited_once()
         maybe_activate.assert_awaited_once_with(user)
         self.assertFalse(issue_tokens.await_args.kwargs["issue_cookies"])
+
+
+class GoogleOAuthCallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_google_callback_saves_userinfo_picture_before_issuing_tokens(self) -> None:
+        user = {
+            "_id": "google-user-3",
+            "email": "callback@example.com",
+            "name": "Callback User",
+            "profile_image": "https://example.com/callback-avatar.jpg",
+            "is_verified": True,
+            "updated_at": datetime.now(timezone.utc),
+        }
+        token_response = legacy_module.TokenResponse(
+            access_token="access-token",
+            session_token="session-token",
+            expires_in=600,
+            user={
+                "id": "google-user-3",
+                "name": "Callback User",
+                "email": "callback@example.com",
+                "is_verified": True,
+                "profileImage": "https://example.com/callback-avatar.jpg",
+            },
+            returning_user=None,
+        )
+
+        with patch.object(auth_router_module, "decode_token", return_value={"sub": "http://localhost:8081", "flow_id": "flow-123456789"}), patch.object(
+            auth_router_module, "_is_allowed_google_return_origin", return_value=True
+        ), patch.object(
+            auth_router_module, "_exchange_google_oauth_code", return_value={"id_token": "id-token", "access_token": "access-token"}
+        ), patch.object(
+            auth_router_module, "_verify_google_id_token",
+            return_value={"sub": "google-sub-3", "email": "callback@example.com", "email_verified": True, "name": "Callback User"},
+        ), patch.object(
+            auth_router_module,
+            "_fetch_google_userinfo",
+            return_value={
+                "sub": "google-sub-3",
+                "email": "callback@example.com",
+                "email_verified": True,
+                "name": "Callback User",
+                "picture": "https://example.com/callback-avatar.jpg",
+            },
+        ), patch.object(
+            auth_router_module, "_upsert_google_user", AsyncMock(return_value=user)
+        ) as upsert_google_user, patch.object(
+            auth_router_module, "_maybe_activate_phase_one_beta_subscription", AsyncMock(return_value=user)
+        ), patch.object(
+            auth_router_module, "_issue_tokens", AsyncMock(return_value=token_response)
+        ), patch.object(
+            auth_router_module, "_store_google_oauth_result"
+        ):
+            response = await auth_router_module.google_oauth_callback(code="code", state="state")
+
+        self.assertEqual(response.status_code, 307)
+        profile = upsert_google_user.await_args.args[0]
+        self.assertEqual(profile["picture"], "https://example.com/callback-avatar.jpg")

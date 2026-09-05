@@ -28,7 +28,7 @@ from pathlib import Path
 
 from time import perf_counter
 
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 from urllib.request import Request as UrlRequest, urlopen
 
@@ -2526,6 +2526,20 @@ def _get_google_certificates() -> dict[str, str]:
 
     return {str(k): str(v) for k, v in payload.items() if str(k).strip() and str(v).strip()}
 
+@lru_cache(maxsize=1)
+
+def _get_google_jwks() -> list[dict[str, Any]]:
+
+    payload = _read_json_url("https://www.googleapis.com/oauth2/v3/certs")
+
+    keys = payload.get("keys")
+
+    if not isinstance(keys, list):
+
+        return []
+
+    return [key for key in keys if isinstance(key, dict)]
+
 def _verify_firebase_id_token(id_token: str) -> dict[str, Any]:
 
     project_id = (getattr(settings, "firebase_project_id", "") or getattr(settings, "google_project_id", "") or "").strip()
@@ -2592,49 +2606,112 @@ def _verify_google_id_token(id_token: str) -> dict[str, Any]:
 
     kid = str(header.get("kid") or "").strip()
 
+    candidate_keys: list[Any] = []
+
     certificate = _get_google_certificates().get(kid)
 
-    if not certificate:
+    if certificate:
+
+        candidate_keys.append(certificate)
+
+    candidate_keys.extend([key for key in _get_google_jwks() if str(key.get("kid") or "").strip() == kid])
+
+    if not candidate_keys:
+
+        _get_google_certificates.cache_clear()
+        _get_google_jwks.cache_clear()
+        certificate = _get_google_certificates().get(kid)
+        if certificate:
+            candidate_keys.append(certificate)
+        candidate_keys.extend([key for key in _get_google_jwks() if str(key.get("kid") or "").strip() == kid])
+
+    if not candidate_keys:
+
+        logger.warning("auth_google_token_unknown_kid kid=%s", kid)
+
+        return _verify_google_id_token_with_tokeninfo(id_token, google_client_id, fallback_reason="unknown_kid")
+
+    last_error: Exception | None = None
+
+    for candidate_key in candidate_keys:
+
+        for issuer in ("https://accounts.google.com", "accounts.google.com"):
+
+            try:
+
+                return jwt.decode(
+
+                    id_token,
+
+                    candidate_key,
+
+                    algorithms=["RS256"],
+
+                    audience=google_client_id,
+
+                    issuer=issuer,
+
+                )
+
+            except Exception as exc:
+
+                last_error = exc
+
+    logger.warning("auth_google_token_verify_failed kid=%s error=%s", kid, type(last_error).__name__ if last_error else "unknown")
+
+    return _verify_google_id_token_with_tokeninfo(id_token, google_client_id, fallback_reason="local_verify_failed")
+
+def _verify_google_id_token_with_tokeninfo(id_token: str, google_client_id: str, *, fallback_reason: str) -> dict[str, Any]:
+
+    try:
+
+        payload = _read_json_url(f"https://oauth2.googleapis.com/tokeninfo?{urlencode({'id_token': id_token})}")
+
+    except Exception as exc:
+
+        raise HTTPException(status_code=401, detail="Invalid Google token") from exc
+
+    audience = str(payload.get("aud") or "").strip()
+
+    if audience != google_client_id:
+
+        logger.warning("auth_google_tokeninfo_audience_mismatch reason=%s", fallback_reason)
+
+        raise HTTPException(status_code=401, detail="Invalid Google token")
+
+    issuer = str(payload.get("iss") or "").strip()
+
+    if issuer not in {"https://accounts.google.com", "accounts.google.com"}:
+
+        logger.warning("auth_google_tokeninfo_issuer_mismatch reason=%s issuer=%s", fallback_reason, issuer)
 
         raise HTTPException(status_code=401, detail="Invalid Google token")
 
     try:
 
-        payload = jwt.decode(
+        expires_at = int(str(payload.get("exp") or "0"))
 
-            id_token,
+    except ValueError:
 
-            certificate,
+        expires_at = 0
 
-            algorithms=["RS256"],
+    if expires_at <= int(datetime.now(timezone.utc).timestamp()):
 
-            audience=google_client_id,
+        raise HTTPException(status_code=401, detail="Google token expired")
 
-            issuer="https://accounts.google.com",
+    if not str(payload.get("sub") or "").strip():
 
-        )
+        raise HTTPException(status_code=401, detail="Google account is missing a provider user ID")
 
-    except Exception:
+    if not str(payload.get("email") or "").strip():
 
-        try:
+        raise HTTPException(status_code=401, detail="Google account is missing an email")
 
-            payload = jwt.decode(
+    if not _bool_from_provider_claim(payload.get("email_verified")):
 
-                id_token,
+        raise HTTPException(status_code=401, detail="Google account email is not verified")
 
-                certificate,
-
-                algorithms=["RS256"],
-
-                audience=google_client_id,
-
-                issuer="accounts.google.com",
-
-            )
-
-        except Exception as exc:
-
-            raise HTTPException(status_code=401, detail="Invalid Google token") from exc
+    logger.info("auth_google_tokeninfo_verify_success reason=%s", fallback_reason)
 
     return payload
 
@@ -2771,7 +2848,13 @@ async def _upsert_identity_user(profile: dict[str, Any], auth_provider: str) -> 
 
     display_name = str(profile.get("name") or profile.get("displayName") or email.split("@")[0]).strip()
 
-    photo_url = str(profile.get("picture") or profile.get("photoUrl") or "").strip()
+    photo_url = str(
+        profile.get("picture")
+        or profile.get("photoUrl")
+        or profile.get("photo_url")
+        or profile.get("avatar_url")
+        or ""
+    ).strip()
 
     provider_user_id = str(profile.get("sub") or profile.get("user_id") or profile.get("localId") or "").strip()
 

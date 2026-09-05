@@ -1,8 +1,248 @@
-from fastapi import APIRouter
+import html
+import json
+from datetime import timedelta
+from urllib.parse import quote, urlencode, urlparse
+from urllib.request import Request as UrlRequest, urlopen
+
+from fastapi import APIRouter, Query
+from fastapi.responses import RedirectResponse, Response as FastAPIResponse
 
 from ...core.legacy import *
 
 router = APIRouter()
+
+GOOGLE_OAUTH_RESULTS: dict[str, dict] = {}
+
+
+def _is_allowed_google_return_origin(origin: str) -> bool:
+    parsed = urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+
+    normalized = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    allowed_origins = {str(item).rstrip("/") for item in (getattr(settings, "cors_origins", []) or [])}
+    allowed_origins.update(
+        {
+            "http://localhost:3000",
+            "http://localhost:8081",
+            "https://victory-fitness-app-one.vercel.app",
+            "https://victoryfitnessapp.com",
+        }
+    )
+    return normalized in allowed_origins
+
+
+def _google_oauth_error_page(message: str, *, origin: str = "*") -> FastAPIResponse:
+    payload = json.dumps({"type": "victory-google-auth", "ok": False, "error": message})
+    target_origin = origin if origin != "*" else "*"
+    body = f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Google sign-in</title></head>
+<body>
+<script>
+  const payload = {payload};
+  if (window.opener) {{
+    window.opener.postMessage(payload, {json.dumps(target_origin)});
+    window.close();
+  }} else {{
+    document.body.textContent = payload.error || "Google sign-in failed.";
+  }}
+</script>
+</body>
+</html>"""
+    return FastAPIResponse(content=body, media_type="text/html", status_code=200)
+
+
+def _google_oauth_success_page(auth: TokenResponse, origin: str) -> FastAPIResponse:
+    payload = json.dumps(
+        {"type": "victory-google-auth", "ok": True, "auth": auth.model_dump(mode="json")},
+        separators=(",", ":"),
+    )
+    body = f"""<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Google sign-in</title></head>
+<body>
+<script>
+  const payload = {payload};
+  if (window.opener) {{
+    window.opener.postMessage(payload, {json.dumps(origin)});
+    window.close();
+  }} else {{
+    document.body.textContent = "Google sign-in complete. You can close this window.";
+  }}
+</script>
+</body>
+</html>"""
+    return FastAPIResponse(content=body, media_type="text/html", status_code=200)
+
+
+def _google_oauth_complete_redirect(origin: str, payload: dict) -> RedirectResponse:
+    encoded_payload = quote(json.dumps(payload, separators=(",", ":")))
+    return RedirectResponse(f"{origin}/google-auth-complete#victory_google_auth={encoded_payload}")
+
+
+def _google_oauth_result_redirect(origin: str, flow_id: str) -> RedirectResponse:
+    return RedirectResponse(f"{origin}/google-auth-complete?{urlencode({'status': 'complete', 'flow_id': flow_id})}")
+
+
+def _store_google_oauth_result(flow_id: str, payload: dict) -> None:
+    normalized_flow_id = str(flow_id or "").strip()
+    if not normalized_flow_id:
+        return
+    GOOGLE_OAUTH_RESULTS[normalized_flow_id] = {
+        "created_at": datetime.now(timezone.utc),
+        "payload": payload,
+    }
+
+
+def _get_google_oauth_result(flow_id: str) -> dict | None:
+    normalized_flow_id = str(flow_id or "").strip()
+    if not normalized_flow_id:
+        return None
+
+    now = datetime.now(timezone.utc)
+    expired_keys = [
+        key
+        for key, record in GOOGLE_OAUTH_RESULTS.items()
+        if _as_utc(record.get("created_at")) < now - timedelta(minutes=10)
+    ]
+    for key in expired_keys:
+        GOOGLE_OAUTH_RESULTS.pop(key, None)
+
+    record = GOOGLE_OAUTH_RESULTS.get(normalized_flow_id)
+    if not record:
+        return None
+    payload = record.get("payload")
+    return payload if isinstance(payload, dict) else None
+
+
+def _exchange_google_oauth_code(code: str) -> dict:
+    client_id = str(getattr(settings, "google_client_id", "") or "").strip()
+    client_secret = str(getattr(settings, "google_client_secret", "") or "").strip()
+    redirect_uri = str(getattr(settings, "google_redirect_uri", "") or "").strip()
+    token_uri = str(getattr(settings, "google_token_uri", "") or "https://oauth2.googleapis.com/token").strip()
+    if not client_id or not client_secret or not redirect_uri:
+        raise HTTPException(status_code=500, detail="Google OAuth is not configured")
+
+    body = urlencode(
+        {
+            "code": code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }
+    ).encode("utf-8")
+    request = UrlRequest(
+        token_uri,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Google authorization failed") from exc
+
+
+@router.get("/auth/google/start")
+async def google_oauth_start(
+    return_origin: str = Query(..., min_length=8, max_length=300),
+    flow_id: str = Query(..., min_length=12, max_length=120),
+) -> RedirectResponse:
+    origin = return_origin.rstrip("/")
+    if not _is_allowed_google_return_origin(origin):
+        raise HTTPException(status_code=400, detail="Invalid Google sign-in return origin")
+
+    client_id = str(getattr(settings, "google_client_id", "") or "").strip()
+    redirect_uri = str(getattr(settings, "google_redirect_uri", "") or "").strip()
+    auth_uri = str(getattr(settings, "google_auth_uri", "") or "https://accounts.google.com/o/oauth2/auth").strip()
+    if not client_id or not redirect_uri:
+        raise HTTPException(status_code=500, detail="Google OAuth is not configured")
+
+    state = create_token(origin, "google_oauth_state", timedelta(minutes=10), extra_claims={"flow_id": flow_id})
+    authorization_url = f"{auth_uri}?{urlencode({
+        'client_id': client_id,
+        'redirect_uri': redirect_uri,
+        'response_type': 'code',
+        'scope': 'openid email profile',
+        'state': state,
+        'prompt': 'select_account',
+    })}"
+    return RedirectResponse(authorization_url)
+
+
+@router.get("/auth/google/result")
+async def google_oauth_result(flow_id: str = Query(..., min_length=12, max_length=120)) -> dict:
+    payload = _get_google_oauth_result(flow_id)
+    if not payload:
+        return {"status": "pending"}
+    return {"status": "complete", "payload": payload}
+
+
+@router.get("/auth/google/callback")
+async def google_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+) -> FastAPIResponse:
+    origin = "*"
+    try:
+        if not state:
+            return _google_oauth_error_page("Google sign-in state was missing.")
+        try:
+            state_payload = decode_token(state, "google_oauth_state")
+        except ValueError:
+            return _google_oauth_error_page("Google sign-in session expired. Please try again.")
+
+        origin = str(state_payload.get("sub") or "").rstrip("/")
+        if not _is_allowed_google_return_origin(origin):
+            return _google_oauth_error_page("Google sign-in return origin is not allowed.")
+        flow_id = str(state_payload.get("flow_id") or "").strip()
+
+        if error:
+            detail = html.unescape(str(error_description or error))
+            _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": detail or "Google sign-in was cancelled."})
+            return _google_oauth_result_redirect(origin, flow_id)
+        if not code:
+            _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": "Google authorization code was missing."})
+            return _google_oauth_result_redirect(origin, flow_id)
+
+        token_response = _exchange_google_oauth_code(code)
+        id_token = str(token_response.get("id_token") or "").strip()
+        if not id_token:
+            _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": "Google did not return an ID token."})
+            return _google_oauth_result_redirect(origin, flow_id)
+
+        profile = _verify_google_id_token(id_token)
+        access_token = str(token_response.get("access_token") or "").strip()
+        if access_token:
+            try:
+                profile = _merge_google_profiles(profile, _fetch_google_userinfo(access_token))
+            except HTTPException as exc:
+                if exc.status_code >= 500:
+                    logger.warning("auth_google_callback_userinfo_merge_failed detail=%s", exc.detail)
+                else:
+                    raise
+        user = await _upsert_google_user(profile)
+        user = await _maybe_activate_phase_one_beta_subscription(user)
+        redirect = _google_oauth_result_redirect(origin, flow_id)
+        auth = await _issue_tokens(user, redirect, issue_cookies=True)
+        _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": True, "auth": auth.model_dump(mode="json")})
+        return redirect
+    except HTTPException as exc:
+        if origin != "*":
+            _store_google_oauth_result(locals().get("flow_id", ""), {"type": "victory-google-auth", "ok": False, "error": str(exc.detail)})
+            return _google_oauth_result_redirect(origin, locals().get("flow_id", ""))
+        return _google_oauth_error_page(str(exc.detail), origin=origin)
+    except Exception:
+        logger.exception("auth_google_callback_failed")
+        if origin != "*":
+            _store_google_oauth_result(locals().get("flow_id", ""), {"type": "victory-google-auth", "ok": False, "error": "Google sign-in failed. Please try again."})
+            return _google_oauth_result_redirect(origin, locals().get("flow_id", ""))
+        return _google_oauth_error_page("Google sign-in failed. Please try again.", origin=origin)
 
 
 def _verification_code_matches(payload_code: str, user: dict) -> bool:
