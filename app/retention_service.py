@@ -395,13 +395,97 @@ async def _send_accountability_nudges(now: datetime) -> int:
     return processed
 
 
+async def _send_weight_update_reminders(now: datetime) -> int:
+    cutoff = now - timedelta(days=28)
+    users = await users_collection.find(
+        {
+            "body_metrics.weight": {"$exists": True, "$ne": ""},
+        }
+    ).to_list(length=None)
+    processed = 0
+    for user in users:
+        metrics = dict(user.get("body_metrics") or {})
+        snoozed = metrics.get("weight_snoozed_until")
+        if snoozed:
+            if isinstance(snoozed, str):
+                try:
+                    snoozed_dt = datetime.fromisoformat(snoozed.replace("Z", "+00:00"))
+                except Exception:
+                    snoozed_dt = None
+            else:
+                snoozed_dt = snoozed
+            if snoozed_dt:
+                if snoozed_dt.tzinfo is None:
+                    snoozed_dt = snoozed_dt.replace(tzinfo=timezone.utc)
+                if snoozed_dt > now:
+                    continue
+
+        timestamps = []
+        for field in ("weight_updated_at", "weight_confirmed_at"):
+            v = metrics.get(field)
+            if isinstance(v, str):
+                try:
+                    timestamps.append(datetime.fromisoformat(v.replace("Z", "+00:00")))
+                except Exception:
+                    pass
+            elif isinstance(v, datetime):
+                timestamps.append(v)
+
+        if timestamps:
+            last_action = max(timestamps)
+            if last_action.tzinfo is None:
+                last_action = last_action.replace(tzinfo=timezone.utc)
+            if last_action > cutoff:
+                continue
+        else:
+            created = user.get("created_at")
+            if isinstance(created, datetime):
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created > cutoff:
+                    continue
+
+        last_reminded = metrics.get("last_weight_reminder_sent_at")
+        if last_reminded:
+            if isinstance(last_reminded, str):
+                try:
+                    lr_dt = datetime.fromisoformat(last_reminded.replace("Z", "+00:00"))
+                except Exception:
+                    lr_dt = None
+            else:
+                lr_dt = last_reminded
+            if lr_dt:
+                if lr_dt.tzinfo is None:
+                    lr_dt = lr_dt.replace(tzinfo=timezone.utc)
+                if (now - lr_dt) < timedelta(days=21):
+                    continue
+
+        current_weight = str(metrics.get("weight") or "").strip()
+        await notify_user(
+            users_collection,
+            user,
+            "Periodic Weight Check-In",
+            f"It's been a few weeks since your last weight check-in. Confirm or update your weight ({current_weight}) to keep your plans accurate.",
+            "weight_update_reminder",
+            {"route": "/profile", "currentWeight": current_weight},
+        )
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"body_metrics.last_weight_reminder_sent_at": now.isoformat()}},
+        )
+        processed += 1
+    return processed
+
+
 async def process_retention_jobs() -> dict[str, int]:
     now = datetime.now(timezone.utc)
     comeback = await _send_comeback_flow(now)
     digest = await _send_weekly_digest(now)
     nudges = await _send_accountability_nudges(now)
+    weight_reminders = await _send_weight_update_reminders(now)
     return {
         "comebackMessages": comeback,
         "weeklyDigests": digest,
         "accountabilityNudges": nudges,
+        "weightReminders": weight_reminders,
     }

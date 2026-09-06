@@ -3,6 +3,9 @@ import re
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...models import BodyMetricsResponse, ConfirmWeightRequest
+from ...database import nutrition_plans_collection
+from ...nutrition_ai import calculate_protein_target, _parse_weight_kg
 from ...utils.country import derive_country_code
 
 router = APIRouter()
@@ -328,79 +331,203 @@ async def update_subscription(
 
     return MeResponse(**(await _serialize_me_record(updated_user)))
 
+WEIGHT_UPDATE_REMINDER_DAYS = 28
+
+
+def _format_iso(dt: Any) -> str | None:
+    if isinstance(dt, datetime):
+        return dt.isoformat()
+    if isinstance(dt, str) and dt.strip():
+        return dt.strip()
+    return None
+
+
+def _parse_dt(val: Any) -> datetime | None:
+    if isinstance(val, datetime):
+        return val if val.tzinfo is not None else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, str) and val.strip():
+        try:
+            parsed = datetime.fromisoformat(val.strip().replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+def _should_prompt_weight_update(metrics: dict, user: dict, now: datetime) -> bool:
+    weight = str(metrics.get("weight") or "").strip()
+    if not weight:
+        return False
+
+    snoozed_dt = _parse_dt(metrics.get("weight_snoozed_until"))
+    if snoozed_dt and snoozed_dt > now:
+        return False
+
+    timestamps = []
+    for field in ("weight_updated_at", "weight_confirmed_at"):
+        parsed = _parse_dt(metrics.get(field))
+        if parsed:
+            timestamps.append(parsed)
+
+    if timestamps:
+        last_action = max(timestamps)
+        return (now - last_action) >= timedelta(days=WEIGHT_UPDATE_REMINDER_DAYS)
+
+    user_created = _parse_dt(user.get("created_at"))
+    if user_created:
+        return (now - user_created) >= timedelta(days=WEIGHT_UPDATE_REMINDER_DAYS)
+
+    return bool(user.get("onboarding_completed"))
+
+
 @router.get("/me/body-metrics", response_model=BodyMetricsResponse)
-
 async def get_body_metrics(user: dict = Depends(_require_access_user)) -> BodyMetricsResponse:
-
     metrics = dict(user.get("body_metrics") or {})
+    now = datetime.now(timezone.utc)
+    should_prompt = _should_prompt_weight_update(metrics, user, now)
 
     return BodyMetricsResponse(
-
         age=str(metrics.get("age") or ""),
-
         height=str(metrics.get("height") or ""),
-
         weight=str(metrics.get("weight") or ""),
-
         gender=str(metrics.get("gender") or ""),
-
+        weight_updated_at=_format_iso(metrics.get("weight_updated_at")),
+        weight_confirmed_at=_format_iso(metrics.get("weight_confirmed_at")),
+        should_prompt_weight_update=should_prompt,
     )
 
+
+async def _check_and_update_nutrition_plan_weight(user_id: Any, new_weight_str: str) -> None:
+    try:
+        new_weight_kg = _parse_weight_kg(new_weight_str)
+        if new_weight_kg <= 0:
+            return
+
+        latest_record = await nutrition_plans_collection.find_one(
+            {"user_id": str(user_id)},
+            sort=[("created_at", -1)],
+        )
+        if not latest_record or not latest_record.get("plan"):
+            return
+
+        plan = dict(latest_record["plan"])
+        baseline_weight = plan.get("baseline_weight")
+        if baseline_weight is None:
+            profile = latest_record.get("profile") or {}
+            baseline_weight = _parse_weight_kg(profile.get("weight"))
+
+        if baseline_weight <= 0:
+            baseline_weight = new_weight_kg
+
+        delta = abs(new_weight_kg - baseline_weight)
+        if delta >= 2.0:
+            goal = (latest_record.get("profile") or {}).get("goal")
+            old_target = plan.get("daily_protein_target") or 100
+            new_target, multiplier = calculate_protein_target(new_weight_kg, goal)
+            plan["daily_protein_target"] = new_target
+            plan["protein_per_kg"] = multiplier
+            plan["baseline_weight"] = new_weight_kg
+
+            days = plan.get("days") or []
+            ratio = new_target / max(old_target, 1)
+            for day in days:
+                for meal_key in ("breakfast", "lunch", "dinner"):
+                    meal = day.get(meal_key)
+                    if isinstance(meal, dict) and "p" in meal:
+                        meal["p"] = max(int(round(meal["p"] * ratio)), 10)
+
+            await nutrition_plans_collection.update_one(
+                {"_id": latest_record["_id"]},
+                {"$set": {"plan": plan, "updated_at": datetime.now(timezone.utc)}},
+            )
+            logger.info("Auto-updated nutrition plan protein target user_id=%s delta=%.1f new_target=%d", user_id, delta, new_target)
+    except Exception as exc:
+        logger.warning("Failed to check/update nutrition plan on weight change: %s", exc)
+
+
 @router.patch("/me/body-metrics", response_model=BodyMetricsResponse)
-
 async def update_body_metrics(
-
     payload: UpdateBodyMetricsRequest,
-
     user: dict = Depends(_require_access_user),
-
 ) -> BodyMetricsResponse:
-
     next_metrics = dict(user.get("body_metrics") or {})
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
 
     if payload.age is not None:
         _validate_minimum_supported_age(payload.age)
-
         next_metrics["age"] = payload.age.strip()
 
     if payload.height is not None:
-
         next_metrics["height"] = payload.height.strip()
 
     if payload.weight is not None:
-
-        next_metrics["weight"] = payload.weight.strip()
+        new_w = payload.weight.strip()
+        next_metrics["weight"] = new_w
+        next_metrics["weight_updated_at"] = now_iso
+        next_metrics["weight_confirmed_at"] = now_iso
+        next_metrics.pop("weight_snoozed_until", None)
+        await _check_and_update_nutrition_plan_weight(user["_id"], new_w)
 
     if payload.gender is not None:
-
         next_metrics["gender"] = payload.gender.strip()
 
     await users_collection.update_one(
-
         {"_id": user["_id"]},
-
         {
-
             "$set": {
-
                 "body_metrics": next_metrics,
-
-                "updated_at": datetime.now(timezone.utc),
-
+                "updated_at": now,
             }
-
         },
-
     )
 
+    should_prompt = _should_prompt_weight_update(next_metrics, user, now)
+
     return BodyMetricsResponse(
-
         age=str(next_metrics.get("age") or ""),
-
         height=str(next_metrics.get("height") or ""),
-
         weight=str(next_metrics.get("weight") or ""),
-
         gender=str(next_metrics.get("gender") or ""),
+        weight_updated_at=_format_iso(next_metrics.get("weight_updated_at")),
+        weight_confirmed_at=_format_iso(next_metrics.get("weight_confirmed_at")),
+        should_prompt_weight_update=should_prompt,
+    )
 
+
+@router.post("/me/body-metrics/confirm-weight", response_model=BodyMetricsResponse)
+async def confirm_weight(
+    payload: ConfirmWeightRequest = ConfirmWeightRequest(),
+    user: dict = Depends(_require_access_user),
+) -> BodyMetricsResponse:
+    now = datetime.now(timezone.utc)
+    next_metrics = dict(user.get("body_metrics") or {})
+
+    if payload.snooze_days > 0:
+        snooze_until = now + timedelta(days=payload.snooze_days)
+        next_metrics["weight_snoozed_until"] = snooze_until.isoformat()
+    else:
+        next_metrics["weight_confirmed_at"] = now.isoformat()
+        next_metrics.pop("weight_snoozed_until", None)
+
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                "body_metrics": next_metrics,
+                "updated_at": now,
+            }
+        },
+    )
+
+    should_prompt = _should_prompt_weight_update(next_metrics, user, now)
+
+    return BodyMetricsResponse(
+        age=str(next_metrics.get("age") or ""),
+        height=str(next_metrics.get("height") or ""),
+        weight=str(next_metrics.get("weight") or ""),
+        gender=str(next_metrics.get("gender") or ""),
+        weight_updated_at=_format_iso(next_metrics.get("weight_updated_at")),
+        weight_confirmed_at=_format_iso(next_metrics.get("weight_confirmed_at")),
+        should_prompt_weight_update=should_prompt,
     )

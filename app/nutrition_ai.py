@@ -1,8 +1,10 @@
 import json
+import re
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 import time
+from typing import Any
 from urllib import error, request
 
 from pydantic import BaseModel, Field
@@ -407,6 +409,32 @@ def build_nutrition_plan_signature(payload: dict) -> str:
     return sha256(payload_json.encode("utf-8")).hexdigest()
 
 
+def _parse_weight_kg(weight: Any) -> float:
+    if weight is None:
+        return 70.0
+    s = str(weight).strip().lower()
+    if not s:
+        return 70.0
+    try:
+        if "lb" in s:
+            num = float(re.sub(r"[^\d.]", "", s))
+            return num * 0.45359237
+        num = float(re.sub(r"[^\d.]", "", s))
+        return num if num > 0 else 70.0
+    except Exception:
+        return 70.0
+
+
+def calculate_protein_target(weight: Any, goal: str | None = None) -> tuple[int, float]:
+    weight_kg = _parse_weight_kg(weight)
+    goal_code = str(goal or "").strip().lower()
+    if goal_code in {"g2", "muscle building", "muscle_building"}:
+        multiplier = 2.0
+    else:
+        multiplier = 1.6
+    daily_protein = max(int(round(weight_kg * multiplier)), 60)
+    return daily_protein, multiplier
+
 def _build_fallback_nutrition_plan(payload: dict) -> dict:
     goal_code = _normalize_text(payload.get("goal"), "").lower()
     diet_code = _normalize_text(payload.get("diet"), "").lower()
@@ -458,11 +486,17 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         ("Sun", "French toast and fruit", "Bean burrito bowl", "Roast dinner plate"),
     ]
 
+    daily_protein, multiplier = calculate_protein_target(payload.get("weight"), goal_code)
+    breakfast_p = max(int(round(daily_protein * 0.30)), 15)
+    lunch_p = max(int(round(daily_protein * 0.40)), 20)
+    dinner_p = max(daily_protein - breakfast_p - lunch_p, 15)
+    is_low_carb = diet_code in {"d4", "keto / low-carb", "keto", "low-carb"} or goal_code == "g1"
+    base_carb = 24 if is_low_carb else 44
+
     days: list[dict] = []
     for index, (day_name, breakfast_name, lunch_name, dinner_name) in enumerate(day_templates):
         base_kcal = 380 + (index % 3) * 20
-        protein_target = 24 if goal_code == "g1" else 32 if goal_code == "g2" else 28
-        carb_target = 28 if diet_code in {"d4", "keto / low-carb", "keto", "low-carb"} else 44 + (index % 2) * 6
+        carb_target = base_carb + (0 if is_low_carb else (index % 2) * 6)
 
         days.append(
             {
@@ -471,7 +505,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "name": breakfast_name,
                     "desc": f"A simple breakfast built around {breakfast_protein.lower()} for steady energy.",
                     "kcal": base_kcal,
-                    "p": protein_target,
+                    "p": breakfast_p,
                     "c": carb_target,
                     "f": 14,
                     "ingredients": [
@@ -490,7 +524,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "name": lunch_name,
                     "desc": f"A balanced lunch using {protein_name.lower()} with grains and vegetables.",
                     "kcal": base_kcal + 170,
-                    "p": protein_target + 10,
+                    "p": lunch_p,
                     "c": carb_target + 18,
                     "f": 16,
                     "ingredients": [
@@ -510,7 +544,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "name": dinner_name,
                     "desc": "A lighter evening meal focused on recovery, satiety, and consistency.",
                     "kcal": base_kcal + 80,
-                    "p": protein_target + 6,
+                    "p": dinner_p,
                     "c": max(18, carb_target - 8),
                     "f": 15,
                     "ingredients": [
@@ -560,6 +594,9 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         {
             "summary": summary,
             "goal_label": goal_label,
+            "daily_protein_target": daily_protein,
+            "protein_per_kg": multiplier,
+            "baseline_weight": _parse_weight_kg(payload.get("weight")),
             "days": days,
             "shopping_list": shopping_list,
         }
@@ -957,8 +994,11 @@ def _nutrition_language_instruction(payload: dict) -> str:
 
 def _build_nutrition_plan_prompt(payload: dict) -> str:
     lang_req = _nutrition_language_instruction(payload)
+    daily_protein, multiplier = calculate_protein_target(payload.get("weight"), payload.get("goal"))
+    protein_inst = f"IMPORTANT NUTRITION TARGET: Daily protein must total approximately {daily_protein}g ({multiplier}g/kg bodyweight). Distribute across meals: ~{int(daily_protein * 0.3)}g breakfast, ~{int(daily_protein * 0.4)}g lunch, ~{int(daily_protein * 0.3)}g dinner. If goal is weight loss, keep protein high and reduce carbs.\n"
     return (
         "Create a 7-day nutrition plan in JSON with this exact top-level structure:\n"
+        f"{protein_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
@@ -1382,9 +1422,18 @@ def _parse_json_object(text: str) -> dict:
 def _normalize_nutrition_plan(plan: dict) -> dict:
     normalized_days = _normalize_plan_days(plan.get("days", []))
     shopping_list = plan.get("shopping_list", [])
+    daily_protein = plan.get("daily_protein_target")
+    if not daily_protein and normalized_days:
+        daily_protein = sum(
+            (day.get("breakfast", {}).get("p", 0) + day.get("lunch", {}).get("p", 0) + day.get("dinner", {}).get("p", 0))
+            for day in normalized_days
+        ) // max(len(normalized_days), 1)
     normalized_plan = {
         "summary": _normalize_text(plan.get("summary"), "A practical weekly nutrition plan tailored to your profile."),
         "goal_label": _normalize_text(plan.get("goal_label"), "Personalized Nutrition Plan"),
+        "daily_protein_target": daily_protein,
+        "protein_per_kg": plan.get("protein_per_kg"),
+        "baseline_weight": plan.get("baseline_weight"),
         "days": normalized_days,
         "shopping_list": _normalize_shopping_list(shopping_list, normalized_days),
     }

@@ -337,6 +337,9 @@ class BodyMetricsResponse(BaseModel):
     height: str = ""
     weight: str = ""
     gender: str = ""
+    weight_updated_at: str | None = None
+    weight_confirmed_at: str | None = None
+    should_prompt_weight_update: bool = False
 
 
 class UpdateBodyMetricsRequest(BaseModel):
@@ -344,6 +347,10 @@ class UpdateBodyMetricsRequest(BaseModel):
     height: str | None = Field(default=None, max_length=20)
     weight: str | None = Field(default=None, max_length=20)
     gender: str | None = Field(default=None, max_length=40)
+
+
+class ConfirmWeightRequest(BaseModel):
+    snooze_days: int = Field(default=0, ge=0, le=90)
 
 
 class LongevityOverviewResponse(BaseModel):
@@ -1257,6 +1264,9 @@ class NutritionPlanResponse(BaseModel):
     shopping_list: list[NutritionShoppingSection] = Field(default_factory=list)
     meal_completions: dict[str, dict[str, bool]] = Field(default_factory=dict)
     profile: dict | None = None
+    daily_protein_target: int | None = None
+    protein_per_kg: float | None = None
+    baseline_weight: float | None = None
 
 
 class NutritionAdviceRequest(BaseModel):
