@@ -97,85 +97,48 @@ async def workout_strength_plan_completion_report(
     )
 
 @router.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
-
 async def workout_strength_plan(
-
     payload: StrengthWorkoutPlanRequest,
-
     user: dict = Depends(_require_workout_plan_access_user),
-
 ) -> StrengthWorkoutPlanResponse:
-
     plan_data = generate_strength_workout_plan(
-
         StrengthWorkoutPlanInput(
-
             goal=str(payload.goal or ""),
-
             level=str(payload.level or ""),
-
             split=str(payload.split or ""),
-
             height=str(payload.height or ""),
-
             gender=str(payload.gender or ""),
-
             bench=str(payload.bench or ""),
-
             squat=str(payload.squat or ""),
-
             deadlift=str(payload.deadlift or ""),
-
             equipment=[str(item) for item in payload.equipment],
-
             frequency=str(payload.frequency or ""),
-
             days=[str(item) for item in payload.days],
-
             age=str(payload.age or ""),
-
             weight=str(payload.weight or ""),
-
+            language=str(user.get("preferred_language") or "").strip().lower() or "en",
         )
-
     )
 
     created_at = datetime.now(timezone.utc)
-
     insert_result = await strength_workout_plans_collection.insert_one(
-
         {
-
             "user_id": str(user["_id"]),
-
             "input": payload.model_dump(),
-
             "plan": plan_data,
-
             "progress": [],
-
             "created_at": created_at,
-
             "updated_at": created_at,
-
         }
-
     )
 
     return _serialize_strength_workout_plan_record(
-
         {
-
             "_id": insert_result.inserted_id,
-
             "plan": plan_data,
-
             "progress": [],
-
             "created_at": created_at,
-
         }
-
     )
 
 @router.get("/ai/workout-plan/strength/latest", response_model=StrengthWorkoutPlanResponse)

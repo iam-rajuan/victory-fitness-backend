@@ -131,10 +131,51 @@ def build_coach_victor_system_prompt(
         f"Injury or health notes: {_safe_text(medical.get('health_notes'))}.\n"
         f"Application injury field: {_safe_text(medical.get('injury'))}."
     )
+    preferred_language = _safe_text(context.get("preferred_language") or context.get("language"), "en").lower()
+    language_names = {
+        "bn": "Bengali (বাংলা)",
+        "es": "Spanish (Español)",
+        "de": "German (Deutsch)",
+        "fr": "French (Français)",
+        "it": "Italian (Italiano)",
+        "pt": "Portuguese (Português)",
+        "nl": "Dutch (Nederlands)",
+        "pl": "Polish (Polski)",
+        "tr": "Turkish (Türkçe)",
+        "ar": "Arabic (العربية)",
+        "hi": "Hindi (हिन्दी)",
+        "ur": "Urdu (اردو)",
+        "id": "Indonesian (Bahasa Indonesia)",
+        "ja": "Japanese (日本語)",
+        "ko": "Korean (한국어)",
+        "zh": "Chinese (中文)",
+        "ru": "Russian (Русский)",
+        "uk": "Ukrainian (Українська)",
+        "vi": "Vietnamese (Tiếng Việt)",
+        "th": "Thai (ไทย)",
+        "ak": "Twi (Ghana)",
+        "ee": "Ewe (Ghana)",
+        "gaa": "Ga (Ghana)",
+    }
+    target_lang_name = language_names.get(preferred_language, preferred_language)
+    if preferred_language and preferred_language not in ("en", "en-gh"):
+        language_layer = (
+            f"Layer 8 - Language & Localization:\n"
+            f"The user's preferred language is {target_lang_name} ({preferred_language}).\n"
+            f"You MUST write your entire reply in {target_lang_name} naturally and idiomatically. "
+            f"Do not reply in English unless specifically requested by the user."
+        )
+    else:
+        language_layer = (
+            "Layer 8 - Language & Localization:\n"
+            "The user's preferred language is English."
+        )
+
     return "\n\n".join(
         [
             COACH_IDENTITY_LAYER,
             country_layer,
+            language_layer,
             profile_layer,
             progress_layer,
             today_layer,

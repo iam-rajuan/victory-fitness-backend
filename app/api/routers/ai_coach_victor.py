@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from ...core.legacy import *
 from ...coach_victor import generate_coach_victor_reply
@@ -78,6 +78,7 @@ async def _coach_user_context(user: dict, recent_messages: list[dict[str, Any]])
     return {
         "country": str(user.get("country") or onboarding.get("country") or "").strip(),
         "country_code": str(user.get("country_code") or onboarding.get("countryCode") or "").upper(),
+        "preferred_language": str(user.get("preferred_language") or (onboarding.get("personalProfile") or {}).get("language") or "").strip().lower(),
         "subscription_tier": str(user.get("subscription_tier") or "NONE"),
         "motivation_statement": str(user.get("motivation_statement") or onboarding.get("motivationStatement") or "").strip(),
         "onboarding": onboarding,
@@ -105,44 +106,30 @@ async def _coach_user_context(user: dict, recent_messages: list[dict[str, Any]])
     }
 
 @router.post("/ai/coach-victor/chat", response_model=CoachVictorChatResponse)
-
 async def coach_victor_chat(
-
     payload: CoachVictorChatRequest,
-
+    request: Request,
     user: dict = Depends(_require_coach_victor_access_user),
-
 ) -> CoachVictorChatResponse:
-
     user_id = str(user["_id"])
-
     logger.info("coach_chat_attempt user_id=%s", user_id)
-
     thread = await coach_victor_threads_collection.find_one(
-
         {"user_id": user_id},
-
         sort=[("updated_at", -1)],
-
     )
-
-    full_thread_messages = await _get_full_thread_messages(thread)
-
+    full_thread_messages = list(thread.get("messages", [])) if thread else []
     existing_messages = full_thread_messages[-10:]
-
     chat_history = [
-
         {"role": item["role"], "content": item["content"]}
-
         for item in existing_messages[-10:]
-
     ]
-
     chat_history.append({"role": "user", "content": payload.message})
     user_context = await _coach_user_context(user, existing_messages)
+    req_lang = request.headers.get("accept-language", "").split(",")[0].split(";")[0].strip().lower()
+    if req_lang and not user_context.get("preferred_language"):
+        user_context["preferred_language"] = req_lang
 
     try:
-
         result = generate_coach_victor_reply(
             chat_history,
             user_context=user_context,

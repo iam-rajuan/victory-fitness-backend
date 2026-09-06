@@ -24,6 +24,7 @@ class StrengthWorkoutPlanInput:
     days: list[str]
     age: str
     weight: str
+    language: str = "en"
 
 
 @dataclass
@@ -35,6 +36,7 @@ class VideoWorkoutPlanInput:
     time: str
     notes: str
     equipment: str
+    language: str = "en"
 
 
 def _normalize_strength_goal(goal: str) -> str:
@@ -198,6 +200,8 @@ def _looks_like_strength_plan(plan: dict | None) -> bool:
 
 
 def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
+    lang = getattr(input_data, "language", "en") or "en"
+    lang_line = f"- Language: Write the summary, day titles, and exercise notes in {lang}. Keep day keys as Mon, Tue, etc.\n" if lang not in ("en", "en-gh") else ""
     return (
         "Create a custom strength plan as one JSON object only.\n"
         "The plan must match the user's actual inputs and feel like a real coach wrote it.\n"
@@ -210,6 +214,7 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- Weight should be realistic based on the user's lifts when provided, otherwise estimate conservatively.\n"
         "- Split, goal, experience level, equipment, and frequency must visibly affect the plan.\n"
         "- Keep exercise ids stable and machine-friendly.\n"
+        f"{lang_line}"
         f"User inputs: {json.dumps(input_data.__dict__, ensure_ascii=False)}"
     )
 

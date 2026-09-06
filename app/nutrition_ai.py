@@ -335,6 +335,47 @@ def generate_progressive_nutrition_plan_day(
     if plan is None:
         raise RuntimeError(f"The nutrition model did not return valid {normalized_day} plan JSON")
 
+
+def generate_progressive_nutrition_plan_monday(payload: dict) -> NutritionResult:
+    prompt = _build_progressive_nutrition_plan_monday_prompt(payload)
+    plan_text = _generate_nutrition_plan_monday_json(prompt)
+    plan = _parse_or_repair_nutrition_plan_monday(plan_text)
+    if plan is None:
+        raise RuntimeError("The nutrition model did not return valid Monday plan JSON")
+
+    return NutritionResult(data=plan)
+
+
+def generate_progressive_nutrition_plan_completion(payload: dict, monday_plan: dict) -> NutritionResult:
+    prompt = _build_progressive_nutrition_plan_completion_prompt(payload, monday_plan)
+    plan_text = _generate_nutrition_plan_completion_json(prompt)
+    plan = _parse_or_repair_nutrition_plan(plan_text)
+    if plan is None:
+        raise RuntimeError("The nutrition model did not return valid completion plan JSON")
+
+    monday_days = _normalize_plan_days(monday_plan.get("days", []), day_order=["Mon"])
+    if monday_days:
+        remaining_days = [day for day in plan["days"] if day.get("day") != "Mon"]
+        plan["days"] = monday_days + remaining_days
+
+    return NutritionResult(data=_validate_nutrition_plan(plan))
+
+
+def generate_progressive_nutrition_plan_day(
+    payload: dict,
+    day_name: str,
+    previous_days: list[dict],
+) -> NutritionResult:
+    normalized_day = str(day_name).strip().title()[:3]
+    if normalized_day not in PLAN_DAY_ORDER:
+        normalized_day = PLAN_DAY_ORDER[0]
+
+    prompt = _build_progressive_nutrition_plan_day_prompt(payload, normalized_day, previous_days)
+    plan_text = _generate_nutrition_plan_day_json(prompt)
+    plan = _parse_or_repair_nutrition_day_plan(plan_text, normalized_day)
+    if plan is None:
+        raise RuntimeError(f"The nutrition model did not return valid {normalized_day} plan JSON")
+
     return NutritionResult(data=plan)
 
 
@@ -353,6 +394,7 @@ def build_nutrition_plan_signature(payload: dict) -> str:
         "gender": _normalize_text(payload.get("gender"), ""),
         "height": _normalize_text(payload.get("height"), ""),
         "weight": _normalize_text(payload.get("weight"), ""),
+        "language": _normalize_text(payload.get("language") or payload.get("preferred_language"), "en").lower(),
         "health_conditions": sorted(
             {
                 str(item).strip()
@@ -880,7 +922,41 @@ def _structured_plan_to_json(result: object) -> str:
     raise RuntimeError("Structured output did not return a usable nutrition plan object")
 
 
+def _nutrition_language_instruction(payload: dict) -> str:
+    lang = str(payload.get("language") or payload.get("preferred_language") or "").strip().lower()
+    if not lang or lang in ("en", "en-gh"):
+        return ""
+    language_names = {
+        "bn": "Bengali (বাংলা)",
+        "es": "Spanish (Español)",
+        "de": "German (Deutsch)",
+        "fr": "French (Français)",
+        "it": "Italian (Italiano)",
+        "pt": "Portuguese (Português)",
+        "nl": "Dutch (Nederlands)",
+        "pl": "Polish (Polski)",
+        "tr": "Turkish (Türkçe)",
+        "ar": "Arabic (العربية)",
+        "hi": "Hindi (हिन्दी)",
+        "ur": "Urdu (اردو)",
+        "id": "Indonesian (Bahasa Indonesia)",
+        "ja": "Japanese (日本語)",
+        "ko": "Korean (한국어)",
+        "zh": "Chinese (中文)",
+        "ru": "Russian (Русский)",
+        "uk": "Ukrainian (Українська)",
+        "vi": "Vietnamese (Tiếng Việt)",
+        "th": "Thai (ไทย)",
+    }
+    lang_name = language_names.get(lang, lang)
+    return (
+        f"\nLanguage requirement: Write all human-readable content (meal names, descriptions, ingredients, instructions, summary, shopping categories) in {lang_name}. "
+        "Keep JSON keys and day codes ('Mon','Tue','Wed','Thu','Fri','Sat','Sun') in English."
+    )
+
+
 def _build_nutrition_plan_prompt(payload: dict) -> str:
+    lang_req = _nutrition_language_instruction(payload)
     return (
         "Create a 7-day nutrition plan in JSON with this exact top-level structure:\n"
         "{"
@@ -892,11 +968,13 @@ def _build_nutrition_plan_prompt(payload: dict) -> str:
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
         "ingredients must be an array of strings. instructions must be an array of strings.\n"
         "Use concise meal names, realistic portions, and keep the plan practical.\n"
+        f"{lang_req}\n"
         f"User context: {json.dumps(payload, ensure_ascii=False)}"
     )
 
 
 def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
+    lang_req = _nutrition_language_instruction(payload)
     return (
         "Create only Monday for a 7-day nutrition plan in JSON with this exact structure:\n"
         "{"
@@ -906,11 +984,13 @@ def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
         "}\n"
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
         "Keep Monday realistic, practical, safe, and aligned to the full weekly goal.\n"
+        f"{lang_req}\n"
         f"User context: {json.dumps(payload, ensure_ascii=False)}"
     )
 
 
 def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_plan: dict) -> str:
+    lang_req = _nutrition_language_instruction(payload)
     return (
         "Complete a 7-day nutrition plan in JSON with this exact top-level structure:\n"
         "{"
@@ -922,12 +1002,14 @@ def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_pl
         "Keep the provided Monday plan exactly consistent in food choices and meal structure.\n"
         "Return the full 7-day plan, including Monday and the remaining days.\n"
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
+        f"{lang_req}\n"
         f"Locked Monday plan: {json.dumps(monday_plan, ensure_ascii=False)}\n"
         f"User context: {json.dumps(payload, ensure_ascii=False)}"
     )
 
 
 def _build_progressive_nutrition_plan_day_prompt(payload: dict, day_name: str, previous_days: list[dict]) -> str:
+    lang_req = _nutrition_language_instruction(payload)
     return (
         f"Create only {day_name} for a 7-day nutrition plan in JSON with this exact structure:\n"
         "{"
@@ -938,6 +1020,7 @@ def _build_progressive_nutrition_plan_day_prompt(payload: dict, day_name: str, p
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
         "Keep the day consistent with the prior generated days, the user's goal, and the weekly nutrition direction.\n"
         "Do not repeat the previous meals unless it improves continuity.\n"
+        f"{lang_req}\n"
         f"Previously generated days: {json.dumps(previous_days, ensure_ascii=False)}\n"
         f"User context: {json.dumps(payload, ensure_ascii=False)}"
     )
