@@ -257,6 +257,7 @@ class OnboardingStateResponse(BaseModel):
     country: str = ""
     countryCode: str | None = None
     motivationStatement: str = ""
+    identityStatement: str = ""
     personalProfile: OnboardingPersonalProfileResponse = Field(default_factory=OnboardingPersonalProfileResponse)
     anamnese: OnboardingAnamneseResponse = Field(default_factory=OnboardingAnamneseResponse)
     suggestion: OnboardingSuggestionResponse | None = None
@@ -270,6 +271,7 @@ class UpdateOnboardingStateRequest(BaseModel):
     country: str | None = Field(default=None, max_length=120)
     countryCode: str | None = Field(default=None, min_length=2, max_length=2)
     motivationStatement: str | None = Field(default=None, max_length=240)
+    identityStatement: str | None = Field(default=None, max_length=240)
     personalProfile: OnboardingPersonalProfileResponse | None = None
     anamnese: OnboardingAnamneseResponse | None = None
     suggestion: OnboardingSuggestionResponse | None = None
@@ -1246,6 +1248,8 @@ class NutritionPlanRequest(BaseModel):
     goal: str | None = None
     cuisine: str | None = None
     favorite_meal: str | None = None
+    favorite_meals: list[str] = Field(default_factory=list)
+    favorite_meals_json: list[str] = Field(default_factory=list)
     diet: str | None = None
     allergies: str | None = None
     activity_level: str | None = None
@@ -1254,6 +1258,20 @@ class NutritionPlanRequest(BaseModel):
     height: str | None = None
     weight: str | None = None
     health_conditions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_three_favorite_meals(self) -> "NutritionPlanRequest":
+        meals: list[str] = []
+        for meal in [self.favorite_meal, *self.favorite_meals, *self.favorite_meals_json]:
+            normalized = str(meal or "").strip()
+            if normalized and normalized.lower() not in {item.lower() for item in meals}:
+                meals.append(normalized)
+        if len(meals) < 3:
+            raise ValueError("At least 3 favourite meals are required before meal plan generation")
+        self.favorite_meals = meals[:8]
+        self.favorite_meals_json = self.favorite_meals
+        self.favorite_meal = self.favorite_meals[0]
+        return self
 
 
 class NutritionPlanResponse(BaseModel):

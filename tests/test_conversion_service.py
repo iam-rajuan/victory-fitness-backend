@@ -69,12 +69,14 @@ class OnboardingSerializationTests(unittest.TestCase):
             "country": "Germany",
             "country_code": "DE",
             "motivation_statement": "feel stronger for my kids",
+            "identity_statement": " I am becoming consistent ",
             "body_metrics": {"age": "31"},
             "onboarding_completed": False,
             "onboarding_state": {
                 "currentStep": 4,
                 "language": "en",
                 "motivationStatement": "feel stronger for my kids",
+                "identityStatement": " I am becoming consistent ",
                 "updatedAt": now,
             },
         }
@@ -82,6 +84,7 @@ class OnboardingSerializationTests(unittest.TestCase):
         serialized = _serialize_onboarding_state(record)
 
         self.assertEqual(serialized["motivationStatement"], "feel stronger for my kids")
+        self.assertEqual(serialized["identityStatement"], " I am becoming consistent ")
         self.assertEqual(serialized["countryCode"], "DE")
 
 

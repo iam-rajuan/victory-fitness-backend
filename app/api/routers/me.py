@@ -97,8 +97,9 @@ async def update_me(
         update_doc["onboarding_state.motivationStatement"] = motivation_statement
 
     if payload.identity_statement is not None:
-        identity_statement = payload.identity_statement.strip()
-        update_doc["identity_statement"] = identity_statement or None
+        identity_statement = payload.identity_statement
+        update_doc["identity_statement"] = identity_statement if identity_statement.strip() else None
+        update_doc["onboarding_state.identityStatement"] = identity_statement
 
     if payload.workout_unlock_label is not None:
         workout_unlock_label = payload.workout_unlock_label.strip()
@@ -180,6 +181,11 @@ async def update_me_onboarding(
         next_state["motivationStatement"] = motivation_statement
         update_doc["motivation_statement"] = motivation_statement or None
 
+    if payload.identityStatement is not None:
+        identity_statement = payload.identityStatement
+        next_state["identityStatement"] = identity_statement
+        update_doc["identity_statement"] = identity_statement if identity_statement.strip() else None
+
     if payload.personalProfile is not None:
         personal_profile_update = payload.personalProfile.model_dump()
         _validate_minimum_supported_age(personal_profile_update.get("age"))
@@ -210,6 +216,7 @@ async def update_me_onboarding(
         "country": str(next_state.get("country") or "").strip(),
         "countryCode": (str(next_state.get("countryCode") or "").upper() or None),
         "motivationStatement": str(next_state.get("motivationStatement") or "").strip(),
+        "identityStatement": str(next_state.get("identityStatement") or ""),
         "personalProfile": next_state["personalProfile"],
         "anamnese": next_state["anamnese"],
         "suggestion": next_state["suggestion"],

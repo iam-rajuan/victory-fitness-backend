@@ -382,6 +382,11 @@ def generate_progressive_nutrition_plan_day(
 
 
 def build_nutrition_plan_signature(payload: dict) -> str:
+    favorite_meals = [
+        str(item).strip()
+        for item in (payload.get("favorite_meals") or payload.get("favorite_meals_json") or [])
+        if str(item).strip()
+    ]
     normalized_profile = {
         "provider": "openai" if settings.openai_api_key else "anthropic" if settings.anthropic_api_key else "none",
         "openai_model": settings.openai_model,
@@ -389,6 +394,7 @@ def build_nutrition_plan_signature(payload: dict) -> str:
         "goal": _normalize_text(payload.get("goal"), ""),
         "cuisine": _normalize_text(payload.get("cuisine"), ""),
         "favorite_meal": _normalize_text(payload.get("favorite_meal"), ""),
+        "favorite_meals": favorite_meals,
         "diet": _normalize_text(payload.get("diet"), ""),
         "allergies": _normalize_text(payload.get("allergies"), ""),
         "activity_level": _normalize_text(payload.get("activity_level"), ""),
@@ -439,7 +445,12 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
     goal_code = _normalize_text(payload.get("goal"), "").lower()
     diet_code = _normalize_text(payload.get("diet"), "").lower()
     cuisine = _normalize_text(payload.get("cuisine"), "your preferred cuisine")
-    favorite_meal = _normalize_text(payload.get("favorite_meal"), "balanced meals")
+    favorite_meals = [
+        str(item).strip()
+        for item in (payload.get("favorite_meals") or payload.get("favorite_meals_json") or [])
+        if str(item).strip()
+    ]
+    favorite_meal = _normalize_text(payload.get("favorite_meal") or (favorite_meals[0] if favorite_meals else ""), "balanced meals")
     allergies = _normalize_text(payload.get("allergies"), "").lower()
     health_conditions = _normalize_string_list(payload.get("health_conditions"))
 
@@ -473,6 +484,8 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         f"This fallback 7-day plan supports {goal_label.lower()} with practical {cuisine} inspired meals, "
         f"balanced portions, and a repeatable structure around {favorite_meal.lower()}."
     )
+    if len(favorite_meals) >= 2:
+        summary += f" It includes inspiration from favourites like {', '.join(favorite_meals[:3])}."
     if health_conditions:
         summary += f" It also stays mindful of: {', '.join(health_conditions[:3])}."
 

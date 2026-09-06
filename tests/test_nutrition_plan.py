@@ -65,6 +65,8 @@ class NutritionPlanPersistenceRouteTests(unittest.TestCase):
             "goal": "g2",
             "cuisine": "Bangladeshi",
             "favorite_meal": "Lunch",
+            "favorite_meals": ["Lunch", "Chicken curry", "Lentil soup"],
+            "favorite_meals_json": ["Lunch", "Chicken curry", "Lentil soup"],
             "diet": "d2",
             "allergies": "peanut",
             "activity_level": "a3",
@@ -149,11 +151,34 @@ class NutritionPlanPersistenceRouteTests(unittest.TestCase):
         self.assertEqual(latest_plan["plan_id"], "plan-1")
         self.assertEqual(response_plan["profile"]["cuisine"], "Bangladeshi")
         self.assertEqual(latest_plan["profile"]["favorite_meal"], "Lunch")
+        self.assertEqual(latest_plan["profile"]["favorite_meals"], ["Lunch", "Chicken curry", "Lentil soup"])
+        self.assertEqual(latest_plan["profile"]["favorite_meals_json"], ["Lunch", "Chicken curry", "Lentil soup"])
         self.assertEqual(fake_plans.records[0]["plan"]["profile"]["diet"], "d2")
         self.assertEqual(
             fake_users.updated_payloads[-1]["update"]["$set"]["nutrition_onboarding_profile"]["activity_level"],
             "a3",
         )
+
+    def test_generate_plan_rejects_fewer_than_three_favorite_meals(self) -> None:
+        payload = {
+            "goal": "g2",
+            "cuisine": "Bangladeshi",
+            "favorite_meal": "Lunch",
+            "favorite_meals": ["Lunch", "Dinner"],
+            "diet": "d2",
+            "allergies": "",
+            "activity_level": "a3",
+            "age": "25",
+            "gender": "Male",
+            "height": "180",
+            "weight": "75",
+            "health_conditions": [],
+        }
+
+        response = self.client.post("/ai/nutrition/plan", json=payload)
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("At least 3 favourite meals", response.text)
 
 
 class NutritionPlanFallbackTests(unittest.TestCase):
@@ -162,6 +187,7 @@ class NutritionPlanFallbackTests(unittest.TestCase):
             "goal": "g2",
             "cuisine": "German",
             "favorite_meal": "Dinner",
+            "favorite_meals": ["Dinner", "Tofu bowl", "Protein oats"],
             "diet": "d3",
             "allergies": "peanut",
             "activity_level": "a3",

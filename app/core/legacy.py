@@ -3381,6 +3381,7 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
         "country": str(state.get("country") or record.get("country") or "").strip(),
         "countryCode": (str(state.get("countryCode") or record.get("country_code") or "").upper() or None),
         "motivationStatement": str(state.get("motivationStatement") or record.get("motivation_statement") or "").strip(),
+        "identityStatement": str(state.get("identityStatement") or record.get("identity_statement") or ""),
         "personalProfile": {
             "age": str(personal_profile.get("age") or metrics.get("age") or "").strip(),
             "gender": str(personal_profile.get("gender") or metrics.get("gender") or "").strip(),
