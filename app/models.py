@@ -83,6 +83,17 @@ class GoogleAuthRequest(BaseModel):
     access_token: str | None = Field(default=None, min_length=20)
 
 
+class TranslationBatchRequest(BaseModel):
+    target_language: str = Field(min_length=2, max_length=16)
+    source_language: str = Field(default="en", min_length=2, max_length=16)
+    texts: list[str] = Field(min_length=1, max_length=80)
+
+
+class TranslationBatchResponse(BaseModel):
+    target_language: str
+    translations: dict[str, str]
+
+
 class TokenResponse(BaseModel):
     access_token: str
     session_token: str

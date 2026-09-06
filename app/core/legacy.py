@@ -8609,6 +8609,7 @@ async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies:
             "role": str(user.get("role") or ("admin" if user.get("is_admin") else "user")),
 
             "is_admin": bool(user.get("is_admin")),
+            "preferred_language": profile_summary.get("preferred_language", ""),
 
             "points": profile_summary.get("points", 0),
 

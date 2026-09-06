@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter
 
 from ...core.legacy import *
@@ -77,7 +79,7 @@ async def update_me(
 
         preferred_language = payload.preferred_language.strip().lower()
 
-        if preferred_language and preferred_language not in {"en", "de"}:
+        if preferred_language and not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", preferred_language):
 
             raise HTTPException(status_code=400, detail="Unsupported language")
 
@@ -149,7 +151,7 @@ async def update_me_onboarding(
     if payload.language is not None:
         preferred_language = payload.language.strip().lower()
 
-        if preferred_language and preferred_language not in {"en", "de"}:
+        if preferred_language and not re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8})?", preferred_language):
             raise HTTPException(status_code=400, detail="Unsupported language")
 
         next_state["language"] = preferred_language
