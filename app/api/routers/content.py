@@ -1,3 +1,4 @@
+import hashlib
 import time
 from fastapi import APIRouter
 
@@ -79,7 +80,7 @@ async def get_homepage_quote(app_version: str | None = None) -> HomepageQuote | 
     if not active_items:
         return None
     if app_version:
-        seed = sum(ord(c) for c in app_version)
+        seed = int(hashlib.sha256(app_version.strip().encode("utf-8")).hexdigest()[:8], 16)
         return HomepageQuote(**active_items[seed % len(active_items)])
     return HomepageQuote(**active_items[datetime.now(timezone.utc).date().toordinal() % len(active_items)])
 

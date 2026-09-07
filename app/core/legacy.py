@@ -7524,16 +7524,46 @@ def _serialize_admin_challenge_record(record: dict, stats: dict[str, dict[str, i
 HOMEPAGE_QUOTES_KEY = "homepage_quotes"
 DEFAULT_HOMEPAGE_QUOTES = [
     {
-        "id": "homepage-quote-default",
+        "id": "homepage-quote-1",
         "text": "Every rep is a vote for the person you are becoming.",
         "author": "Victory Fitness",
         "active": True,
-    }
+    },
+    {
+        "id": "homepage-quote-2",
+        "text": "Consistency is what transforms average into excellence.",
+        "author": "Victory Fitness",
+        "active": True,
+    },
+    {
+        "id": "homepage-quote-3",
+        "text": "Small daily improvements over time lead to stunning results.",
+        "author": "Victory Fitness",
+        "active": True,
+    },
+    {
+        "id": "homepage-quote-4",
+        "text": "Your only limit is the one you build in your mind.",
+        "author": "Victory Fitness",
+        "active": True,
+    },
+    {
+        "id": "homepage-quote-5",
+        "text": "Discipline is choosing between what you want now and what you want most.",
+        "author": "Victory Fitness",
+        "active": True,
+    },
 ]
 
 async def _load_homepage_quotes() -> list[dict]:
     record = await _ensure_items_record(HOMEPAGE_QUOTES_KEY, DEFAULT_HOMEPAGE_QUOTES)
-    return [_serialize_homepage_quote_item(item) for item in record.get("items") or [] if isinstance(item, dict)]
+    items = [_serialize_homepage_quote_item(item) for item in record.get("items") or [] if isinstance(item, dict)]
+    if len(items) <= 1:
+        existing_texts = {it.get("text") for it in items}
+        for default_item in DEFAULT_HOMEPAGE_QUOTES:
+            if default_item["text"] not in existing_texts:
+                items.append(_serialize_homepage_quote_item(default_item))
+    return items
 
 async def _save_homepage_quotes(items: list[dict]) -> None:
     await _replace_items_record(HOMEPAGE_QUOTES_KEY, [_serialize_homepage_quote_item(item) for item in items])
