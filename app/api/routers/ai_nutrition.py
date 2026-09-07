@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
-from ...nutrition_ai import _build_fallback_nutrition_plan
+from ...nutrition_ai import _build_fallback_nutrition_plan, _normalize_nutrition_plan
 
 router = APIRouter()
 
@@ -21,18 +21,22 @@ async def nutrition_plan(
 
     profile_hash = build_nutrition_plan_signature(payload_data)
 
-    cached_record = await nutrition_plans_collection.find_one(
+    cached_record = None
+    if not payload.regenerate and not payload.force_refresh:
+        cached_record = await nutrition_plans_collection.find_one(
+            _standard_nutrition_filter(str(user["_id"]), profile_hash),
+            sort=[("created_at", -1)],
+        )
 
-        _standard_nutrition_filter(str(user["_id"]), profile_hash),
+    # Only return cache if it already has pre_workout and post_workout meals
+    has_pre_and_post = False
+    if cached_record and cached_record.get("plan") and isinstance(cached_record["plan"].get("days"), list):
+        days = cached_record["plan"]["days"]
+        if days and isinstance(days[0], dict) and "pre_workout" in days[0] and "post_workout" in days[0]:
+            has_pre_and_post = True
 
-        sort=[("created_at", -1)],
-
-    )
-
-    if cached_record and cached_record.get("plan"):
-
+    if cached_record and cached_record.get("plan") and has_pre_and_post:
         plan_data = dict(cached_record["plan"])
-
         plan_data["plan_id"] = str(cached_record["_id"])
         await users_collection.update_one(
             {"_id": user["_id"]},
@@ -43,17 +47,11 @@ async def nutrition_plan(
                 }
             },
         )
-
         logger.info(
-
             "nutrition_plan_cache_hit user_id=%s plan_id=%s",
-
             str(user["_id"]),
-
             plan_data["plan_id"],
-
         )
-
         await _record_trial_engagement(user, "nutrition_plan")
         return NutritionPlanSaveResponse(plan=NutritionPlanResponse(**plan_data))
 
@@ -286,9 +284,13 @@ async def nutrition_latest_plan(
             "plan": base_plan,
         }
 
-    plan_data = dict(record["plan"])
-
+    plan_raw = dict(record["plan"])
+    # Normalize plan to guarantee pre_workout and post_workout are populated even on legacy saved records
+    plan_dict = _normalize_nutrition_plan(plan_raw)
+    plan_data = dict(plan_dict)
     plan_data["plan_id"] = str(record["_id"])
+    if plan_raw.get("profile"):
+        plan_data["profile"] = plan_raw["profile"]
 
     logger.info("nutrition_latest_success user_id=%s plan_id=%s", str(user["_id"]), plan_data["plan_id"])
 

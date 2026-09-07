@@ -1274,6 +1274,8 @@ class NutritionPlanRequest(BaseModel):
     weight: str | None = None
     health_conditions: list[str] = Field(default_factory=list)
     workout_time: str | None = None
+    regenerate: bool = False
+    force_refresh: bool = False
 
     @model_validator(mode="after")
     def require_three_favorite_meals(self) -> "NutritionPlanRequest":

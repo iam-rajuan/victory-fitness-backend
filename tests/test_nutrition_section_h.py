@@ -138,7 +138,7 @@ def test_normalizer_enforces_1_6g_per_kg_even_with_deviant_plan():
     }
 
     normalized = _normalize_nutrition_plan(deviant_plan)
-    daily_totals = [d["breakfast"]["p"] + d["lunch"]["p"] + d["dinner"]["p"] for d in normalized["days"]]
+    daily_totals = [sum(m["p"] for k, m in d.items() if k != "day" and isinstance(m, dict)) for d in normalized["days"]]
     avg_p = sum(daily_totals) / 7.0
 
     # Must be corrected to 128g ± 5g

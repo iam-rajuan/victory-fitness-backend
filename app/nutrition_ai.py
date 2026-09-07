@@ -281,8 +281,8 @@ class StructuredNutritionDayPlan(BaseModel):
     breakfast: StructuredNutritionMealEntry
     lunch: StructuredNutritionMealEntry
     dinner: StructuredNutritionMealEntry
-    pre_workout: StructuredNutritionMealEntry | None = Field(default=None, description="Pre-workout fuel meal (60-90m before workout, carb-forward)")
-    post_workout: StructuredNutritionMealEntry | None = Field(default=None, description="Post-workout recovery meal (within 45m after workout, high protein)")
+    pre_workout: StructuredNutritionMealEntry = Field(description="Pre-workout fuel meal (60-90m before workout, carb-forward)")
+    post_workout: StructuredNutritionMealEntry = Field(description="Post-workout recovery meal (within 45m after workout, high protein)")
 
 
 class StructuredNutritionPlan(BaseModel):
@@ -294,9 +294,10 @@ class StructuredNutritionPlan(BaseModel):
 
 def generate_nutrition_plan(payload: dict) -> NutritionResult:
     cache_key = build_nutrition_plan_signature(payload)
-    cached_plan = _NUTRITION_PLAN_MEMORY_CACHE.get(cache_key)
-    if cached_plan is not None:
-        return NutritionResult(data=deepcopy(cached_plan))
+    if not payload.get("regenerate") and not payload.get("force_refresh"):
+        cached_plan = _NUTRITION_PLAN_MEMORY_CACHE.get(cache_key)
+        if cached_plan is not None:
+            return NutritionResult(data=deepcopy(cached_plan))
 
     prompt = _build_nutrition_plan_prompt(payload)
     plan_text = _generate_nutrition_plan_json(prompt)
@@ -1692,6 +1693,10 @@ def _normalize_nutrition_plan(plan: dict) -> dict:
         "days": normalized_days,
         "shopping_list": _normalize_shopping_list(shopping_list, normalized_days),
     }
+    if "profile" in plan:
+        normalized_plan["profile"] = plan["profile"]
+    if "meal_completions" in plan:
+        normalized_plan["meal_completions"] = plan["meal_completions"]
     return _validate_nutrition_plan(normalized_plan)
 
 
@@ -1813,19 +1818,42 @@ def _normalize_day_plan(day: dict) -> dict:
     if day_name not in PLAN_DAY_ORDER:
         day_name = PLAN_DAY_ORDER[0]
 
-    result = {
+    pre_raw = day.get("pre_workout")
+    if not isinstance(pre_raw, dict) or not pre_raw:
+        pre_raw = {
+            "name": f"Pre-Workout Energy Snack",
+            "desc": "Pre-workout fuel (scheduled 60–90 mins before training): Carb-forward fuel to maximize glycogen stores.",
+            "kcal": 280,
+            "p": 15,
+            "c": 48,
+            "f": 4,
+            "timing": "60–90m before workout",
+            "ingredients": ["1 medium banana or dates", "2 slices whole grain toast", "Light protein source"],
+            "instructions": ["Consume 60 to 90 minutes before your workout.", "Drink 400ml water."],
+        }
+
+    post_raw = day.get("post_workout")
+    if not isinstance(post_raw, dict) or not post_raw:
+        post_raw = {
+            "name": f"Post-Workout Recovery Plate",
+            "desc": "Post-workout recovery (scheduled within 45 mins of workout end): High-protein meal to optimize muscle recovery.",
+            "kcal": 360,
+            "p": 32,
+            "c": 36,
+            "f": 6,
+            "timing": "Within 45m after workout",
+            "ingredients": ["Lean chicken breast, fish, or protein shake", "Jasmine rice or sweet potato", "Steamed greens"],
+            "instructions": ["Consume within 45 minutes of completing your workout.", "Rehydrate thoroughly with water."],
+        }
+
+    return {
         "day": day_name,
         "breakfast": _normalize_meal_entry(day.get("breakfast", {})),
         "lunch": _normalize_meal_entry(day.get("lunch", {})),
         "dinner": _normalize_meal_entry(day.get("dinner", {})),
+        "pre_workout": _normalize_meal_entry(pre_raw),
+        "post_workout": _normalize_meal_entry(post_raw),
     }
-
-    if "pre_workout" in day and isinstance(day["pre_workout"], dict):
-        result["pre_workout"] = _normalize_meal_entry(day["pre_workout"])
-    if "post_workout" in day and isinstance(day["post_workout"], dict):
-        result["post_workout"] = _normalize_meal_entry(day["post_workout"])
-
-    return result
 
 
 def _normalize_meal_entry(entry: dict) -> dict:
@@ -2051,6 +2079,8 @@ def _default_day_plan(day_name: str) -> dict:
         "day": day_name,
         "breakfast": _default_meal_entry(f"{day_name} Breakfast"),
         "lunch": _default_meal_entry(f"{day_name} Lunch"),
+        "pre_workout": _default_meal_entry(f"{day_name} Pre-Workout Snack"),
+        "post_workout": _default_meal_entry(f"{day_name} Post-Workout Plate"),
         "dinner": _default_meal_entry(f"{day_name} Dinner"),
     }
 
