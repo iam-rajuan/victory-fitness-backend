@@ -2025,10 +2025,12 @@ class StrengthWorkoutPlanListResponse(BaseModel):
 
 class StrengthWorkoutSessionFeedbackRequest(BaseModel):
     day: str = Field(min_length=1, max_length=40)
-    perceived_difficulty: str = Field(pattern=r"^(easy|good|hard)$")
+    perceived_difficulty: str = Field(pattern=r"^(easy|good|hard|too_easy|just_right|too_hard)$")
     energy: str = Field(default="medium", pattern=r"^(low|medium|high)$")
     soreness: str = Field(default="medium", pattern=r"^(low|medium|high)$")
     notes: str = Field(default="", max_length=500)
+    pain_flag: bool = False
+    sweet_spot_flag: bool = False
 
 
 class StrengthWorkoutAdaptiveRecommendationResponse(BaseModel):
@@ -2037,6 +2039,9 @@ class StrengthWorkoutAdaptiveRecommendationResponse(BaseModel):
     next_volume_direction: str = "maintain"
     next_intensity_target: str = ""
     summary: str = ""
+    what_went_well: str = ""
+    cautions: str = ""
+    next_steps: str = ""
     updated_at: datetime
 
 

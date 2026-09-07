@@ -59,15 +59,41 @@ def _adjust_strength_intensity_label(intensity_label: str, adjustment_pct: int) 
     return text
 
 
-def _adaptive_workout_adjustment(payload: StrengthWorkoutSessionFeedbackRequest) -> tuple[int, str, str]:
+def _adaptive_workout_adjustment(payload: StrengthWorkoutSessionFeedbackRequest) -> tuple[int, str, str, str, str, str]:
     perceived = str(payload.perceived_difficulty or "").lower()
     energy = str(payload.energy or "").lower()
     soreness = str(payload.soreness or "").lower()
-    if perceived == "hard" or energy == "low" or soreness == "high":
-        return (-10, "decrease", "Reduce the next workout slightly so recovery stays ahead of fatigue.")
-    if perceived == "easy" and energy == "high" and soreness == "low":
-        return (5, "increase", "You handled this session well, so the next workout can progress slightly.")
-    return (0, "maintain", "Keep the next workout steady and reinforce consistency before changing load again.")
+    is_hard = perceived in ("hard", "too_hard") or energy == "low" or soreness == "high"
+    is_easy = perceived in ("easy", "too_easy") and energy == "high" and soreness == "low"
+
+    if is_hard:
+        adj_pct = -10
+        direction = "decrease"
+        summary = "Reduce the next workout slightly so recovery stays ahead of fatigue."
+        what_went_well = "Commendable effort and perseverance completing a demanding session under high load."
+        cautions = "Elevated systemic strain detected. Prioritize 8+ hours of sleep, recovery nutrition, and light mobility."
+        next_steps = "We will dial back volume by 10% on the next session to prevent cumulative overtraining."
+    elif is_easy:
+        adj_pct = 5
+        direction = "increase"
+        summary = "You handled this session well, so the next workout can progress slightly."
+        what_went_well = "Excellent execution, high motor unit recruitment, and clean mechanical control throughout sets."
+        cautions = "Ensure strict tempo control on the eccentric phase before adding external load."
+        next_steps = "Slightly advancing progressive overload by +5% on primary compound lifts next workout."
+    else:
+        adj_pct = 0
+        direction = "maintain"
+        summary = "Keep the next workout steady and reinforce consistency before changing load again."
+        what_went_well = "Hit the optimal hypertrophy and strength stimulus zone without inducing excessive CNS fatigue."
+        cautions = "Keep hydration, electrolytes, and daily protein targets (1.6g/kg) consistent for optimal muscle repair."
+        next_steps = "Maintain baseline intensity and consolidate motor patterns on the upcoming session."
+
+    if payload.pain_flag:
+        cautions = "⚠️ Pain / discomfort noted: Deload affected joint angles, substitute with pain-free movement variations, and consult coach if discomfort persists."
+    if payload.sweet_spot_flag:
+        what_went_well = "🎯 Sweet spot achieved! Perfect muscular stimulation with optimal tension-to-fatigue ratio."
+
+    return (adj_pct, direction, summary, what_went_well, cautions, next_steps)
 
 @router.get("/ai/workout-plan/strength/{plan_id}/report", response_model=StrengthWorkoutPlanCompletionReportResponse)
 async def workout_strength_plan_completion_report(
@@ -528,7 +554,7 @@ async def workout_strength_plan_feedback(
     if selected_index < 0:
         raise HTTPException(status_code=400, detail="Workout day not found")
 
-    adjustment_pct, direction, summary = _adaptive_workout_adjustment(payload)
+    adjustment_pct, direction, summary, what_went_well, cautions, next_steps = _adaptive_workout_adjustment(payload)
     next_intensity_target = ""
     if selected_index + 1 < len(plan_days):
         next_day = dict(plan_days[selected_index + 1])
@@ -548,8 +574,13 @@ async def workout_strength_plan_feedback(
             "energy": payload.energy,
             "soreness": payload.soreness,
             "notes": str(payload.notes or "").strip(),
+            "pain_flag": payload.pain_flag,
+            "sweet_spot_flag": payload.sweet_spot_flag,
             "adjustment_pct": adjustment_pct,
             "next_volume_direction": direction,
+            "what_went_well": what_went_well,
+            "cautions": cautions,
+            "next_steps": next_steps,
             "created_at": now,
         }
     )
@@ -576,6 +607,9 @@ async def workout_strength_plan_feedback(
         next_volume_direction=direction,
         next_intensity_target=next_intensity_target,
         summary=summary,
+        what_went_well=what_went_well,
+        cautions=cautions,
+        next_steps=next_steps,
         updated_at=now,
     )
 
