@@ -12,7 +12,9 @@ from ...coach_victor import (
     build_coach_victor_system_prompt,
     generate_coach_victor_reply,
     generate_coach_victor_stream,
+    postprocess_coach_victor_reply,
 )
+from ...workout_plan_ai import sanitize_workout_plan_for_injuries
 
 logger = logging.getLogger(__name__)
 
@@ -63,25 +65,7 @@ async def handle_pain_signals_if_any(user: dict, user_id: str, message: str) -> 
     )
     if latest_workout_plan and isinstance(latest_workout_plan.get("plan"), dict):
         plan_data = dict(latest_workout_plan["plan"])
-        days = plan_data.get("days") or []
-        modified = False
-        for day in days:
-            exs = []
-            for ex in day.get("exercises") or []:
-                ex_name = str(ex.get("name") or "").lower()
-                if "knee" in flags and any(k in ex_name for k in ["squat", "lunge", "leg press", "leg extension"]):
-                    ex_copy = dict(ex)
-                    ex_copy["name"] = "Romanian Deadlift" if ("squat" in ex_name or "press" in ex_name) else "Hamstring Curl"
-                    exs.append(ex_copy)
-                    modified = True
-                elif "shoulder" in flags and any(k in ex_name for k in ["overhead press", "military press", "incline press"]):
-                    ex_copy = dict(ex)
-                    ex_copy["name"] = "Cable Face Pull"
-                    exs.append(ex_copy)
-                    modified = True
-                else:
-                    exs.append(ex)
-            day["exercises"] = exs
+        plan_data, modified = sanitize_workout_plan_for_injuries(plan_data, flags)
 
         if modified:
             await strength_workout_plans_collection.update_one(
@@ -385,7 +369,11 @@ async def coach_victor_stream(
             err_data = json.dumps({"type": "error", "error": str(exc)})
             yield f"data: {err_data}\n\n"
 
-        full_reply_text = "".join(accumulated_reply).strip()
+        full_reply_text = postprocess_coach_victor_reply(
+            "".join(accumulated_reply).strip(),
+            user_context=user_context,
+            last_user_message=payload.message,
+        )
         now = datetime.now(timezone.utc)
         user_msg = {
             "id": str(ObjectId()),

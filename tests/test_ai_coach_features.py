@@ -7,6 +7,7 @@ from app.coach_victor import (
     generate_coach_victor_reply,
     generate_coach_victor_stream,
     is_prompt_leak_query,
+    postprocess_coach_victor_reply,
     PROMPT_LEAK_REFUSAL,
     MARKET_LOCAL_SUPPLEMENTS,
 )
@@ -131,7 +132,17 @@ class AICoachFeatureTests(unittest.IsolatedAsyncioTestCase):
             [{"role": "user", "content": "I feel unmotivated today."}],
             user_context=user_context,
         ).reply
-        self.assertNotIn(f'"{statement}"', reply)
+        self.assertNotIn(statement, reply)
+
+    def test_identity_statement_is_redacted_from_model_output(self) -> None:
+        statement = "I am someone who trains even when it is hard."
+        reply = postprocess_coach_victor_reply(
+            f"{statement} Now keep the next rep clean.",
+            user_context={"habit_fields": {"identity_statement": statement}},
+            last_user_message="How do I train today?",
+        )
+        self.assertNotIn(statement, reply)
+        self.assertIn("Keep that standard in view.", reply)
 
     def test_workout_unlock_section_20_4(self) -> None:
         """Workout Unlock referenced naturally by AI Coach: 'Are you making use of [label] during sessions?'"""
@@ -191,6 +202,54 @@ class AICoachFeatureTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(len(full_text) > 0)
         self.assertIn("78g", full_text)
 
+    async def test_streaming_nutrition_response_starts_with_protein_status(self) -> None:
+        user_context = {
+            "daily_protein": {"consumed_g": 78, "target_g": 124},
+            "nutrition_profile": {"protein_target_g": 124},
+        }
+        tokens = []
+        async for chunk in generate_coach_victor_stream(
+            [{"role": "user", "content": "What should I cook tonight?"}],
+            user_context=user_context,
+        ):
+            tokens.append(chunk)
+            if len("".join(tokens)) > 60:
+                break
+        self.assertTrue("".join(tokens).startswith("You have hit 78g of your 124g target today."))
+
+    def test_workout_reminder_uses_trigger_or_identity(self) -> None:
+        from app.conversion_service import build_personalized_workout_reminder_copy
+
+        triggered = build_personalized_workout_reminder_copy(
+            {
+                "subscription_tier": "GOLD",
+                "identity_statement": "I am someone who keeps promises.",
+                "training_trigger_context": "Kids in bed",
+                "training_trigger_action": "open the app and start my workout",
+            },
+            "Workout reminder",
+            "Move today.",
+        )
+        self.assertEqual(triggered[1], "When Kids in bed? That means — open the app and start my workout.")
+
+        identity_only = build_personalized_workout_reminder_copy(
+            {"subscription_tier": "GOLD", "identity_statement": "I am someone who keeps promises."},
+            "Workout reminder",
+            "Move today.",
+        )
+        self.assertEqual(identity_only[1], "I am someone who keeps promises. Your plan is ready.")
+
+    def test_day_three_and_seven_comeback_use_identity_statement(self) -> None:
+        from app.retention_service import _personalize_comeback_message
+
+        title, body = _personalize_comeback_message(
+            {"subscription_tier": "GOLD", "identity_statement": "I am someone who trains."},
+            "Old title",
+            "Old body",
+            day=3,
+        )
+        self.assertEqual(title, "Your plan is still here")
+        self.assertEqual(body, "I am someone who trains. Your plan is still here.")
 
     def test_pain_flag_excludes_knee_exercises_from_workout_plan(self) -> None:
         """'My knee hurts' in feedback/chat -> next AI workout excludes knee exercises."""
@@ -241,6 +300,35 @@ class AICoachFeatureTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("lunge", ex)
             self.assertNotIn("leg press", ex)
             self.assertNotIn("leg extension", ex)
+
+    def test_nested_plan_injury_sanitizer_rewrites_sections(self) -> None:
+        from app.workout_plan_ai import sanitize_workout_plan_for_injuries
+
+        plan = {
+            "days": [
+                {
+                    "day": "Mon",
+                    "sections": [
+                        {
+                            "id": "strength",
+                            "exercises": [
+                                {"id": "a", "name": "Bulgarian Split Squat", "type": "Compound"},
+                                {"id": "b", "name": "Bench Press", "type": "Compound"},
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+        sanitized, modified = sanitize_workout_plan_for_injuries(plan, ["knee"])
+        names = [
+            ex["name"].lower()
+            for day in sanitized["days"]
+            for section in day["sections"]
+            for ex in section["exercises"]
+        ]
+        self.assertTrue(modified)
+        self.assertNotIn("bulgarian split squat", names)
 
 
 if __name__ == "__main__":

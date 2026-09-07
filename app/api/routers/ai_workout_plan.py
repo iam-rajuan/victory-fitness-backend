@@ -5,6 +5,7 @@ from ...models import (
     StrengthWorkoutAdaptiveRecommendationResponse,
     StrengthWorkoutSessionFeedbackRequest,
 )
+from ...workout_plan_ai import sanitize_workout_plan_for_injuries
 
 router = APIRouter()
 
@@ -121,6 +122,7 @@ async def workout_strength_plan_completion_report(
         day,
         full_plan=full_plan and plan_is_complete,
         duration_seconds=duration_seconds,
+        identity_statement=str(user.get("identity_statement") or ""),
     )
     return StrengthWorkoutPlanCompletionReportResponse(
         file_name="victory-fitness-strength-completion.png",
@@ -714,16 +716,7 @@ async def workout_strength_plan_feedback(
         )
         if selected_index + 1 < len(plan_days):
             next_day = dict(plan_days[selected_index + 1])
-            exs = []
-            for ex in next_day.get("exercises") or []:
-                ex_name = str(ex.get("name") or "").lower()
-                if "knee" in pain_flags and any(k in ex_name for k in ["squat", "lunge", "leg press", "leg extension"]):
-                    ex_copy = dict(ex)
-                    ex_copy["name"] = "Romanian Deadlift" if ("squat" in ex_name or "press" in ex_name) else "Hamstring Curl"
-                    exs.append(ex_copy)
-                else:
-                    exs.append(ex)
-            next_day["exercises"] = exs
+            next_day, _ = sanitize_workout_plan_for_injuries(next_day, pain_flags)
             plan_days[selected_index + 1] = next_day
             plan_data["days"] = plan_days
 

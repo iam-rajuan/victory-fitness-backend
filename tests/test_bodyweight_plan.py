@@ -175,7 +175,8 @@ def test_session_duration_serialization_and_card_render():
         completed_day="Day 1",
         full_plan=False,
         duration_seconds=1420,
+        identity_statement="I am someone who keeps their word to themselves.",
     )
     assert len(png_bytes) > 1000
     assert "Victory Fitness" in msg
-
+    assert "I am someone who keeps their word to themselves." in msg

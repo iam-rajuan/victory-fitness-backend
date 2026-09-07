@@ -42,10 +42,49 @@ PROMPT_LEAK_REFUSAL = (
     "I am Coach Victor, your fitness and nutrition coach. How can I help you with your workouts, nutrition, or recovery today?"
 )
 
+NUTRITION_QUERY_TERMS = [
+    "eat", "meal", "food", "snack", "dinner", "lunch", "breakfast", "protein",
+    "diet", "macros", "calories", "hungry", "supplement", "supplements",
+    "whey", "creatine", "vitamin", "powder", "cook", "recipe", "nutrition",
+]
+
 
 def is_prompt_leak_query(query: str) -> bool:
     lowered = (query or "").strip().lower()
     return any(phrase in lowered for phrase in PROMPT_LEAK_PHRASES)
+
+
+def _is_nutrition_query(message: str) -> bool:
+    lowered = (message or "").lower()
+    return any(term in lowered for term in NUTRITION_QUERY_TERMS)
+
+
+def _identity_statement_from_context(user_context: dict[str, object] | None) -> str:
+    context = dict(user_context or {})
+    habit_fields = dict(context.get("habit_fields") or {})
+    return str(habit_fields.get("identity_statement") or "").strip()
+
+
+def _nutrition_protein_status_sentence(user_context: dict[str, object] | None) -> str:
+    context = dict(user_context or {})
+    daily_protein = dict(context.get("daily_protein") or {})
+    nutrition_profile = dict(context.get("nutrition_profile") or {})
+    preferred_lang = str(context.get("preferred_language") or context.get("language") or "").lower()
+    p_consumed = daily_protein.get("consumed_g", 0)
+    p_target = daily_protein.get("target_g") or nutrition_profile.get("protein_target_g") or nutrition_profile.get("daily_protein") or 124
+
+    if preferred_lang == "de":
+        return f"Du hast heute {p_consumed}g deines {p_target}g Ziels erreicht."
+    if preferred_lang == "hi":
+        return f"आपने आज अपने {p_target}g लक्ष्य में से {p_consumed}g प्राप्त कर लिया है।"
+    return f"You have hit {p_consumed}g of your {p_target}g target today."
+
+
+def _redact_identity_statement(reply: str, *, user_context: dict[str, object] | None) -> str:
+    statement = _identity_statement_from_context(user_context)
+    if not reply or not statement:
+        return reply
+    return re.sub(re.escape(statement), "Keep that standard in view.", reply, flags=re.IGNORECASE)
 
 
 COACH_IDENTITY_LAYER = (
@@ -313,9 +352,7 @@ def _generate_intelligent_fallback_reply(
     protein_status_en = f"You have hit {p_consumed}g of your {p_target}g target today."
 
     # Food / Meal / Nutrition questions
-    is_nutrition_q = any(w in lowered for w in [
-        "eat", "meal", "food", "snack", "dinner", "lunch", "breakfast", "protein", "diet", "macros", "calories", "hungry"
-    ])
+    is_nutrition_q = _is_nutrition_query(last_user_message)
 
     fav_meals = nutrition_profile.get("favorite_meals_json") or nutrition_profile.get("favorite_meals") or []
     if isinstance(fav_meals, str):
@@ -427,25 +464,10 @@ def _generate_intelligent_fallback_reply(
 def _ensure_nutrition_protein_status(reply: str, *, user_context: dict[str, object] | None, last_user_message: str) -> str:
     if not reply or not user_context:
         return reply
-    lowered = last_user_message.lower()
-    is_nutrition_q = any(w in lowered for w in [
-        "eat", "meal", "food", "snack", "dinner", "lunch", "breakfast", "protein", "diet", "macros", "calories", "hungry", "supplement", "supplements"
-    ])
-    if not is_nutrition_q:
+    if not _is_nutrition_query(last_user_message):
         return reply
 
-    daily_protein = dict(user_context.get("daily_protein") or {})
-    nutrition_profile = dict(user_context.get("nutrition_profile") or {})
-    preferred_lang = str(user_context.get("preferred_language") or "").lower()
-    p_consumed = daily_protein.get("consumed_g", 0)
-    p_target = daily_protein.get("target_g") or nutrition_profile.get("protein_target_g") or nutrition_profile.get("daily_protein") or 124
-
-    if preferred_lang == "de":
-        expected_status = f"Du hast heute {p_consumed}g deines {p_target}g Ziels erreicht."
-    elif preferred_lang == "hi":
-        expected_status = f"आपने आज अपने {p_target}g लक्ष्य में से {p_consumed}g प्राप्त कर लिया है।"
-    else:
-        expected_status = f"You have hit {p_consumed}g of your {p_target}g target today."
+    expected_status = _nutrition_protein_status_sentence(user_context)
 
     if expected_status in reply:
         return reply
@@ -457,6 +479,21 @@ def _ensure_nutrition_protein_status(reply: str, *, user_context: dict[str, obje
         return pattern.sub(f"{expected_status} ", reply, count=1)
 
     return f"{expected_status}\n\n{reply.lstrip()}"
+
+
+def postprocess_coach_victor_reply(
+    reply: str,
+    *,
+    user_context: dict[str, object] | None,
+    last_user_message: str,
+) -> str:
+    processed = _redact_identity_statement(reply or "", user_context=user_context)
+    processed = _ensure_nutrition_protein_status(
+        processed,
+        user_context=user_context,
+        last_user_message=last_user_message,
+    )
+    return processed
 
 
 def generate_coach_victor_reply(
@@ -483,18 +520,18 @@ def generate_coach_victor_reply(
     if settings.anthropic_api_key:
         reply = _generate_anthropic_reply(messages, system_prompt=system_prompt)
         if reply:
-            reply = _ensure_nutrition_protein_status(reply, user_context=user_context, last_user_message=last_user_message)
+            reply = postprocess_coach_victor_reply(reply, user_context=user_context, last_user_message=last_user_message)
             return CoachVictorResult(reply=reply)
 
     if settings.openai_api_key:
         reply = _generate_openai_reply(messages, system_prompt=system_prompt)
         if reply:
-            reply = _ensure_nutrition_protein_status(reply, user_context=user_context, last_user_message=last_user_message)
+            reply = postprocess_coach_victor_reply(reply, user_context=user_context, last_user_message=last_user_message)
             return CoachVictorResult(reply=reply)
 
     # Fallback to intelligent deterministic coach reply
     fallback = _generate_intelligent_fallback_reply(messages, user_context=user_context)
-    fallback = _ensure_nutrition_protein_status(fallback, user_context=user_context, last_user_message=last_user_message)
+    fallback = postprocess_coach_victor_reply(fallback, user_context=user_context, last_user_message=last_user_message)
     return CoachVictorResult(reply=fallback)
 
 
@@ -563,43 +600,82 @@ async def generate_coach_victor_stream(
         user_context=user_context,
         recent_messages=recent_messages or messages,
     )
+    protein_prefix = _nutrition_protein_status_sentence(user_context) if _is_nutrition_query(last_user_message) else ""
+    protein_prefix_sent = False
+    identity_statement = _identity_statement_from_context(user_context)
+    stream_hold_chars = max(len(identity_statement) - 1, 0) if identity_statement else 0
+
+    async def emit_postprocessed_text(text: str, *, skip_leading_protein: bool = False) -> AsyncIterator[str]:
+        processed = postprocess_coach_victor_reply(
+            text,
+            user_context=user_context,
+            last_user_message=last_user_message,
+        )
+        if skip_leading_protein and protein_prefix and processed.startswith(protein_prefix):
+            processed = processed[len(protein_prefix):].lstrip()
+        words = processed.split(" ")
+        for idx, word in enumerate(words):
+            space = " " if idx < len(words) - 1 else ""
+            yield f"{word}{space}"
+            await asyncio.sleep(0.012)
 
     if settings.anthropic_api_key:
         queue: asyncio.Queue[str | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
 
+        def _safe_queue_put(value: str | None) -> None:
+            try:
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(queue.put_nowait, value)
+            except RuntimeError:
+                pass
+
         def _worker():
             try:
                 for token in _stream_anthropic_sync(messages, system_prompt):
-                    loop.call_soon_threadsafe(queue.put_nowait, token)
+                    _safe_queue_put(token)
             except Exception:
                 pass
             finally:
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                _safe_queue_put(None)
 
         worker_thread = threading.Thread(target=_worker, daemon=True)
         worker_thread.start()
 
         try:
             first_chunk = await asyncio.wait_for(queue.get(), timeout=1.8)
+            if protein_prefix:
+                yield f"{protein_prefix}\n\n"
+                protein_prefix_sent = True
             if first_chunk:
-                yield first_chunk
+                pending = first_chunk
+                if stream_hold_chars <= 0:
+                    safe_chunk = _redact_identity_statement(pending, user_context=user_context)
+                    if safe_chunk:
+                        yield safe_chunk
+                    pending = ""
                 while True:
                     chunk = await queue.get()
                     if chunk is None:
                         break
-                    yield chunk
+                    pending += chunk
+                    if len(pending) > stream_hold_chars:
+                        emit_len = len(pending) - stream_hold_chars
+                        safe_chunk = _redact_identity_statement(pending[:emit_len], user_context=user_context)
+                        if safe_chunk:
+                            yield safe_chunk
+                        pending = pending[emit_len:]
+                tail = _redact_identity_statement(pending, user_context=user_context)
+                if tail:
+                    yield tail
                 return
         except asyncio.TimeoutError:
             pass
 
     # Instant deterministic fallback
     fallback = _generate_intelligent_fallback_reply(messages, user_context=user_context)
-    words = fallback.split(" ")
-    for idx, word in enumerate(words):
-        space = " " if idx < len(words) - 1 else ""
-        yield f"{word}{space}"
-        await asyncio.sleep(0.012)
+    async for chunk in emit_postprocessed_text(fallback, skip_leading_protein=protein_prefix_sent):
+        yield chunk
 
 
 def _generate_openai_reply(messages: list[dict[str, str]], *, system_prompt: str) -> str | None:

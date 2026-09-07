@@ -272,7 +272,22 @@ def _build_comeback_message(day: int, usage: dict[str, int]) -> tuple[str, str]:
     return ("Final comeback offer", "This is your final reminder to return and keep building your Victory routine before your momentum goes cold.")
 
 
-def _personalize_comeback_message(user: dict, title: str, body: str) -> tuple[str, str]:
+def _is_gold_or_above(user: dict) -> bool:
+    tier = str(user.get("subscription_tier") or user.get("subscription_plan") or "").strip().upper()
+    return tier in {"GOLD", "PLATINUM", "INNER_CIRCLE", "INNER CIRCLE"}
+
+
+def _identity_sentence(identity_statement: str, suffix: str) -> str:
+    statement = str(identity_statement or "")
+    separator = " " if statement.rstrip().endswith((".", "!", "?")) else ". "
+    return f"{statement}{separator}{suffix}"
+
+
+def _personalize_comeback_message(user: dict, title: str, body: str, *, day: int | None = None) -> tuple[str, str]:
+    identity_statement = str(user.get("identity_statement") or "")
+    if day in {3, 7} and _is_gold_or_above(user) and identity_statement.strip():
+        return "Your plan is still here", _identity_sentence(identity_statement, "Your plan is still here.")
+
     motivation_statement = str(user.get("motivation_statement") or "").strip()
     if not motivation_statement:
         return title, body
@@ -308,7 +323,7 @@ async def _send_comeback_flow(now: datetime) -> int:
         due_days = [day for day in COMEBACK_DAYS if day <= elapsed_days and day not in sent_days]
         for day in due_days:
             title, body = _build_comeback_message(day, usage)
-            title, body = _personalize_comeback_message(user, title, body)
+            title, body = _personalize_comeback_message(user, title, body, day=day)
             route = "/plan" if day in {14, 30} else "/(tabs)"
             await notify_user(
                 users_collection,

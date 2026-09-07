@@ -3290,6 +3290,7 @@ def _build_strength_workout_completion_png(
     completed_day: str = "",
     full_plan: bool = False,
     duration_seconds: int = 0,
+    identity_statement: str = "",
 ) -> tuple[bytes, str]:
     _require_pillow()
     progress_by_day = {item.day: item for item in plan.progress}
@@ -3368,10 +3369,17 @@ def _build_strength_workout_completion_png(
         draw.text((bx + (box_w - (box[2] - box[0])) / 2, 930), label, font=small_font, fill=white)
         value_box = draw.textbbox((0, 0), value, font=heading_font)
         draw.text((bx + (box_w - (value_box[2] - value_box[0])) / 2, 962), value, font=heading_font, fill=color)
+    identity_text = str(identity_statement or "").strip()
     draw.rounded_rectangle((140, 1090, width - 140, 1180), radius=28, fill="#00C5F0")
     member = str(user_name or "Victory Member").upper()
     member_box = draw.textbbox((0, 0), member, font=section_font)
     draw.text(((width - (member_box[2] - member_box[0])) / 2, 1120), member, font=section_font, fill="#06131D")
+    if identity_text:
+        identity_lines = _wrap_report_text(draw, identity_text, body_font, width - 280)[:2]
+        identity_y = 1204
+        for line in identity_lines:
+            center_text(identity_y, line, body_font, "#F8D36B")
+            identity_y += 28
     center_text(1245, "VICTORY-FITNESS.APP", section_font, "#B1BDCA")
     output = BytesIO()
     image.save(output, format="PNG", optimize=True)
@@ -3380,6 +3388,7 @@ def _build_strength_workout_completion_png(
         "Victory Fitness",
         f"{'Custom strength plan' if full_plan else day_name} completed by {user_name or 'Victory Member'}",
         f"Plan progress: {completed_days}/{total_days} days | Exercises: {completed_exercises}/{max(total_exercises, completed_exercises or 1)}",
+        *([identity_text] if identity_text else []),
     ])
     return output.getvalue(), share_message
 

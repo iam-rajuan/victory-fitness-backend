@@ -92,6 +92,38 @@ def build_post_workout_upsell_message(user: dict, workout_num: int | None = None
     return title, message
 
 
+def _is_gold_or_above(user: dict) -> bool:
+    tier = str(user.get("subscription_tier") or user.get("subscription_plan") or "").strip().upper()
+    return tier in {"GOLD", "PLATINUM", "INNER_CIRCLE", "INNER CIRCLE"}
+
+
+def _identity_sentence(identity_statement: str, suffix: str) -> str:
+    statement = str(identity_statement or "")
+    separator = " " if statement.rstrip().endswith((".", "!", "?")) else ". "
+    return f"{statement}{separator}{suffix}"
+
+
+def build_personalized_workout_reminder_copy(user: dict, fallback_title: str, fallback_message: str) -> tuple[str, str, str] | None:
+    trigger_context = str(user.get("training_trigger_context") or "").strip()
+    trigger_action = str(user.get("training_trigger_action") or "").strip()
+    if trigger_context and trigger_action:
+        return (
+            "Your training trigger is ready",
+            f"When {trigger_context}? That means — {trigger_action}.",
+            "training_trigger",
+        )
+
+    identity_statement = str(user.get("identity_statement") or "")
+    if _is_gold_or_above(user) and identity_statement.strip():
+        return (
+            fallback_title or "Your plan is ready",
+            _identity_sentence(identity_statement, "Your plan is ready."),
+            "identity_statement",
+        )
+
+    return None
+
+
 async def ensure_notification_templates() -> list[dict[str, Any]]:
     if not _is_collection_available(app_content_collection):
         return [dict(item) for item in DEFAULT_NOTIFICATION_TEMPLATES]
@@ -128,6 +160,11 @@ async def replace_notification_templates(items: list[dict[str, Any]]) -> None:
 
 
 async def resolve_notification_variant(user: dict, notification_type: str, fallback_title: str, fallback_message: str) -> tuple[str, str, str]:
+    if notification_type == "workout_reminder":
+        personalized = build_personalized_workout_reminder_copy(user, fallback_title, fallback_message)
+        if personalized:
+            return personalized
+
     templates = await list_notification_templates()
     template = next((item for item in templates if str(item.get("type") or "").strip() == notification_type), None)
     if not template:

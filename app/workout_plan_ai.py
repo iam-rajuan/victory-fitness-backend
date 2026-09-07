@@ -41,6 +41,75 @@ class VideoWorkoutPlanInput:
     language: str = "en"
 
 
+KNEE_AGGRAVATING_TERMS = [
+    "squat", "lunge", "leg press", "leg extension", "step-up", "step up",
+    "box jump", "jump squat", "pistol", "split squat", "bulgarian",
+]
+SHOULDER_AGGRAVATING_TERMS = [
+    "overhead press", "military press", "incline press", "upright row",
+    "arnold press", "behind neck", "dip",
+]
+LOWER_BACK_AGGRAVATING_TERMS = [
+    "back squat", "good morning", "heavy deadlift", "deficit deadlift",
+    "barbell row", "pendlay row",
+]
+
+
+def _replacement_for_injury(exercise_name: str, injury_flags: list[str]) -> str | None:
+    name = str(exercise_name or "").lower()
+    flags = [str(flag).lower() for flag in injury_flags if str(flag).strip()]
+    if "knee" in flags and any(term in name for term in KNEE_AGGRAVATING_TERMS):
+        return "Romanian Deadlift" if any(term in name for term in ["squat", "press", "step", "jump"]) else "Glute Bridge"
+    if "shoulder" in flags and any(term in name for term in SHOULDER_AGGRAVATING_TERMS):
+        return "Cable Face Pull"
+    if "lower_back" in flags and any(term in name for term in LOWER_BACK_AGGRAVATING_TERMS):
+        return "Chest-Supported Row"
+    return None
+
+
+def sanitize_workout_plan_for_injuries(plan: dict, injury_flags: list[str]) -> tuple[dict, bool]:
+    if not plan or not isinstance(plan, dict):
+        return plan, False
+    flags = [str(f).lower() for f in injury_flags if str(f).strip()]
+    if not flags:
+        return plan, False
+
+    modified = False
+
+    def sanitize_exercises(exercises: list) -> list:
+        nonlocal modified
+        sanitized = []
+        for ex in exercises or []:
+            if not isinstance(ex, dict):
+                sanitized.append(ex)
+                continue
+            replacement = _replacement_for_injury(str(ex.get("name") or ""), flags)
+            if replacement:
+                ex = {**ex, "name": replacement}
+                if "type" in ex:
+                    ex["type"] = "Compound" if replacement in {"Romanian Deadlift", "Glute Bridge"} else "Accessory"
+                modified = True
+            sanitized.append(ex)
+        return sanitized
+
+    if isinstance(plan.get("exercises"), list):
+        plan["exercises"] = sanitize_exercises(plan.get("exercises") or [])
+    for section in plan.get("sections", []) or []:
+        if isinstance(section, dict) and isinstance(section.get("exercises"), list):
+            section["exercises"] = sanitize_exercises(section.get("exercises") or [])
+
+    for day in plan.get("days", []) or []:
+        if not isinstance(day, dict):
+            continue
+        if isinstance(day.get("exercises"), list):
+            day["exercises"] = sanitize_exercises(day.get("exercises") or [])
+        for section in day.get("sections", []) or []:
+            if isinstance(section, dict) and isinstance(section.get("exercises"), list):
+                section["exercises"] = sanitize_exercises(section.get("exercises") or [])
+
+    return plan, modified
+
+
 def _normalize_strength_goal(goal: str) -> str:
     value = str(goal or "").strip().upper()
     goal_map = {
@@ -63,17 +132,8 @@ def _normalize_strength_split(split: str) -> str:
 
 
 def _sanitize_plan_injuries(plan: dict, injury_flags: list[str]) -> dict:
-    if not plan or not isinstance(plan, dict) or "days" not in plan:
-        return plan
-    flags = [str(f).lower() for f in injury_flags if str(f).strip()]
-    if "knee" not in flags:
-        return plan
-    for day in plan.get("days", []):
-        for ex in day.get("exercises", []):
-            name = str(ex.get("name") or "").lower()
-            if any(k in name for k in ["squat", "lunge", "leg press", "leg extension"]):
-                ex["name"] = "Romanian Deadlift" if ("squat" in name or "press" in name) else "Lying Hamstring Curl"
-    return plan
+    sanitized, _ = sanitize_workout_plan_for_injuries(plan, injury_flags)
+    return sanitized
 
 
 def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
@@ -94,8 +154,8 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
             safe_day = []
             for ex in day_exercises:
                 ex_name = ex["name"]
-                if any(k in ex_name.lower() for k in ["squat", "lunge", "leg press", "leg extension"]):
-                    alt_name = "Romanian Deadlift" if ("squat" in ex_name.lower() or "press" in ex_name.lower()) else "Lying Hamstring Curl"
+                alt_name = _replacement_for_injury(ex_name, injury_list)
+                if alt_name:
                     safe_day.append({**ex, "name": alt_name, "type": "Compound" if "Deadlift" in alt_name else "Isolation"})
                 else:
                     safe_day.append(ex)
@@ -245,7 +305,7 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
     injury_line = ""
     if "knee" in injury_list:
         injury_line = (
-            "- CRITICAL INJURY GUARDRAIL: User has active KNEE PAIN. You MUST NOT include any squats, lunges, leg press, or leg extensions. "
+            "- CRITICAL INJURY GUARDRAIL: User has active KNEE PAIN. You MUST NOT include squats, lunges, leg press, leg extensions, step-ups, split squats, box jumps, jump squats, or pistol squats. "
             "Prescribe only knee-safe posterior chain movements (e.g. Romanian Deadlift, Hip Thrust, Glute Bridge, Hamstring Curls, Calf Raises) or core/upper movements.\n"
         )
     elif injury_list:
