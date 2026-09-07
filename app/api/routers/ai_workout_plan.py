@@ -604,31 +604,29 @@ async def workout_strength_plan_delete_latest(
     return {"status": "success", "message": "Strength workout plan deleted"}
 
 @router.delete("/ai/workout-plan/strength/{plan_id}")
-
 async def workout_strength_plan_delete(
-
     plan_id: str,
-
     user: dict = Depends(_require_workout_plan_access_user),
-
 ) -> dict[str, str]:
-
-    if not ObjectId.is_valid(plan_id):
-
-        raise HTTPException(status_code=404, detail="Strength workout plan not found")
-
-    record = await strength_workout_plans_collection.find_one(
-
-        {"_id": ObjectId(plan_id), "user_id": str(user["_id"])},
-
-    )
-
+    user_id_str = str(user["_id"])
+    record = None
+    if ObjectId.is_valid(plan_id):
+        record = await strength_workout_plans_collection.find_one(
+            {"_id": ObjectId(plan_id), "user_id": user_id_str},
+        )
     if not record:
-
+        record = await strength_workout_plans_collection.find_one(
+            {"user_id": user_id_str, "plan.summary": plan_id},
+        )
+    if not record and (plan_id == "latest" or not ObjectId.is_valid(plan_id)):
+        record = await strength_workout_plans_collection.find_one(
+            {"user_id": user_id_str},
+            sort=[("created_at", -1)],
+        )
+    if not record:
         raise HTTPException(status_code=404, detail="Strength workout plan not found")
 
     await strength_workout_plans_collection.delete_one({"_id": record["_id"]})
-
     return {"status": "success", "message": "Strength workout plan deleted"}
 
 @router.post("/ai/workout-plan/video", response_model=VideoWorkoutPlanResponse)
