@@ -802,7 +802,7 @@ STANDARD_NUTRITION_PLAN_MODE = "standard_v1"
 
 PROGRESSIVE_NUTRITION_PLAN_MODE = "progressive_v2"
 
-SUBSCRIPTION_TIERS = ("NONE", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
+SUBSCRIPTION_TIERS = ("NONE", "GOLD_BETA", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE")
 
 SUBSCRIPTION_ACCESS = {
 
@@ -7759,26 +7759,19 @@ def _serialize_support_message_record(record: dict) -> SupportMessageResponse:
     )
 
 def _get_allowed_community_audiences(user: dict) -> list[str]:
-
     if bool(user.get("is_admin")):
-
         return ["ALL", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"]
-
     membership = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
-
+    if not membership or membership == "NONE":
+        membership = "SILVER"
     hierarchy = {
-
         "SILVER": ["ALL", "SILVER"],
-
+        "GOLD_BETA": ["ALL", "SILVER", "GOLD"],
         "GOLD": ["ALL", "SILVER", "GOLD"],
-
         "PLATINUM": ["ALL", "SILVER", "GOLD", "PLATINUM"],
-
         "INNER_CIRCLE": ["ALL", "SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"],
-
     }
-
-    return hierarchy.get(membership, [])
+    return hierarchy.get(membership, ["ALL", "SILVER"])
 
 def _get_community_post_audience_for_user(user: dict) -> str:
 
@@ -7966,7 +7959,8 @@ async def _serialize_community_post_records(
 
         allowed_audiences = set(_get_allowed_community_audiences(viewer_user)) if viewer_user else {"ALL"}
         audience = str(serialized.get("audience") or "ALL").upper()
-        is_locked = bool(viewer_user) and not bool(viewer_user.get("is_admin")) and audience not in allowed_audiences
+        is_author = bool(viewer_user_id and author_id and viewer_user_id == author_id)
+        is_locked = bool(viewer_user) and not bool(viewer_user.get("is_admin")) and not is_author and audience not in allowed_audiences
         serialized["is_locked"] = is_locked
         serialized["is_admin_broadcast"] = serialized.get("author_role") == "admin" or bool(record.get("is_admin_broadcast"))
 
