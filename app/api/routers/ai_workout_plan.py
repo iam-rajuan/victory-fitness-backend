@@ -100,6 +100,7 @@ async def workout_strength_plan_completion_report(
     plan_id: str,
     day: str = "",
     full_plan: bool = False,
+    duration_seconds: int = 0,
     user: dict = Depends(_require_workout_plan_access_user),
 ) -> StrengthWorkoutPlanCompletionReportResponse:
     if not ObjectId.is_valid(plan_id):
@@ -114,6 +115,7 @@ async def workout_strength_plan_completion_report(
         str(user.get("name") or "Victory Member"),
         day,
         full_plan=full_plan and plan_is_complete,
+        duration_seconds=duration_seconds,
     )
     return StrengthWorkoutPlanCompletionReportResponse(
         file_name="victory-fitness-strength-completion.png",
@@ -122,35 +124,153 @@ async def workout_strength_plan_completion_report(
         share_message=share_message,
     )
 
+def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict) -> StrengthWorkoutPlanInput:
+    onboarding = dict(user.get("onboarding") or {})
+    anamnese = dict(onboarding.get("anamnese") or {})
+    personal_profile = dict(onboarding.get("personalProfile") or {})
+
+    # Goal
+    goal = str(payload.goal or "").strip()
+    if not goal:
+        raw_goal = str(anamnese.get("primaryGoal") or user.get("fitness_goal") or "").strip().lower()
+        if any(w in raw_goal for w in ["muscle", "hypertrophy", "build"]):
+            goal = "Hypertrophy"
+        elif any(w in raw_goal for w in ["fat", "lose", "weight loss", "recomp", "tone"]):
+            goal = "Body Recomp"
+        elif any(w in raw_goal for w in ["strength", "powerlift"]):
+            goal = "Pure Strength"
+        elif any(w in raw_goal for w in ["speed", "athletic", "endurance", "stamina"]):
+            goal = "Power & Speed"
+        else:
+            goal = "Hypertrophy"
+
+    # Level
+    level = str(payload.level or "").strip()
+    if not level:
+        raw_level = str(anamnese.get("activityLevel") or user.get("fitness_level") or "").strip().lower()
+        if any(w in raw_level for w in ["sedentary", "light", "beginner"]):
+            level = "Beginner"
+        elif any(w in raw_level for w in ["very", "advanced", "athlete"]):
+            level = "Advanced"
+        else:
+            level = "Intermediate"
+
+    # Days per week / Frequency
+    freq = str(payload.frequency or "").strip()
+    if not freq:
+        raw_days = str(anamnese.get("daysPerWeek") or "").strip()
+        m = re.search(r"(\d+)", raw_days)
+        freq = m.group(1) if m else "4"
+    try:
+        freq_int = max(3, min(5, int(freq)))
+    except Exception:
+        freq_int = 4
+    freq = str(freq_int)
+
+    # Days
+    days = [str(item).strip() for item in (payload.days or []) if str(item).strip()]
+    if not days:
+        default_days_map = {
+            3: ["Mon", "Wed", "Fri"],
+            4: ["Mon", "Tue", "Thu", "Fri"],
+            5: ["Mon", "Tue", "Wed", "Fri", "Sat"],
+        }
+        days = default_days_map.get(freq_int, ["Mon", "Tue", "Thu", "Fri"])
+
+    # Split
+    split = str(payload.split or "").strip()
+    if not split:
+        if freq_int <= 3:
+            split = "Full Body"
+        elif freq_int == 4:
+            split = "Upper / Lower"
+        else:
+            split = "Push Pull Legs"
+
+    # Equipment: strictly check onboarding equipmentAccess
+    equipment = [str(item).strip() for item in (payload.equipment or []) if str(item).strip()]
+    if not equipment:
+        raw_equip = str(anamnese.get("equipmentAccess") or user.get("equipmentAccess") or "").strip().lower()
+        if any(w in raw_equip for w in ["no equipment", "none", "bodyweight", "bodyweight only", "outdoors", "outdoor"]):
+            equipment = ["No equipment"]
+        elif any(w in raw_equip for w in ["dumbbells", "kettlebells", "home gym", "bands"]):
+            equipment = ["Dumbbells", "Bands"]
+        elif any(w in raw_equip for w in ["gym", "full gym", "barbell"]):
+            equipment = ["Gym", "Barbell", "Dumbbells", "Cables", "Machines"]
+        else:
+            equipment = ["No equipment"]
+
+    # Weight
+    weight = str(payload.weight or "").strip()
+    if not weight:
+        weight = str(personal_profile.get("weight") or user.get("weight") or "75").strip()
+
+    # Height
+    height = str(payload.height or "").strip()
+    if not height:
+        height = str(personal_profile.get("height") or user.get("height") or "175").strip()
+
+    # Age
+    age = str(payload.age or "").strip()
+    if not age:
+        age = str(personal_profile.get("age") or user.get("age") or "28").strip()
+
+    # Gender
+    gender = str(payload.gender or "").strip()
+    if not gender:
+        gender = str(personal_profile.get("gender") or user.get("gender") or "Other").strip()
+
+    bench = str(payload.bench or "").strip()
+    squat = str(payload.squat or "").strip()
+    deadlift = str(payload.deadlift or "").strip()
+
+    language = str(user.get("preferred_language") or "").strip().lower() or "en"
+
+    return StrengthWorkoutPlanInput(
+        goal=goal,
+        level=level,
+        split=split,
+        height=height,
+        gender=gender,
+        bench=bench,
+        squat=squat,
+        deadlift=deadlift,
+        equipment=equipment,
+        frequency=freq,
+        days=days,
+        age=age,
+        weight=weight,
+        language=language,
+    )
+
+
 @router.post("/ai/workout-plan/strength", response_model=StrengthWorkoutPlanResponse)
 async def workout_strength_plan(
     payload: StrengthWorkoutPlanRequest,
     user: dict = Depends(_require_workout_plan_access_user),
 ) -> StrengthWorkoutPlanResponse:
-    plan_data = generate_strength_workout_plan(
-        StrengthWorkoutPlanInput(
-            goal=str(payload.goal or ""),
-            level=str(payload.level or ""),
-            split=str(payload.split or ""),
-            height=str(payload.height or ""),
-            gender=str(payload.gender or ""),
-            bench=str(payload.bench or ""),
-            squat=str(payload.squat or ""),
-            deadlift=str(payload.deadlift or ""),
-            equipment=[str(item) for item in payload.equipment],
-            frequency=str(payload.frequency or ""),
-            days=[str(item) for item in payload.days],
-            age=str(payload.age or ""),
-            weight=str(payload.weight or ""),
-            language=str(user.get("preferred_language") or "").strip().lower() or "en",
-        )
-    )
+    hydrated_input = _hydrate_strength_plan_input(payload, user)
+    plan_data = generate_strength_workout_plan(hydrated_input)
 
     created_at = datetime.now(timezone.utc)
     insert_result = await strength_workout_plans_collection.insert_one(
         {
             "user_id": str(user["_id"]),
-            "input": payload.model_dump(),
+            "input": {
+                "goal": hydrated_input.goal,
+                "level": hydrated_input.level,
+                "split": hydrated_input.split,
+                "height": hydrated_input.height,
+                "gender": hydrated_input.gender,
+                "bench": hydrated_input.bench,
+                "squat": hydrated_input.squat,
+                "deadlift": hydrated_input.deadlift,
+                "equipment": hydrated_input.equipment,
+                "frequency": hydrated_input.frequency,
+                "days": hydrated_input.days,
+                "age": hydrated_input.age,
+                "weight": hydrated_input.weight,
+            },
             "plan": plan_data,
             "progress": [],
             "created_at": created_at,
@@ -443,16 +563,17 @@ async def workout_strength_plan_progress_update(
 
             completed_exercise_ids = []
 
-    if payload.started is not None:
-
+    if payload.reset_timer:
+        day_progress["started"] = True
+        day_progress["started_at"] = payload.started_at or now
+    elif payload.started_at is not None:
+        day_progress["started"] = True
+        day_progress["started_at"] = payload.started_at
+    elif payload.started is not None:
         day_progress["started"] = bool(payload.started)
-
         if day_progress["started"]:
-
             day_progress["started_at"] = day_progress.get("started_at") or now
-
         elif not completed_exercise_ids and not completed_section_ids:
-
             day_progress["started_at"] = None
 
     completed_section_ids = [
@@ -467,16 +588,17 @@ async def workout_strength_plan_progress_update(
 
     is_completed = False
 
-    if valid_section_ids:
-
+    if payload.completed is not None and not payload.exercise_id and not payload.section_id:
+        is_completed = bool(payload.completed)
+    elif payload.exercise_id or payload.section_id:
+        # Toggling exercises or sections does not unilaterally terminate the active workout session.
+        # It stays in active session (completed = False) until the user explicitly marks the workout as completed.
+        is_completed = bool(day_progress.get("completed", False)) and bool(payload.completed)
+    elif valid_section_ids:
         is_completed = len(completed_section_ids) >= len(valid_section_ids)
-
     elif valid_exercise_ids:
-
         is_completed = len(completed_exercise_ids) >= len(valid_exercise_ids)
-
     elif payload.completed is not None:
-
         is_completed = bool(payload.completed)
 
     day_progress["completed_section_ids"] = completed_section_ids
@@ -484,6 +606,9 @@ async def workout_strength_plan_progress_update(
     day_progress["completed_exercise_ids"] = completed_exercise_ids
 
     day_progress["completed"] = is_completed
+
+    if payload.duration_seconds is not None:
+        day_progress["duration_seconds"] = int(payload.duration_seconds)
 
     if is_completed:
 
@@ -663,48 +788,77 @@ async def workout_strength_plan_delete(
     await strength_workout_plans_collection.delete_one({"_id": record["_id"]})
     return {"status": "success", "message": "Strength workout plan deleted"}
 
+def _hydrate_video_plan_input(payload: VideoWorkoutPlanRequest, user: dict) -> VideoWorkoutPlanInput:
+    onboarding = dict(user.get("onboarding") or {})
+    anamnese = dict(onboarding.get("anamnese") or {})
+
+    goal = str(payload.goal or "").strip()
+    if not goal:
+        raw_goal = str(anamnese.get("primaryGoal") or "").strip().lower()
+        if "muscle" in raw_goal or "build" in raw_goal:
+            goal = "1"
+        elif "fat" in raw_goal or "lose" in raw_goal or "recomp" in raw_goal:
+            goal = "2"
+        elif "endurance" in raw_goal or "speed" in raw_goal:
+            goal = "3"
+        else:
+            goal = "1"
+
+    level = str(payload.level or "").strip()
+    if not level:
+        raw_level = str(anamnese.get("activityLevel") or "").strip().lower()
+        if "sedentary" in raw_level or "beginner" in raw_level:
+            level = "1"
+        elif "advanced" in raw_level or "very" in raw_level:
+            level = "3"
+        else:
+            level = "2"
+
+    days = str(payload.days or "").strip()
+    if not days:
+        raw_days = str(anamnese.get("daysPerWeek") or "").strip()
+        m = re.search(r"(\d+)", raw_days)
+        d_val = int(m.group(1)) if m else 3
+        days = "1" if d_val <= 3 else "2" if d_val == 4 else "3" if d_val == 5 else "4"
+
+    time = str(payload.time or "").strip()
+    if not time:
+        raw_time = str(anamnese.get("timePerSession") or "").strip()
+        m = re.search(r"(\d+)", raw_time)
+        t_val = int(m.group(1)) if m else 30
+        time = "1" if t_val < 30 else "2" if t_val <= 45 else "3"
+
+    equipment = str(payload.equipment or "").strip()
+    if not equipment:
+        equipment = str(anamnese.get("equipmentAccess") or "No equipment").strip()
+
+    duration = str(payload.duration or "4 weeks").strip()
+    notes = str(payload.notes or "").strip()
+    language = str(user.get("preferred_language") or "").strip().lower() or "en"
+
+    return VideoWorkoutPlanInput(
+        goal=goal,
+        level=level,
+        days=days,
+        duration=duration,
+        time=time,
+        notes=notes,
+        equipment=equipment,
+        language=language,
+    )
+
+
 @router.post("/ai/workout-plan/video", response_model=VideoWorkoutPlanResponse)
-
 async def workout_video_plan(
-
     payload: VideoWorkoutPlanRequest,
-
-    _: dict = Depends(_require_workout_plan_access_user),
-
+    user: dict = Depends(_require_workout_plan_access_user),
 ) -> VideoWorkoutPlanResponse:
-
     records = await workouts_collection.find(
-
         {"visibility": "Published"},
-
         sort=[("created_at", -1), ("_id", -1)],
-
     ).to_list(length=50)
 
     workouts = [_serialize_public_workout_record(record) for record in records]
-
-    plan = generate_video_workout_plan(
-
-        VideoWorkoutPlanInput(
-
-            goal=str(payload.goal or ""),
-
-            level=str(payload.level or ""),
-
-            days=str(payload.days or ""),
-
-            duration=str(payload.duration or ""),
-
-            time=str(payload.time or ""),
-
-            notes=str(payload.notes or ""),
-
-            equipment=str(payload.equipment or ""),
-
-        ),
-
-        workouts,
-
-    )
-
+    hydrated_input = _hydrate_video_plan_input(payload, user)
+    plan = generate_video_workout_plan(hydrated_input, workouts)
     return VideoWorkoutPlanResponse(**plan)

@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from urllib import error, request
 
@@ -70,7 +71,6 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
     active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
     title_cycle = _strength_title_cycle(input_data.split, input_data.goal)
     exercise_pool = _strength_exercise_pool(input_data.goal, input_data.equipment)
-    est_time = _strength_time_label(frequency, input_data.level)
     intensity = _strength_intensity_label(input_data.goal, input_data.level)
 
     days: list[dict] = []
@@ -92,13 +92,21 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
 
         working_sets = sum(int(item["sets"]) for item in exercises)
         average_weight = max(_safe_int(input_data.weight, 75, minimum=40, maximum=180), 40)
-        volume_value = working_sets * average_weight * 8
+        equip_type = _classify_equipment(input_data.equipment)
+        if equip_type == "bodyweight_only":
+            volume_value = working_sets * 12 # total bodyweight reps
+            volume_label = f"{volume_value} BW Reps"
+        else:
+            volume_value = working_sets * average_weight * 8
+            volume_label = f"{volume_value:,} kg"
+
+        day_est_time = _calculate_day_est_time(exercises)
         days.append(
             {
                 "day": day_name,
                 "title": session_title,
-                "est_time": est_time,
-                "volume": f"{volume_value:,} kg",
+                "est_time": day_est_time,
+                "volume": volume_label,
                 "intensity": intensity,
                 "exercises": exercises,
             }
@@ -213,6 +221,8 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- Each exercise needs: id, name, sets, reps, rest, weight, type.\n"
         "- Weight should be realistic based on the user's lifts when provided, otherwise estimate conservatively.\n"
         "- Split, goal, experience level, equipment, and frequency must visibly affect the plan.\n"
+        "- STRICT EQUIPMENT CONSTRAINT: If equipment includes 'no equipment', 'bodyweight', or 'outdoors', you MUST ONLY prescribe calisthenics/bodyweight exercises. NEVER include Barbell, Dumbbell, Cable, Machine, or Leg Press lifts. Weight must be 'Bodyweight'.\n"
+        "- If equipment is 'home gym' or 'dumbbells', use only dumbbells and bodyweight. NEVER prescribe barbells or cable machines.\n" 
         "- Keep exercise ids stable and machine-friendly.\n"
         f"{lang_line}"
         f"User inputs: {json.dumps(input_data.__dict__, ensure_ascii=False)}"
@@ -390,25 +400,107 @@ def _strength_title_cycle(split: str, goal: str) -> list[str]:
     return titles
 
 
+def _strength_intensity_label(goal: str, level: str) -> str:
+    norm_goal = _normalize_strength_goal(goal)
+    norm_level = str(level or "").strip().lower()
+    if norm_goal == "PURE STRENGTH":
+        return "RPE 8.5 (High)"
+    if norm_goal == "POWER & SPEED":
+        return "RPE 8.0 (Dynamic)"
+    if norm_level == "advanced":
+        return "RPE 8.5 (High)"
+    if norm_level == "beginner":
+        return "RPE 7.0 (Controlled)"
+    return "RPE 7.5 (Moderate)"
+
+
+def _classify_equipment(equipment: list[str]) -> str:
+    """Classifies user equipment into: 'bodyweight_only', 'dumbbells_only', or 'full_gym'."""
+    if not equipment:
+        return "bodyweight_only"
+    normalized = {str(item).strip().lower() for item in equipment if str(item).strip()}
+    if not normalized:
+        return "bodyweight_only"
+
+    has_no_equip = any(term in normalized for term in ["no equipment", "none", "bodyweight", "bodyweight only", "outdoors"])
+    has_gym_equip = any(term in normalized for term in ["barbell", "squat_rack", "cable", "machines", "smith", "crossfit", "full gym", "gym"])
+    has_dumbbells = any(term in normalized for term in ["dumbbells", "kettlebells", "home gym", "bands", "bench"])
+
+    if has_no_equip and not has_gym_equip and not has_dumbbells:
+        return "bodyweight_only"
+    if has_gym_equip:
+        return "full_gym"
+    if has_dumbbells:
+        return "dumbbells_only"
+    return "bodyweight_only"
+
+
+def _calculate_day_est_time(exercises: list[dict]) -> str:
+    """Calculates realistic workout duration based on sets, rep cadence (35s), and rest seconds."""
+    total_sec = 0
+    for ex in exercises:
+        sets = max(int(ex.get("sets") or 3), 1)
+        rest_str = str(ex.get("rest") or "60s").strip().lower()
+        m = re.search(r"(\d+)", rest_str)
+        r_sec = int(m.group(1)) * 60 if m and "min" in rest_str else int(m.group(1)) if m else 60
+        total_sec += (sets * 35) + (max(0, sets - 1) * r_sec)
+    # Total minutes + 5-7 min warm-up & cool-down
+    mins = max(int((total_sec + 59) // 60) + 6, 25)
+    return f"{mins} min"
+
+
 def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]:
     normalized_goal = _normalize_strength_goal(goal)
-    bodyweight_only = "bodyweight" in {str(item).strip().lower() for item in equipment}
-    if bodyweight_only:
+    equip_type = _classify_equipment(equipment)
+
+    # 1. BODYWEIGHT / NO EQUIPMENT SPLIT
+    if equip_type == "bodyweight_only":
         return [
+            # Day 1: Full Body / Lower Focus
             [
-                {"name": "Tempo Squat", "sets": 4, "reps": "10-12", "rest": "75s", "type": "Compound"},
-                {"name": "Push-Up", "sets": 4, "reps": "8-15", "rest": "60s", "type": "Compound"},
+                {"name": "Bodyweight Tempo Squat", "sets": 4, "reps": "12-15", "rest": "60s", "type": "Compound"},
+                {"name": "Push-Up", "sets": 4, "reps": "10-15", "rest": "60s", "type": "Compound"},
                 {"name": "Reverse Lunge", "sets": 3, "reps": "10/side", "rest": "60s", "type": "Accessory"},
+                {"name": "Single-Leg Glute Bridge", "sets": 3, "reps": "12/side", "rest": "45s", "type": "Accessory"},
                 {"name": "Plank", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
             ],
+            # Day 2: Upper / Calisthenics Focus
             [
-                {"name": "Single-Leg Glute Bridge", "sets": 4, "reps": "12/side", "rest": "60s", "type": "Accessory"},
-                {"name": "Pike Push-Up", "sets": 4, "reps": "8-12", "rest": "60s", "type": "Compound"},
-                {"name": "Bodyweight Row", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Pike Push-Up", "sets": 4, "reps": "8-12", "rest": "75s", "type": "Compound"},
+                {"name": "Inverted Bodyweight Row", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Bulgarian Split Squat", "sets": 3, "reps": "10/side", "rest": "60s", "type": "Compound"},
+                {"name": "Chair / Bench Dips", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Accessory"},
                 {"name": "Hollow Hold", "sets": 3, "reps": "30-40s", "rest": "45s", "type": "Core"},
+            ],
+            # Day 3: Hypertrophy & Conditioning
+            [
+                {"name": "Jump Squat", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Diamond Push-Up", "sets": 3, "reps": "8-12", "rest": "60s", "type": "Compound"},
+                {"name": "Walking Lunge", "sets": 3, "reps": "12/side", "rest": "60s", "type": "Accessory"},
+                {"name": "Mountain Climber", "sets": 3, "reps": "30s", "rest": "45s", "type": "Core"},
             ],
         ]
 
+    # 2. HOME GYM / DUMBBELLS SPLIT
+    if equip_type == "dumbbells_only":
+        return [
+            [
+                {"name": "Dumbbell Goblet Squat", "sets": 4, "reps": "10-12", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Floor Press", "sets": 4, "reps": "8-12", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Romanian Deadlift", "sets": 3, "reps": "10-12", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Row", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Plank", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
+            ],
+            [
+                {"name": "Dumbbell Overhead Press", "sets": 4, "reps": "8-10", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Bulgarian Split Squat", "sets": 3, "reps": "8-10/side", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Chest Flye", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Accessory"},
+                {"name": "Dumbbell Lateral Raise", "sets": 3, "reps": "12-15", "rest": "45s", "type": "Isolation"},
+                {"name": "Russian Twist", "sets": 3, "reps": "20 total", "rest": "45s", "type": "Core"},
+            ],
+        ]
+
+    # 3. FULL GYM SPLIT
     if normalized_goal == "PURE STRENGTH":
         return [
             [
@@ -447,24 +539,28 @@ def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]
     ]
 
 
-def _strength_time_label(frequency: int, level: str) -> str:
-    base = 55 if str(level or "").upper() == "BEGINNER" else 65 if str(level or "").upper() == "INTERMEDIATE" else 75
-    if frequency >= 5:
-        base -= 5
-    return f"{base} min"
-
-
-def _strength_intensity_label(goal: str, level: str) -> str:
-    normalized_goal = _normalize_strength_goal(goal)
-    if normalized_goal == "PURE STRENGTH":
-        return "RPE 8.5"
-    if normalized_goal == "POWER & SPEED":
-        return "RPE 8.0"
-    return "RPE 7.5" if str(level or "").upper() == "BEGINNER" else "RPE 8.0"
-
-
 def _exercise_weight_label(exercise_name: str, input_data: StrengthWorkoutPlanInput) -> str:
     name = exercise_name.lower()
+    equip_type = _classify_equipment(input_data.equipment)
+
+    # If bodyweight only or exercise is bodyweight
+    if equip_type == "bodyweight_only" or any(bw_word in name for bw_word in [
+        "push-up", "pull-up", "bodyweight", "tempo squat", "lunge", "glute bridge",
+        "plank", "dip", "hold", "mountain climber", "burpee", "jump"
+    ]):
+        if "carry" in name or "plank" in name or "hold" in name:
+            return "-"
+        return "Bodyweight"
+
+    # If dumbbells only
+    if equip_type == "dumbbells_only" or "dumbbell" in name:
+        if "squat" in name or "deadlift" in name or "rdl" in name:
+            return "12-16kg DB"
+        if "press" in name or "row" in name:
+            return "10-14kg DB"
+        return "6-10kg DB"
+
+    # Full Gym Barbell / Machine Lifts
     if "bench" in name:
         value = _safe_int(input_data.bench, 60, minimum=20, maximum=250)
         return f"{max(int(round(value * 0.72)), 15)}kg"
@@ -482,6 +578,7 @@ def _exercise_weight_label(exercise_name: str, input_data: StrengthWorkoutPlanIn
         return "-"
     weight = _safe_int(input_data.weight, 75, minimum=40, maximum=180)
     return f"{max(int(round(weight * 0.45)), 10)}kg"
+
 
 
 def _video_training_days(days_value: str) -> list[str]:

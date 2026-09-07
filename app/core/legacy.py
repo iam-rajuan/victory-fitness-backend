@@ -1,10 +1,8 @@
 import asyncio
-
 import base64
-
 import inspect
-
 import json
+import math
 
 from io import BytesIO
 
@@ -3139,60 +3137,51 @@ def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlan
 
                 section_exercises = [dict(exercise) for exercise in section.get("exercises", []) if isinstance(exercise, dict)]
 
+                sec_exercises = section_exercises
+                calc_minutes = 0
+                for ex in sec_exercises:
+                    s = max(int(ex.get("sets") or 3), 1)
+                    r_str = str(ex.get("rest") or "60s").strip().lower()
+                    m = re.search(r"(\d+)", r_str)
+                    r_sec = int(m.group(1)) * 60 if m and "min" in r_str else int(m.group(1)) if m else 60
+                    calc_minutes += (s * 35) + (max(0, s - 1) * r_sec)
+                calculated_est = max(int(math.ceil(calc_minutes / 60.0)), 5) if sec_exercises else 6
+
                 normalized_sections.append(
-
                     {
-
                         "id": str(section.get("id") or "").strip() or f"{str(raw_day.get('day') or 'day').lower()}-section-{len(normalized_sections) + 1}",
-
                         "title": str(section.get("title") or "Workout Block").strip() or "Workout Block",
-
-                        "estimated_minutes": max(int(section.get("estimated_minutes") or 0), 0),
-
+                        "estimated_minutes": int(section.get("estimated_minutes") or 0) or calculated_est,
                         "exercises": section_exercises,
-
                     }
-
                 )
-
         if not normalized_sections:
-
             grouped_sections: dict[str, dict[str, Any]] = {}
-
             section_order: list[str] = []
-
             for index, exercise in enumerate(day_exercises):
-
                 exercise_type = str(exercise.get("type") or "work").strip() or "work"
-
                 section_key = re.sub(r"[^a-z0-9]+", "-", exercise_type.lower()).strip("-") or f"section-{index + 1}"
-
                 section_id = f"{str(raw_day.get('day') or 'day').lower()}-{section_key}"
-
                 if section_id not in grouped_sections:
-
                     grouped_sections[section_id] = {
-
                         "id": section_id,
-
                         "title": exercise_type.title(),
-
                         "estimated_minutes": 0,
-
                         "exercises": [],
-
                     }
-
                     section_order.append(section_id)
-
                 grouped_sections[section_id]["exercises"].append(exercise)
 
             for section_id in section_order:
-
                 section = grouped_sections[section_id]
-
-                section["estimated_minutes"] = max(len(section["exercises"]) * 6, 6)
-
+                total_sec = 0
+                for ex in section["exercises"]:
+                    s = max(int(ex.get("sets") or 3), 1)
+                    r_str = str(ex.get("rest") or "60s").strip().lower()
+                    m = re.search(r"(\d+)", r_str)
+                    r_sec = int(m.group(1)) * 60 if m and "min" in r_str else int(m.group(1)) if m else 60
+                    total_sec += (s * 35) + (max(0, s - 1) * r_sec)
+                section["estimated_minutes"] = max(int(math.ceil(total_sec / 60.0)), 5)
                 normalized_sections.append(section)
 
         normalized_days.append(
@@ -3255,6 +3244,8 @@ def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlan
 
                 "completed_at": item.get("completed_at"),
 
+                "duration_seconds": item.get("duration_seconds"),
+
             }
 
         )
@@ -3267,11 +3258,38 @@ def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlan
 
     return StrengthWorkoutPlanResponse(**plan_data)
 
+def _load_report_font(size: int, bold: bool = False) -> Any:
+    _require_pillow()
+    try:
+        font_name = "arialbd.ttf" if bold else "arial.ttf"
+        return ImageFont.truetype(font_name, size)
+    except Exception:
+        return ImageFont.load_default()
+
+def _wrap_report_text(draw: Any, text: str, font: Any, max_width: int) -> list[str]:
+    words = str(text or "").split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current: list[str] = []
+    for word in words:
+        trial = " ".join(current + [word])
+        box = draw.textbbox((0, 0), trial, font=font)
+        if box[2] - box[0] <= max_width or not current:
+            current.append(word)
+        else:
+            lines.append(" ".join(current))
+            current = [word]
+    if current:
+        lines.append(" ".join(current))
+    return lines
+
 def _build_strength_workout_completion_png(
     plan: StrengthWorkoutPlanResponse,
     user_name: str,
     completed_day: str = "",
     full_plan: bool = False,
+    duration_seconds: int = 0,
 ) -> tuple[bytes, str]:
     _require_pillow()
     progress_by_day = {item.day: item for item in plan.progress}
@@ -3328,12 +3346,28 @@ def _build_strength_workout_completion_png(
         draw.ellipse((154, row_y + 5, 168, row_y + 19), fill=cyan)
         draw.text((190, row_y), entry, font=body_font, fill=white if entries else muted)
         row_y += 34
-    for x, label, value, color in ((140, "PLAN DAYS", f"{completed_days}/{total_days}", cyan), (475, "EXERCISES", f"{completed_exercises}/{max(total_exercises, completed_exercises or 1)}", pink)):
-        draw.rounded_rectangle((x, 910, x + 285, 1030), radius=18, fill="#030606", outline="#27343A", width=2)
+    stat_items = [
+        ("PLAN DAYS", f"{completed_days}/{total_days}", cyan),
+        ("EXERCISES", f"{completed_exercises}/{max(total_exercises, completed_exercises or 1)}", pink),
+    ]
+    if duration_seconds > 0:
+        mins = duration_seconds // 60
+        secs = duration_seconds % 60
+        time_display = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+        stat_items.append(("TIME", time_display, "#10B981"))
+
+    total_w = width - 280
+    n_boxes = len(stat_items)
+    gap = 14
+    box_w = (total_w - (n_boxes - 1) * gap) // n_boxes
+    start_x = 140
+    for i, (label, value, color) in enumerate(stat_items):
+        bx = start_x + i * (box_w + gap)
+        draw.rounded_rectangle((bx, 910, bx + box_w, 1030), radius=18, fill="#030606", outline="#27343A", width=2)
         box = draw.textbbox((0, 0), label, font=small_font)
-        draw.text((x + (285 - (box[2] - box[0])) / 2, 930), label, font=small_font, fill=white)
+        draw.text((bx + (box_w - (box[2] - box[0])) / 2, 930), label, font=small_font, fill=white)
         value_box = draw.textbbox((0, 0), value, font=heading_font)
-        draw.text((x + (285 - (value_box[2] - value_box[0])) / 2, 962), value, font=heading_font, fill=color)
+        draw.text((bx + (box_w - (value_box[2] - value_box[0])) / 2, 962), value, font=heading_font, fill=color)
     draw.rounded_rectangle((140, 1090, width - 140, 1180), radius=28, fill="#00C5F0")
     member = str(user_name or "Victory Member").upper()
     member_box = draw.textbbox((0, 0), member, font=section_font)

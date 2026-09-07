@@ -1334,6 +1334,9 @@ class StrengthWorkoutPlanProgressUpdateRequest(BaseModel):
     exercise_id: str | None = Field(default=None, max_length=120)
     started: bool | None = None
     completed: bool | None = None
+    reset_timer: bool | None = None
+    started_at: datetime | None = None
+    duration_seconds: int | None = None
 
 
 class DashboardOverviewChartPoint(BaseModel):
@@ -2011,6 +2014,7 @@ class StrengthWorkoutPlanResponse(BaseModel):
         completed_exercise_ids: list[str] = Field(default_factory=list)
         started_at: datetime | None = None
         completed_at: datetime | None = None
+        duration_seconds: int | None = None
 
     plan_id: str | None = None
     summary: str
