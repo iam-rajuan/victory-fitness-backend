@@ -1,6 +1,6 @@
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib import error, request
 
 from .config import settings
@@ -26,6 +26,7 @@ class StrengthWorkoutPlanInput:
     age: str
     weight: str
     language: str = "en"
+    injury_flags: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -61,16 +62,46 @@ def _normalize_strength_split(split: str) -> str:
     return split_map.get(value, value)
 
 
+def _sanitize_plan_injuries(plan: dict, injury_flags: list[str]) -> dict:
+    if not plan or not isinstance(plan, dict) or "days" not in plan:
+        return plan
+    flags = [str(f).lower() for f in injury_flags if str(f).strip()]
+    if "knee" not in flags:
+        return plan
+    for day in plan.get("days", []):
+        for ex in day.get("exercises", []):
+            name = str(ex.get("name") or "").lower()
+            if any(k in name for k in ["squat", "lunge", "leg press", "leg extension"]):
+                ex["name"] = "Romanian Deadlift" if ("squat" in name or "press" in name) else "Lying Hamstring Curl"
+    return plan
+
+
 def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
     ai_plan = _generate_strength_workout_plan_with_ai(input_data)
     if _looks_like_strength_plan(ai_plan):
-        return ai_plan
+        return _sanitize_plan_injuries(ai_plan, getattr(input_data, "injury_flags", []))
 
     frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
     preferred_days = _normalize_preferred_days(input_data.days)
     active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
     title_cycle = _strength_title_cycle(input_data.split, input_data.goal)
     exercise_pool = _strength_exercise_pool(input_data.goal, input_data.equipment)
+
+    injury_list = [str(item).lower() for item in getattr(input_data, "injury_flags", []) if str(item).strip()]
+    if "knee" in injury_list:
+        safe_pool = []
+        for day_exercises in exercise_pool:
+            safe_day = []
+            for ex in day_exercises:
+                ex_name = ex["name"]
+                if any(k in ex_name.lower() for k in ["squat", "lunge", "leg press", "leg extension"]):
+                    alt_name = "Romanian Deadlift" if ("squat" in ex_name.lower() or "press" in ex_name.lower()) else "Lying Hamstring Curl"
+                    safe_day.append({**ex, "name": alt_name, "type": "Compound" if "Deadlift" in alt_name else "Isolation"})
+                else:
+                    safe_day.append(ex)
+            safe_pool.append(safe_day)
+        exercise_pool = safe_pool
+
     intensity = _strength_intensity_label(input_data.goal, input_data.level)
 
     days: list[dict] = []
@@ -210,6 +241,15 @@ def _looks_like_strength_plan(plan: dict | None) -> bool:
 def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
     lang = getattr(input_data, "language", "en") or "en"
     lang_line = f"- Language: Write the summary, day titles, and exercise notes in {lang}. Keep day keys as Mon, Tue, etc.\n" if lang not in ("en", "en-gh") else ""
+    injury_list = [str(item).lower() for item in getattr(input_data, "injury_flags", []) if str(item).strip()]
+    injury_line = ""
+    if "knee" in injury_list:
+        injury_line = (
+            "- CRITICAL INJURY GUARDRAIL: User has active KNEE PAIN. You MUST NOT include any squats, lunges, leg press, or leg extensions. "
+            "Prescribe only knee-safe posterior chain movements (e.g. Romanian Deadlift, Hip Thrust, Glute Bridge, Hamstring Curls, Calf Raises) or core/upper movements.\n"
+        )
+    elif injury_list:
+        injury_line = f"- CRITICAL INJURY GUARDRAIL: Strictly avoid exercises that aggravate user's active pain flags: {', '.join(injury_list)}.\n"
     return (
         "Create a custom strength plan as one JSON object only.\n"
         "The plan must match the user's actual inputs and feel like a real coach wrote it.\n"
@@ -222,7 +262,8 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- Weight should be realistic based on the user's lifts when provided, otherwise estimate conservatively.\n"
         "- Split, goal, experience level, equipment, and frequency must visibly affect the plan.\n"
         "- STRICT EQUIPMENT CONSTRAINT: If equipment includes 'no equipment', 'bodyweight', or 'outdoors', you MUST ONLY prescribe calisthenics/bodyweight exercises. NEVER include Barbell, Dumbbell, Cable, Machine, or Leg Press lifts. Weight must be 'Bodyweight'.\n"
-        "- If equipment is 'home gym' or 'dumbbells', use only dumbbells and bodyweight. NEVER prescribe barbells or cable machines.\n" 
+        "- If equipment is 'home gym' or 'dumbbells', use only dumbbells and bodyweight. NEVER prescribe barbells or cable machines.\n"
+        f"{injury_line}"
         "- Keep exercise ids stable and machine-friendly.\n"
         f"{lang_line}"
         f"User inputs: {json.dumps(input_data.__dict__, ensure_ascii=False)}"

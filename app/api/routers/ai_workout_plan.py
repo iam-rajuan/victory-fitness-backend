@@ -230,6 +230,7 @@ def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict
     deadlift = str(payload.deadlift or "").strip()
 
     language = str(user.get("preferred_language") or "").strip().lower() or "en"
+    injury_flags = list(user.get("injury_flags") or [])
 
     return StrengthWorkoutPlanInput(
         goal=goal,
@@ -246,6 +247,7 @@ def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict
         age=age,
         weight=weight,
         language=language,
+        injury_flags=injury_flags,
     )
 
 
@@ -695,6 +697,35 @@ async def workout_strength_plan_feedback(
         next_intensity_target = str(next_day.get("intensity") or "")
         plan_days[selected_index + 1] = next_day
         plan_data["days"] = plan_days
+
+    notes_lower = str(payload.notes or "").lower()
+    pain_flags = []
+    if payload.pain_flag or "knee" in notes_lower:
+        pain_flags.append("knee")
+    if "shoulder" in notes_lower:
+        pain_flags.append("shoulder")
+    if "back" in notes_lower:
+        pain_flags.append("lower_back")
+
+    if pain_flags:
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$addToSet": {"injury_flags": {"$each": pain_flags}}},
+        )
+        if selected_index + 1 < len(plan_days):
+            next_day = dict(plan_days[selected_index + 1])
+            exs = []
+            for ex in next_day.get("exercises") or []:
+                ex_name = str(ex.get("name") or "").lower()
+                if "knee" in pain_flags and any(k in ex_name for k in ["squat", "lunge", "leg press", "leg extension"]):
+                    ex_copy = dict(ex)
+                    ex_copy["name"] = "Romanian Deadlift" if ("squat" in ex_name or "press" in ex_name) else "Hamstring Curl"
+                    exs.append(ex_copy)
+                else:
+                    exs.append(ex)
+            next_day["exercises"] = exs
+            plan_days[selected_index + 1] = next_day
+            plan_data["days"] = plan_days
 
     now = datetime.now(timezone.utc)
     raw_feedback = record.get("session_feedback") or []
