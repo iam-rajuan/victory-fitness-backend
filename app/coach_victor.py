@@ -130,6 +130,9 @@ def build_coach_victor_system_prompt(
     if isinstance(fav_meals, str):
         fav_meals = [fav_meals]
 
+    user_name = _safe_text(context.get("name") or personal_profile.get("name") or (context.get("user") or {}).get("name"))
+    display_name = user_name if user_name and user_name.lower() != "admin" else ""
+
     identity_stmt = _safe_text(habit_fields.get("identity_statement"))
     workout_unlock = _safe_text(habit_fields.get("workout_unlock_label"))
     trigger_context = _safe_text(habit_fields.get("training_trigger_context"))
@@ -137,6 +140,7 @@ def build_coach_victor_system_prompt(
 
     profile_layer = (
         "Layer 3 - User profile and personalization:\n"
+        f"User name: {display_name or 'User'}.\n"
         f"Age: {_safe_text(personal_profile.get('age'))}.\n"
         f"Gender: {_safe_text(personal_profile.get('gender'))}.\n"
         f"Height: {_safe_text(personal_profile.get('height'))} {_safe_text(personal_profile.get('heightUnit'), 'cm')}.\n"
@@ -188,6 +192,8 @@ def build_coach_victor_system_prompt(
         "Prefer concrete sets, reps, exercise choices, scheduling, protein guidance, meal ideas, recovery steps, or behavior changes.\n"
         "If context is incomplete, make a reasonable assumption and state it briefly instead of refusing.\n"
         "Keep answers concise by default and avoid generic filler.\n\n"
+        "USER NAME AND ADDRESSING:\n"
+        f"The user's name is {display_name or 'the user'}. Address them naturally by name when appropriate. NEVER address the user as 'Admin'.\n\n"
         "FAVORITE MEALS PRIORITY OVER COUNTRY DEFAULTS:\n"
         "The user's declared favorite meals (Favorite meals JSON) strictly take priority over country or regional defaults. "
         "If a user in Ghana has German favorite meals, you MUST recommend German meals (e.g., Schnitzel, Bratwurst, Spätzle, Sauerbraten), NOT default Ghanaian dishes like Jollof or Fufu.\n\n"

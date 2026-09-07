@@ -223,8 +223,10 @@ async def _coach_user_context(user: dict, recent_messages: list[dict[str, Any]])
         or (onboarding.get("personalProfile") or {}).get("language")
         or ("de" if country_code == "DE" else "hi" if country_code == "IN" else "en")
     ).strip().lower()
+    user_name = str(user.get("name") or (onboarding.get("personalProfile") or {}).get("name") or "").strip()
 
     return {
+        "name": user_name,
         "country": str(user.get("country") or onboarding.get("country") or "").strip(),
         "country_code": country_code,
         "preferred_language": preferred_lang,
