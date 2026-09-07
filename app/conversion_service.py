@@ -65,6 +65,11 @@ async def should_show_post_workout_upsell(user: dict) -> tuple[bool, str]:
         return False, "tier_not_eligible"
     workout_count = int(user.get("workouts_completed") or 0)
     if workout_count <= 1:
+        from .database import workout_logs_collection
+        if _is_collection_available(workout_logs_collection):
+            logged_count = await workout_logs_collection.count_documents({"user_id": str(user.get("_id") or "")})
+            workout_count = max(workout_count, logged_count)
+    if workout_count <= 1:
         return False, "first_workout"
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     last_prompt = await completion_cards_collection.find_one(
@@ -80,10 +85,10 @@ async def should_show_post_workout_upsell(user: dict) -> tuple[bool, str]:
     return True, "eligible"
 
 
-def build_post_workout_upsell_message(user: dict) -> tuple[str, str]:
-    streak = max(int(user.get("streak_days") or 0), 0)
+def build_post_workout_upsell_message(user: dict, workout_num: int | None = None) -> tuple[str, str]:
+    streak_count = workout_num or max(int(user.get("workouts_completed") or user.get("streak_days") or 1), 1)
     title = "Keep this streak moving"
-    message = f"You just finished a workout with a {streak}-day streak. Unlock unlimited AI coaching to keep this going."
+    message = f"You just finished workout #{streak_count}. Unlock unlimited AI coaching to keep this going."
     return title, message
 
 
