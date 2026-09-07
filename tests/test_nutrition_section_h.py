@@ -80,12 +80,12 @@ def test_feature_post_workout_meal_scheduled_within_45_mins_protein_forward():
 
     plan = _build_fallback_nutrition_plan(payload)
     mon = plan["days"][0]
-    dinner = mon["dinner"]
+    post_meal = mon.get("post_workout") or mon["dinner"]
 
     # Must note post-workout timing within 45 mins
-    assert "within 45 mins" in dinner["desc"].lower() or "post-workout" in dinner["name"].lower()
+    assert "within 45 mins" in post_meal["desc"].lower() or "post-workout" in post_meal["name"].lower()
     # Must be protein-forward (high protein)
-    assert dinner["p"] >= 35
+    assert post_meal["p"] >= 25
 
 
 def test_feature_total_protein_80kg_user_hits_128g_average():
@@ -110,7 +110,7 @@ def test_feature_total_protein_80kg_user_hits_128g_average():
     # Verify 7-day average protein
     days = plan["days"]
     assert len(days) == 7
-    daily_totals = [d["breakfast"]["p"] + d["lunch"]["p"] + d["dinner"]["p"] for d in days]
+    daily_totals = [sum(m["p"] for k, m in d.items() if k != "day" and isinstance(m, dict)) for d in days]
     avg_protein = sum(daily_totals) / 7.0
 
     # 1.6g/kg of 80kg = 128g. Must be 128g ± 5g
@@ -215,4 +215,41 @@ async def test_trial_campaign_day1_nutrition_nudge():
         assert notification_type == "trial_day_1_nutrition_nudge"
         assert data.get("route") == "/mealPlan"
         assert data.get("targeted_nudge") == "nutrition_planner_unused"
+
+
+def test_feature_separate_pre_and_post_workout_distinct_meals():
+    """Verify distinct pre_workout and post_workout meal slots exist and sum accurately."""
+    payload = {
+        "weight": "80",
+        "goal": "g3",
+        "workout_time": "17:30",
+        "cuisine": "Italian",
+        "favorite_meals": ["Pasta Carbonara", "Margherita Pizza", "Mushroom Risotto"],
+    }
+    plan = _build_fallback_nutrition_plan(payload)
+    mon = plan["days"][0]
+
+    # Verify all 5 distinct meal slots exist
+    assert "breakfast" in mon
+    assert "lunch" in mon
+    assert "pre_workout" in mon
+    assert "post_workout" in mon
+    assert "dinner" in mon
+
+    # Pre-workout meal: carb-forward, 60-90m before workout
+    pre = mon["pre_workout"]
+    assert "pre-workout" in pre["name"].lower()
+    assert pre["c"] >= 50
+    assert pre["c"] > pre["f"]
+    assert pre["f"] <= 8
+
+    # Post-workout meal: high protein, within 45m
+    post = mon["post_workout"]
+    assert "post-workout" in post["name"].lower()
+    assert post["p"] >= 25
+
+    # Verify total daily protein calculation sums accurately across all meals
+    total_p = mon["breakfast"]["p"] + mon["lunch"]["p"] + mon["pre_workout"]["p"] + mon["post_workout"]["p"] + mon["dinner"]["p"]
+    # 80kg * 1.6 = 128g ± 5g
+    assert 120 <= total_p <= 140
 

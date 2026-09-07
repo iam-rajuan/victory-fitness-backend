@@ -275,6 +275,8 @@ class StructuredNutritionDayPlan(BaseModel):
     breakfast: StructuredNutritionMealEntry
     lunch: StructuredNutritionMealEntry
     dinner: StructuredNutritionMealEntry
+    pre_workout: StructuredNutritionMealEntry | None = Field(default=None, description="Pre-workout fuel meal (60-90m before workout, carb-forward)")
+    post_workout: StructuredNutritionMealEntry | None = Field(default=None, description="Post-workout recovery meal (within 45m after workout, high protein)")
 
 
 class StructuredNutritionPlan(BaseModel):
@@ -475,11 +477,13 @@ def _workout_nutrient_timing_instruction(payload: dict) -> str:
     return (
         "WORKOUT NUTRIENT TIMING & MEAL SCHEDULING REQUIREMENTS:\n"
         f"- User's planned workout time is {workout_time} (or on scheduled workout training days).\n"
-        "- PRE-WORKOUT MEAL: Schedule 60–90 minutes BEFORE the workout (e.g., at 16:00–16:30 for a 17:30 workout). "
-        "It MUST be CARB-FORWARD (high complex carbohydrates, moderate protein, low fat) to maximize glycogen stores and sustain workout energy.\n"
-        "- POST-WORKOUT MEAL: Schedule within 45 minutes AFTER the workout ends (e.g., by 19:15 for a workout ending at 18:30). "
-        "It MUST be PROTEIN-FORWARD (high complete protein >= 30–40g, moderate carbs, low-to-moderate fat) to trigger muscle protein synthesis and accelerate recovery.\n"
-        "- In the meal description ('desc'), explicitly note the nutrient timing and purpose (e.g. 'Pre-workout (60–90m before): Carb-forward fuel...' and 'Post-workout (within 45m): Protein-forward recovery...').\n"
+        "- Generate SEPARATE DISTINCT MEALS for: 'breakfast', 'lunch', 'pre_workout', 'post_workout', 'dinner'.\n"
+        "- PRE-WORKOUT MEAL ('pre_workout'): Scheduled 60–90 minutes BEFORE workout (e.g. at 16:00 for a 17:30 workout). "
+        "It MUST be CARB-FORWARD (high complex carbohydrates 45–60g+, moderate protein 15–22g, low fat <= 6g) to maximize glycogen and stamina.\n"
+        "- POST-WORKOUT MEAL ('post_workout'): Scheduled within 45 minutes AFTER workout ends (e.g. by 18:45). "
+        "It MUST be PROTEIN-FORWARD (high complete protein >= 30–40g, moderate carbs 30–45g, low fat) to trigger muscle protein synthesis.\n"
+        "- All 5 meals must sum accurately to the daily calorie and protein targets (1.6g/kg ±5g). No calculation should be missed.\n"
+        "- In the meal description ('desc'), explicitly note the timing and purpose.\n"
     )
 
 
@@ -561,9 +565,11 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         daily_protein = max(int(round(weight_kg * 1.6)), 60)
         multiplier = 1.6
 
-    breakfast_p = max(int(round(daily_protein * 0.25)), 15)
-    lunch_p = max(int(round(daily_protein * 0.35)), 20)
-    dinner_p = max(daily_protein - breakfast_p - lunch_p, 15)
+    breakfast_p = max(int(round(daily_protein * 0.20)), 12)
+    lunch_p = max(int(round(daily_protein * 0.25)), 18)
+    pre_p = max(int(round(daily_protein * 0.15)), 12)
+    post_p = max(int(round(daily_protein * 0.25)), 25)
+    dinner_p = max(daily_protein - (breakfast_p + lunch_p + pre_p + post_p), 12)
 
     is_low_carb = diet_code in {"d4", "keto / low-carb", "keto", "low-carb"} or goal_code == "g1"
     base_carb = 24 if is_low_carb else 42
@@ -585,10 +591,12 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
             dinner_dish = f"Roasted {protein_name} & Vegetables"
             breakfast_name = "Protein Oats Bowl" if index % 2 == 0 else "Egg & Toast Plate"
 
-        # Pre-workout meal scheduled 60-90 mins before workout time (carb-forward)
-        # Post-workout meal scheduled within 45 mins of workout end (protein-forward)
-        pre_workout_timing = "Scheduled 60–90 mins before workout (e.g. 16:00)"
+        # Separate Pre-workout (60-90m before, carb-forward) and Post-workout (within 45m, protein-forward)
+        pre_workout_timing = f"Scheduled 60–90 mins before {workout_time} workout (e.g. 16:00)"
         post_workout_timing = "Scheduled within 45 mins after workout (e.g. 18:45)"
+
+        pre_dish = favorite_meals[(index + 1) % len(favorite_meals)] if has_explicit_favs else f"{display_cuisine.capitalize()} Energy Bowl"
+        post_dish = favorite_meals[(index + 2) % len(favorite_meals)] if has_explicit_favs else f"Roasted {protein_name} Recovery Plate"
 
         days.append(
             {
@@ -599,7 +607,8 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "kcal": base_kcal,
                     "p": breakfast_p,
                     "c": carb_target,
-                    "f": 12,
+                    "f": 10,
+                    "timing": "Morning (07:30–08:30)",
                     "ingredients": [
                         breakfast_protein,
                         "Oats or whole grain bread",
@@ -613,12 +622,13 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     ],
                 },
                 "lunch": {
-                    "name": f"Pre-Workout: {lunch_dish}",
-                    "desc": f"Pre-workout meal ({pre_workout_timing}): Carb-forward fuel featuring {lunch_dish} to maximize glycogen and workout stamina.",
-                    "kcal": base_kcal + 180,
+                    "name": lunch_dish,
+                    "desc": f"Midday fuel meal featuring {lunch_dish} with balanced macronutrients (Pre-workout 60–90 mins before training).",
+                    "kcal": base_kcal + 80,
                     "p": lunch_p,
-                    "c": carb_target + 24,  # Carb-forward
+                    "c": max(carb_target + 10, 52),  # Carb-forward substantial
                     "f": 11,
+                    "timing": "Midday (12:30–13:30)",
                     "ingredients": [
                         protein_name,
                         "Pasta, rice, or grains matching favorite dish",
@@ -629,16 +639,54 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "instructions": [
                         "Cook grains or pasta al dente.",
                         "Sear or grill protein with aromatic herbs.",
-                        "Combine for a carb-forward fuel meal 60–90 mins prior to training.",
+                        "Plate together with fresh greens.",
+                    ],
+                },
+                "pre_workout": {
+                    "name": f"Pre-Workout: {pre_dish}",
+                    "desc": f"Pre-workout fuel ({pre_workout_timing}): Carb-forward energy snack to saturate glycogen stores.",
+                    "kcal": 280,
+                    "p": pre_p,
+                    "c": max(carb_target + 18, 55),  # High carb-forward
+                    "f": 5,  # Low fat
+                    "timing": f"60–90m before workout ({workout_time})",
+                    "ingredients": [
+                        "Whole-grain banana toast or oats with honey",
+                        "Light whey or plant protein shake",
+                        "1 medium banana or dates",
+                    ],
+                    "instructions": [
+                        "Consume 60 to 90 minutes before your workout.",
+                        "Drink 350-500ml water for optimal cellular hydration.",
+                    ],
+                },
+                "post_workout": {
+                    "name": f"Post-Workout: {post_dish}",
+                    "desc": f"Post-workout recovery ({post_workout_timing}): High complete protein to trigger muscle repair.",
+                    "kcal": 380,
+                    "p": post_p,  # High protein-forward
+                    "c": 36,
+                    "f": 7,
+                    "timing": "Within 45m of workout end",
+                    "ingredients": [
+                        protein_name,
+                        "Steamed jasmine rice or sweet potato",
+                        "Steamed greens with sea salt",
+                        "Electrolyte water",
+                    ],
+                    "instructions": [
+                        "Consume within 45 minutes of completing your workout.",
+                        "Rehydrate with water and essential electrolytes.",
                     ],
                 },
                 "dinner": {
-                    "name": f"Post-Workout: {dinner_dish}",
-                    "desc": f"Post-workout meal ({post_workout_timing}): Protein-forward recovery featuring {dinner_dish} delivering amino acids for muscle repair.",
-                    "kcal": base_kcal + 120,
-                    "p": dinner_p,  # Protein-forward
-                    "c": max(18, carb_target - 4),
-                    "f": 14,
+                    "name": dinner_dish,
+                    "desc": f"Post-workout recovery dinner (within 45 mins of training): High-protein recovery meal featuring {dinner_dish} providing sustained overnight amino acids.",
+                    "kcal": base_kcal + 60,
+                    "p": dinner_p,  # Recovery protein
+                    "c": max(18, carb_target - 8),
+                    "f": 12,
+                    "timing": "Evening (19:30–20:30)",
                     "ingredients": [
                         protein_name,
                         "Seasonal vegetables",
@@ -649,7 +697,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "instructions": [
                         "Cook protein through to lock in amino acids.",
                         "Steam or roast fresh greens.",
-                        "Consume within 45 minutes of workout completion.",
+                        "Enjoy as a restful evening recovery meal.",
                     ],
                 },
             }
@@ -1587,27 +1635,28 @@ def _normalize_nutrition_plan(plan: dict) -> dict:
     # Ensure total protein across 7-day plan strictly hits 1.6g/kg ± 5g
     if target_p > 0 and normalized_days:
         day_proteins = [
-            (day.get("breakfast", {}).get("p", 0) + day.get("lunch", {}).get("p", 0) + day.get("dinner", {}).get("p", 0))
+            sum(meal.get("p", 0) for k, meal in day.items() if k != "day" and isinstance(meal, dict))
             for day in normalized_days
         ]
         avg_p = sum(day_proteins) / max(len(day_proteins), 1)
         if abs(avg_p - target_p) > 5:
             # Rebalance meals so the 7-day average strictly hits target_p ± 5g
-            bp = max(int(round(target_p * 0.25)), 15)
-            lp = max(int(round(target_p * 0.35)), 20)
-            dp = max(target_p - bp - lp, 15)
             for day in normalized_days:
-                for m_key, new_p in (("breakfast", bp), ("lunch", lp), ("dinner", dp)):
-                    meal = day.get(m_key)
-                    if isinstance(meal, dict):
-                        old_p = meal.get("p", new_p)
-                        meal["p"] = new_p
-                        meal["kcal"] = max(int(meal.get("kcal", 400)) + (new_p - old_p) * 4, 150)
+                keys = [k for k in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner") if k in day]
+                if not keys:
+                    continue
+                current_sum = sum(day[k].get("p", 0) for k in keys) or 1
+                for k in keys:
+                    meal = day[k]
+                    old_p = meal.get("p", 0)
+                    new_p = max(int(round(target_p * (old_p / current_sum))), 10)
+                    meal["p"] = new_p
+                    meal["kcal"] = max(int(meal.get("kcal", 400)) + (new_p - old_p) * 4, 150)
             daily_protein = target_p
 
     if not daily_protein and normalized_days:
         daily_protein = sum(
-            (day.get("breakfast", {}).get("p", 0) + day.get("lunch", {}).get("p", 0) + day.get("dinner", {}).get("p", 0))
+            sum(meal.get("p", 0) for k, meal in day.items() if k != "day" and isinstance(meal, dict))
             for day in normalized_days
         ) // max(len(normalized_days), 1)
     normalized_plan = {
@@ -1740,12 +1789,17 @@ def _normalize_day_plan(day: dict) -> dict:
     if day_name not in PLAN_DAY_ORDER:
         day_name = PLAN_DAY_ORDER[0]
 
-    return {
+    result = {
         "day": day_name,
         "breakfast": _normalize_meal_entry(day.get("breakfast", {})),
         "lunch": _normalize_meal_entry(day.get("lunch", {})),
         "dinner": _normalize_meal_entry(day.get("dinner", {})),
     }
+    if "pre_workout" in day and isinstance(day["pre_workout"], dict):
+        result["pre_workout"] = _normalize_meal_entry(day["pre_workout"])
+    if "post_workout" in day and isinstance(day["post_workout"], dict):
+        result["post_workout"] = _normalize_meal_entry(day["post_workout"])
+    return result
 
 
 def _normalize_meal_entry(entry: dict) -> dict:

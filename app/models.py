@@ -1254,6 +1254,9 @@ class NutritionDayPlan(BaseModel):
     breakfast: NutritionMealEntry
     lunch: NutritionMealEntry
     dinner: NutritionMealEntry
+    pre_workout: NutritionMealEntry | None = None
+    post_workout: NutritionMealEntry | None = None
+    snacks: list[NutritionMealEntry] = Field(default_factory=list)
 
 
 class NutritionPlanRequest(BaseModel):

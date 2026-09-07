@@ -32,7 +32,7 @@ def test_fallback_plan_includes_protein_target():
 
     # Ensure day meal protein sums to daily protein target
     mon = plan["days"][0]
-    total_p = mon["breakfast"]["p"] + mon["lunch"]["p"] + mon["dinner"]["p"]
+    total_p = sum(m["p"] for k, m in mon.items() if k != "day" and isinstance(m, dict))
     assert total_p == 112
 
 
