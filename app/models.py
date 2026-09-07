@@ -1382,12 +1382,16 @@ class HomepageQuote(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     author: str = Field(min_length=1, max_length=200)
     active: bool = True
+    version: str | None = None
+    selected: bool = False
 
 
 class HomepageQuoteRequest(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     author: str = Field(min_length=1, max_length=200)
     active: bool = True
+    version: str | None = None
+    selected: bool = False
 
 
 class HomepageQuoteListResponse(BaseModel):

@@ -74,15 +74,27 @@ async def get_onboarding_content() -> OnboardingContentResponse:
 
 @router.get("/content/homepage/quote", response_model=HomepageQuote | None)
 async def get_homepage_quote(app_version: str | None = None) -> HomepageQuote | None:
-    active_items = [item for item in await _load_homepage_quotes() if item.get("active")]
+    items = await _load_homepage_quotes()
+    active_items = [item for item in items if item.get("active", True)]
     if not active_items:
         active_items = DEFAULT_HOMEPAGE_QUOTES
     if not active_items:
         return None
+
+    # 1. Highest priority: Quote explicitly selected by admin in the dashboard
+    selected_items = [item for item in active_items if item.get("selected")]
+    if selected_items:
+        return HomepageQuote(**selected_items[0])
+
+    # 2. Version match if tagged by admin
     if app_version:
+        version_matched = [item for item in active_items if str(item.get("version") or "").strip() == app_version.strip()]
+        if version_matched:
+            return HomepageQuote(**version_matched[0])
         seed = int(hashlib.sha256(app_version.strip().encode("utf-8")).hexdigest()[:8], 16)
         return HomepageQuote(**active_items[seed % len(active_items)])
-    return HomepageQuote(**active_items[datetime.now(timezone.utc).date().toordinal() % len(active_items)])
+
+    return HomepageQuote(**active_items[0])
 
 
 _network_activity_cache: dict[str, tuple[float, dict]] = {}

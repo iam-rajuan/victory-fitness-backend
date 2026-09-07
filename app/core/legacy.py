@@ -7574,6 +7574,8 @@ def _serialize_homepage_quote_item(item: dict) -> dict:
         "text": str(item.get("text") or "").strip(),
         "author": str(item.get("author") or "").strip() or "Victory Fitness",
         "active": bool(item.get("active", True)),
+        "version": str(item.get("version")).strip() if item.get("version") else None,
+        "selected": bool(item.get("selected", False)),
     }
 
 def _serialize_admin_subscriber_record(record: dict) -> dict:
