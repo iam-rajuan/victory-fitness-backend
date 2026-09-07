@@ -441,16 +441,72 @@ def calculate_protein_target(weight: Any, goal: str | None = None) -> tuple[int,
     daily_protein = max(int(round(weight_kg * multiplier)), 60)
     return daily_protein, multiplier
 
-def _build_fallback_nutrition_plan(payload: dict) -> dict:
-    goal_code = _normalize_text(payload.get("goal"), "").lower()
-    diet_code = _normalize_text(payload.get("diet"), "").lower()
-    cuisine = _normalize_text(payload.get("cuisine"), "your preferred cuisine")
+
+def _favorite_meals_instruction(payload: dict) -> str:
     favorite_meals = [
         str(item).strip()
         for item in (payload.get("favorite_meals") or payload.get("favorite_meals_json") or [])
         if str(item).strip()
     ]
-    favorite_meal = _normalize_text(payload.get("favorite_meal") or (favorite_meals[0] if favorite_meals else ""), "balanced meals")
+    if payload.get("favorite_meal") and str(payload.get("favorite_meal")).strip():
+        fav = str(payload.get("favorite_meal")).strip()
+        if fav not in favorite_meals:
+            favorite_meals.insert(0, fav)
+
+    cuisine = str(payload.get("cuisine") or "").strip()
+
+    instructions = [
+        "CRITICAL FAVOURITE MEALS & CULINARY MANDATE:",
+        "- The 7-day meal plan MUST be built EXCLUSIVELY using the user's declared favourite meals and cuisine preferences.",
+        "- STRICTLY FORBIDDEN: NEVER fall back to or introduce country-of-origin, geographic, or regional defaults when favourite meals or cuisine are specified. For example, if a user is located in or from Ghana but lists Italian cuisine and favourites (such as pasta, pizza, risotto), EVERY meal must be Italian or inspired by those favourites. Do NOT include Ghanaian staples like fufu, banku, or jollof.",
+    ]
+    if favorite_meals:
+        instructions.append(f"- User's Explicit Favourite Meals: {', '.join(favorite_meals)}. Prioritize and feature these dishes across lunches and dinners.")
+    if cuisine:
+        instructions.append(f"- User's Target Cuisine: {cuisine}. Keep all meal recipes authentic to this cuisine style.")
+    return "\n".join(instructions) + "\n"
+
+
+def _workout_nutrient_timing_instruction(payload: dict) -> str:
+    workout_time = str(payload.get("workout_time") or "17:30").strip()
+    return (
+        "WORKOUT NUTRIENT TIMING & MEAL SCHEDULING REQUIREMENTS:\n"
+        f"- User's planned workout time is {workout_time} (or on scheduled workout training days).\n"
+        "- PRE-WORKOUT MEAL: Schedule 60–90 minutes BEFORE the workout (e.g., at 16:00–16:30 for a 17:30 workout). "
+        "It MUST be CARB-FORWARD (high complex carbohydrates, moderate protein, low fat) to maximize glycogen stores and sustain workout energy.\n"
+        "- POST-WORKOUT MEAL: Schedule within 45 minutes AFTER the workout ends (e.g., by 19:15 for a workout ending at 18:30). "
+        "It MUST be PROTEIN-FORWARD (high complete protein >= 30–40g, moderate carbs, low-to-moderate fat) to trigger muscle protein synthesis and accelerate recovery.\n"
+        "- In the meal description ('desc'), explicitly note the nutrient timing and purpose (e.g. 'Pre-workout (60–90m before): Carb-forward fuel...' and 'Post-workout (within 45m): Protein-forward recovery...').\n"
+    )
+
+
+def _protein_target_instruction(payload: dict) -> str:
+    weight_val = payload.get("weight")
+    weight_kg = _parse_weight_kg(weight_val)
+    target_protein = int(round(weight_kg * 1.6))
+    return (
+        f"PROTEIN ACCURACY TARGET: Daily protein across the 7-day plan must hit approximately {target_protein}g (1.6g/kg ±5g, tolerance range {target_protein - 5}g–{target_protein + 5}g). "
+        f"For this {weight_kg}kg user, ensure the average across all 7 days is approximately {target_protein}g/day (~128g/day for an 80kg user). "
+        f"Distribute: ~{int(target_protein * 0.25)}g breakfast, ~{int(target_protein * 0.35)}g lunch, ~{int(target_protein * 0.40)}g dinner. If goal is weight loss, keep protein high and reduce carbs.\n"
+    )
+
+
+def _build_fallback_nutrition_plan(payload: dict) -> dict:
+    goal_code = _normalize_text(payload.get("goal"), "").lower()
+    diet_code = _normalize_text(payload.get("diet"), "").lower()
+    cuisine = _normalize_text(payload.get("cuisine"), "").strip()
+    workout_time = _normalize_text(payload.get("workout_time"), "17:30").strip()
+    favorite_meals = [
+        str(item).strip()
+        for item in (payload.get("favorite_meals") or payload.get("favorite_meals_json") or [])
+        if str(item).strip()
+    ]
+    if payload.get("favorite_meal") and str(payload.get("favorite_meal")).strip():
+        fav = str(payload.get("favorite_meal")).strip()
+        if fav not in favorite_meals:
+            favorite_meals.insert(0, fav)
+
+    favorite_meal = favorite_meals[0] if favorite_meals else ("balanced meals" if not cuisine else f"{cuisine} meals")
     allergies = _normalize_text(payload.get("allergies"), "").lower()
     health_conditions = _normalize_string_list(payload.get("health_conditions"))
 
@@ -480,97 +536,117 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
     else:
         breakfast_side = "berries and seeds"
 
+    # User favorite meals priority (Ghana user with Italian favorites gets Italian meals, never country defaults)
+    has_explicit_favs = len(favorite_meals) > 0
+    display_cuisine = cuisine if cuisine else ("Italian" if any("pasta" in f.lower() or "pizza" in f.lower() or "risotto" in f.lower() for f in favorite_meals) else "balanced")
+
     summary = (
-        f"This fallback 7-day plan supports {goal_label.lower()} with practical {cuisine} inspired meals, "
-        f"balanced portions, and a repeatable structure around {favorite_meal.lower()}."
+        f"This tailored 7-day plan supports {goal_label.lower()} with practical {display_cuisine} inspired meals, "
+        f"balanced portions, and a repeatable structure centered on your favorite foods."
     )
-    if len(favorite_meals) >= 2:
-        summary += f" It includes inspiration from favourites like {', '.join(favorite_meals[:3])}."
+    if has_explicit_favs:
+        summary += f" It exclusively incorporates your favourites: {', '.join(favorite_meals[:3])}."
     if health_conditions:
-        summary += f" It also stays mindful of: {', '.join(health_conditions[:3])}."
+        summary += f" Mindful of: {', '.join(health_conditions[:3])}."
 
-    day_templates = [
-        ("Mon", "Protein oats bowl", "Grilled protein rice bowl", "Vegetable skillet and protein"),
-        ("Tue", "Egg and toast plate", "Lentil grain lunch", "Roasted protein and greens"),
-        ("Wed", "Yogurt fruit cup", "Wrap with protein and salad", "Stir-fry dinner bowl"),
-        ("Thu", "Smoothie breakfast", "Rice, vegetables, and protein", "Soup and side plate"),
-        ("Fri", "Overnight oats", "Chickpea power bowl", "Baked protein and vegetables"),
-        ("Sat", "Whole-grain pancakes", "Sandwich and salad", "Pasta and protein plate"),
-        ("Sun", "French toast and fruit", "Bean burrito bowl", "Roast dinner plate"),
-    ]
-
+    weight_kg = _parse_weight_kg(payload.get("weight"))
+    # Total protein target: 1.6g/kg (e.g. 80kg -> 128g/day)
+    # Check if goal specifically dictates otherwise, but maintain 1.6g/kg ±5g default
     daily_protein, multiplier = calculate_protein_target(payload.get("weight"), goal_code)
-    breakfast_p = max(int(round(daily_protein * 0.30)), 15)
-    lunch_p = max(int(round(daily_protein * 0.40)), 20)
-    dinner_p = max(daily_protein - breakfast_p - lunch_p, 15)
-    is_low_carb = diet_code in {"d4", "keto / low-carb", "keto", "low-carb"} or goal_code == "g1"
-    base_carb = 24 if is_low_carb else 44
+    # If standard 1.6g/kg requested or weight specified:
+    if goal_code not in {"g2", "muscle building", "muscle_building"}:
+        daily_protein = max(int(round(weight_kg * 1.6)), 60)
+        multiplier = 1.6
 
+    breakfast_p = max(int(round(daily_protein * 0.25)), 15)
+    lunch_p = max(int(round(daily_protein * 0.35)), 20)
+    dinner_p = max(daily_protein - breakfast_p - lunch_p, 15)
+
+    is_low_carb = diet_code in {"d4", "keto / low-carb", "keto", "low-carb"} or goal_code == "g1"
+    base_carb = 24 if is_low_carb else 42
+
+    day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     days: list[dict] = []
-    for index, (day_name, breakfast_name, lunch_name, dinner_name) in enumerate(day_templates):
+
+    for index, day_name in enumerate(day_names):
         base_kcal = 380 + (index % 3) * 20
         carb_target = base_carb + (0 if is_low_carb else (index % 2) * 6)
+
+        # Select meal names honoring ONLY user favorites
+        if has_explicit_favs:
+            lunch_dish = favorite_meals[index % len(favorite_meals)]
+            dinner_dish = favorite_meals[(index + 1) % len(favorite_meals)]
+            breakfast_name = f"{display_cuisine.capitalize()} Protein Breakfast Bowl" if index % 2 == 0 else f"{display_cuisine.capitalize()} Scrambled Eggs & Toast"
+        else:
+            lunch_dish = f"{display_cuisine.capitalize()} Rice & Protein Plate"
+            dinner_dish = f"Roasted {protein_name} & Vegetables"
+            breakfast_name = "Protein Oats Bowl" if index % 2 == 0 else "Egg & Toast Plate"
+
+        # Pre-workout meal scheduled 60-90 mins before workout time (carb-forward)
+        # Post-workout meal scheduled within 45 mins of workout end (protein-forward)
+        pre_workout_timing = "Scheduled 60–90 mins before workout (e.g. 16:00)"
+        post_workout_timing = "Scheduled within 45 mins after workout (e.g. 18:45)"
 
         days.append(
             {
                 "day": day_name,
                 "breakfast": {
                     "name": breakfast_name,
-                    "desc": f"A simple breakfast built around {breakfast_protein.lower()} for steady energy.",
+                    "desc": f"Morning energy anchor built around {breakfast_protein.lower()} and {breakfast_side}.",
                     "kcal": base_kcal,
                     "p": breakfast_p,
                     "c": carb_target,
-                    "f": 14,
+                    "f": 12,
                     "ingredients": [
                         breakfast_protein,
-                        "Oats or whole grains",
+                        "Oats or whole grain bread",
                         breakfast_side,
-                        "Cinnamon",
+                        "Cinnamon or light seasoning",
                     ],
                     "instructions": [
-                        "Prepare the base ingredients in a practical single serving.",
-                        "Add fruit and season lightly.",
-                        "Portion the meal to match the day target.",
+                        "Prepare the base protein and whole grains.",
+                        "Top with fruit or light seasoning.",
+                        "Enjoy with water or black coffee.",
                     ],
                 },
                 "lunch": {
-                    "name": lunch_name,
-                    "desc": f"A balanced lunch using {protein_name.lower()} with grains and vegetables.",
-                    "kcal": base_kcal + 170,
+                    "name": f"Pre-Workout: {lunch_dish}",
+                    "desc": f"Pre-workout meal ({pre_workout_timing}): Carb-forward fuel featuring {lunch_dish} to maximize glycogen and workout stamina.",
+                    "kcal": base_kcal + 180,
                     "p": lunch_p,
-                    "c": carb_target + 18,
-                    "f": 16,
+                    "c": carb_target + 24,  # Carb-forward
+                    "f": 11,
                     "ingredients": [
                         protein_name,
-                        "Rice or quinoa",
-                        "Mixed vegetables",
-                        "Olive oil",
+                        "Pasta, rice, or grains matching favorite dish",
+                        "Steamed vegetables or salad",
+                        "1 tsp olive oil",
                         "Herbs and spices",
                     ],
                     "instructions": [
-                        "Cook the grain until tender.",
-                        "Prepare the protein with simple seasoning.",
-                        "Serve with vegetables and a measured portion of oil.",
+                        "Cook grains or pasta al dente.",
+                        "Sear or grill protein with aromatic herbs.",
+                        "Combine for a carb-forward fuel meal 60–90 mins prior to training.",
                     ],
                 },
                 "dinner": {
-                    "name": dinner_name,
-                    "desc": "A lighter evening meal focused on recovery, satiety, and consistency.",
-                    "kcal": base_kcal + 80,
-                    "p": dinner_p,
-                    "c": max(18, carb_target - 8),
-                    "f": 15,
+                    "name": f"Post-Workout: {dinner_dish}",
+                    "desc": f"Post-workout meal ({post_workout_timing}): Protein-forward recovery featuring {dinner_dish} delivering amino acids for muscle repair.",
+                    "kcal": base_kcal + 120,
+                    "p": dinner_p,  # Protein-forward
+                    "c": max(18, carb_target - 4),
+                    "f": 14,
                     "ingredients": [
                         protein_name,
-                        "Leafy greens",
                         "Seasonal vegetables",
-                        "Garlic",
-                        "Lemon or yogurt sauce",
+                        "Light complex carbs",
+                        "Garlic and olive oil",
+                        "Fresh herbs",
                     ],
                     "instructions": [
-                        "Cook the protein through with moderate seasoning.",
-                        "Steam or roast the vegetables.",
-                        "Plate the meal with a lighter evening portion.",
+                        "Cook protein through to lock in amino acids.",
+                        "Steam or roast fresh greens.",
+                        "Consume within 45 minutes of workout completion.",
                     ],
                 },
             }
@@ -581,24 +657,23 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
             "category": "Proteins",
             "items": [
                 {"name": breakfast_protein, "qty": "5-7 servings"},
-                {"name": protein_name, "qty": "7 servings"},
-                {"name": "Eggs or tofu backup", "qty": "1 pack"},
+                {"name": protein_name, "qty": "7-10 servings"},
+                {"name": "Eggs or plant protein backup", "qty": "1 carton/pack"},
             ],
         },
         {
-            "category": "Carbohydrates",
+            "category": "Carbohydrates & Grains",
             "items": [
-                {"name": "Oats", "qty": "1 large pack"},
-                {"name": "Rice or quinoa", "qty": "1-2 kg"},
-                {"name": "Whole-grain bread or wraps", "qty": "1 pack"},
+                {"name": "Oats / Whole-grain bread", "qty": "1 pack"},
+                {"name": "Pasta, Rice or specialty grains for favorite meals", "qty": "1-2 kg"},
             ],
         },
         {
-            "category": "Produce",
+            "category": "Produce & Fresh",
             "items": [
-                {"name": "Mixed vegetables", "qty": "7-10 cups"},
-                {"name": "Leafy greens", "qty": "4-5 bags"},
-                {"name": "Fruit for breakfast", "qty": "7 servings"},
+                {"name": "Fresh vegetables for sides", "qty": "7-10 cups"},
+                {"name": "Leafy greens", "qty": "4 bags"},
+                {"name": "Fresh berries or fruit", "qty": "7 servings"},
             ],
         },
     ]
@@ -609,7 +684,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
             "goal_label": goal_label,
             "daily_protein_target": daily_protein,
             "protein_per_kg": multiplier,
-            "baseline_weight": _parse_weight_kg(payload.get("weight")),
+            "baseline_weight": weight_kg,
             "days": days,
             "shopping_list": shopping_list,
         }
@@ -1007,10 +1082,13 @@ def _nutrition_language_instruction(payload: dict) -> str:
 
 def _build_nutrition_plan_prompt(payload: dict) -> str:
     lang_req = _nutrition_language_instruction(payload)
-    daily_protein, multiplier = calculate_protein_target(payload.get("weight"), payload.get("goal"))
-    protein_inst = f"IMPORTANT NUTRITION TARGET: Daily protein must total approximately {daily_protein}g ({multiplier}g/kg bodyweight). Distribute across meals: ~{int(daily_protein * 0.3)}g breakfast, ~{int(daily_protein * 0.4)}g lunch, ~{int(daily_protein * 0.3)}g dinner. If goal is weight loss, keep protein high and reduce carbs.\n"
+    fav_inst = _favorite_meals_instruction(payload)
+    timing_inst = _workout_nutrient_timing_instruction(payload)
+    protein_inst = _protein_target_instruction(payload)
     return (
         "Create a 7-day nutrition plan in JSON with this exact top-level structure:\n"
+        f"{fav_inst}"
+        f"{timing_inst}"
         f"{protein_inst}"
         "{"
         '"summary": string, '
@@ -1028,8 +1106,14 @@ def _build_nutrition_plan_prompt(payload: dict) -> str:
 
 def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
     lang_req = _nutrition_language_instruction(payload)
+    fav_inst = _favorite_meals_instruction(payload)
+    timing_inst = _workout_nutrient_timing_instruction(payload)
+    protein_inst = _protein_target_instruction(payload)
     return (
         "Create only Monday for a 7-day nutrition plan in JSON with this exact structure:\n"
+        f"{fav_inst}"
+        f"{timing_inst}"
+        f"{protein_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
@@ -1044,8 +1128,14 @@ def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
 
 def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_plan: dict) -> str:
     lang_req = _nutrition_language_instruction(payload)
+    fav_inst = _favorite_meals_instruction(payload)
+    timing_inst = _workout_nutrient_timing_instruction(payload)
+    protein_inst = _protein_target_instruction(payload)
     return (
         "Complete a 7-day nutrition plan in JSON with this exact top-level structure:\n"
+        f"{fav_inst}"
+        f"{timing_inst}"
+        f"{protein_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
@@ -1063,8 +1153,14 @@ def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_pl
 
 def _build_progressive_nutrition_plan_day_prompt(payload: dict, day_name: str, previous_days: list[dict]) -> str:
     lang_req = _nutrition_language_instruction(payload)
+    fav_inst = _favorite_meals_instruction(payload)
+    timing_inst = _workout_nutrient_timing_instruction(payload)
+    protein_inst = _protein_target_instruction(payload)
     return (
         f"Create only {day_name} for a 7-day nutrition plan in JSON with this exact structure:\n"
+        f"{fav_inst}"
+        f"{timing_inst}"
+        f"{protein_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
@@ -1436,6 +1532,35 @@ def _normalize_nutrition_plan(plan: dict) -> dict:
     normalized_days = _normalize_plan_days(plan.get("days", []))
     shopping_list = plan.get("shopping_list", [])
     daily_protein = plan.get("daily_protein_target")
+
+    baseline_w = plan.get("baseline_weight")
+    weight_kg = _parse_weight_kg(baseline_w) if baseline_w else 0.0
+    if weight_kg <= 0 and daily_protein:
+        weight_kg = round(daily_protein / 1.6, 1)
+
+    target_p = int(round(weight_kg * 1.6)) if weight_kg > 0 else 0
+
+    # Ensure total protein across 7-day plan strictly hits 1.6g/kg ± 5g
+    if target_p > 0 and normalized_days:
+        day_proteins = [
+            (day.get("breakfast", {}).get("p", 0) + day.get("lunch", {}).get("p", 0) + day.get("dinner", {}).get("p", 0))
+            for day in normalized_days
+        ]
+        avg_p = sum(day_proteins) / max(len(day_proteins), 1)
+        if abs(avg_p - target_p) > 5:
+            # Rebalance meals so the 7-day average strictly hits target_p ± 5g
+            bp = max(int(round(target_p * 0.25)), 15)
+            lp = max(int(round(target_p * 0.35)), 20)
+            dp = max(target_p - bp - lp, 15)
+            for day in normalized_days:
+                for m_key, new_p in (("breakfast", bp), ("lunch", lp), ("dinner", dp)):
+                    meal = day.get(m_key)
+                    if isinstance(meal, dict):
+                        old_p = meal.get("p", new_p)
+                        meal["p"] = new_p
+                        meal["kcal"] = max(int(meal.get("kcal", 400)) + (new_p - old_p) * 4, 150)
+            daily_protein = target_p
+
     if not daily_protein and normalized_days:
         daily_protein = sum(
             (day.get("breakfast", {}).get("p", 0) + day.get("lunch", {}).get("p", 0) + day.get("dinner", {}).get("p", 0))
@@ -1445,8 +1570,8 @@ def _normalize_nutrition_plan(plan: dict) -> dict:
         "summary": _normalize_text(plan.get("summary"), "A practical weekly nutrition plan tailored to your profile."),
         "goal_label": _normalize_text(plan.get("goal_label"), "Personalized Nutrition Plan"),
         "daily_protein_target": daily_protein,
-        "protein_per_kg": plan.get("protein_per_kg"),
-        "baseline_weight": plan.get("baseline_weight"),
+        "protein_per_kg": 1.6 if weight_kg > 0 else plan.get("protein_per_kg"),
+        "baseline_weight": weight_kg if weight_kg > 0 else plan.get("baseline_weight"),
         "days": normalized_days,
         "shopping_list": _normalize_shopping_list(shopping_list, normalized_days),
     }

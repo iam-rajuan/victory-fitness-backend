@@ -7786,57 +7786,49 @@ def _get_allowed_community_audiences(user: dict) -> list[str]:
     return hierarchy.get(membership, ["ALL", "SILVER"])
 
 def _get_community_post_audience_for_user(user: dict) -> str:
-
     if bool(user.get("is_admin")):
-
         return "ALL"
-
     tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
-
-    if tier in {"SILVER", "GOLD", "PLATINUM", "INNER_CIRCLE"}:
-
+    if tier in {"GOLD", "GOLD_BETA"}:
+        return "GOLD"
+    if tier in {"SILVER", "PLATINUM", "INNER_CIRCLE"}:
         return tier
-
     return "SILVER"
 
 def _serialize_community_post_record(record: dict, author_record: dict | None = None) -> dict:
-
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
-
     updated_at = _as_utc(record.get("updated_at") or created_at)
-
     author_role = str(record.get("author_role") or "user")
-
     author_name = str(record.get("author_name") or "Member")
-
     author_profile_image = str(record.get("author_profile_image") or "")
-
     if author_record:
-
         author_role = str(author_record.get("role") or ("admin" if author_record.get("is_admin") else "user")).strip() or "user"
-
         author_name = str(author_record.get("name") or "Member").strip() or "Member"
-
         author_profile_image = str(author_record.get("profile_image") or "").strip()
 
+    raw_tier = ""
+    if author_record:
+        raw_tier = _normalize_subscription_tier(author_record.get("subscription_tier") or author_record.get("tier"))
+    if not raw_tier or raw_tier == "NONE":
+        raw_tier = _normalize_subscription_tier(record.get("author_tier") or record.get("audience"))
+
+    if raw_tier in {"GOLD", "GOLD_BETA"}:
+        author_tier = "GOLD"
+    elif raw_tier in {"SILVER", "PLATINUM", "INNER_CIRCLE"}:
+        author_tier = raw_tier
+    else:
+        author_tier = "SILVER"
+
     return {
-
         "id": str(record.get("_id")),
-
         "author_id": str(record.get("author_id") or ""),
-
         "author_name": author_name,
-
         "author_role": author_role,
-
+        "author_tier": author_tier,
         "author_profile_image": author_profile_image,
-
         "audience": str(record.get("audience") or "ALL"),
-
         "content": str(record.get("content") or ""),
-
         "image_url": str(record.get("image_url") or ""),
-
         "video_url": str(record.get("video_url") or ""),
 
         "audio_url": str(record.get("audio_url") or ""),

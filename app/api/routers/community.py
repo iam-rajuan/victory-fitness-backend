@@ -325,22 +325,18 @@ async def create_community_post(
 
         video_url = external_video_url
 
+    user_tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
+    computed_author_tier = "GOLD" if user_tier in {"GOLD", "GOLD_BETA"} else (user_tier if user_tier != "NONE" else "SILVER")
+
     document = {
-
         "_id": ObjectId(),
-
         "author_id": str(user["_id"]),
-
         "audience": _get_community_post_audience_for_user(user),
-
+        "author_tier": computed_author_tier,
         "content": content,
-
         "image_url": image_url,
-
         "video_url": video_url,
-
         "like_count": 0,
-
         "comment_count": 0,
         "created_at": now,
         "updated_at": now,

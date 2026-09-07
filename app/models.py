@@ -746,6 +746,7 @@ class CommunityPostResponse(BaseModel):
     author_id: str = ""
     author_name: str
     author_role: str
+    author_tier: str = "SILVER"
     author_profile_image: str = ""
     audience: str = "ALL"
     content: str
@@ -1245,6 +1246,7 @@ class NutritionMealEntry(BaseModel):
     f: int = Field(ge=0, le=200)
     ingredients: list[str] = Field(default_factory=list)
     instructions: list[str] = Field(default_factory=list)
+    timing: str | None = None
 
 
 class NutritionDayPlan(BaseModel):
@@ -1268,6 +1270,7 @@ class NutritionPlanRequest(BaseModel):
     height: str | None = None
     weight: str | None = None
     health_conditions: list[str] = Field(default_factory=list)
+    workout_time: str | None = None
 
     @model_validator(mode="after")
     def require_three_favorite_meals(self) -> "NutritionPlanRequest":

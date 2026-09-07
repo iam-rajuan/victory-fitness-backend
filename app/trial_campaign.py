@@ -168,8 +168,10 @@ async def process_trial_campaign(
     nutrition_plans_collection=None,
     nutrition_logs_collection=None,
     app_content_collection=None,
+    now: datetime | None = None,
 ) -> dict[str, int]:
-    now = datetime.now(timezone.utc)
+    if now is None:
+        now = datetime.now(timezone.utc)
     processed = skipped = outcomes_updated = admin_alerts = 0
     config = await _load_campaign_config(app_content_collection)
     users = await users_collection.find({
@@ -225,6 +227,22 @@ async def process_trial_campaign(
             )
             notification_type = f"trial_day_{day}"
             data = {"route": "/notifications", "trialDay": day, "fallback": "in_app", "usage": usage}
+            if day == 1:
+                used_nutrition = int(usage.get("nutrition_plan_count") or 0) > 0 or int(usage.get("meal_logged_count") or 0) > 0
+                if not used_nutrition:
+                    title = str(message_config.get("title") or "Set Up Your Nutrition Plan")
+                    message = str(
+                        message_config.get("body")
+                        or f"Hi {str(user.get('name') or 'there')}, you haven't set up your meal plan yet! Takes 2 minutes to get your tailored nutrition."
+                    )
+                    notification_type = "trial_day_1_nutrition_nudge"
+                    data.update({
+                        "route": "/mealPlan",
+                        "targeted_nudge": "nutrition_planner_unused",
+                        "channels": ["push", "in_app", "email"],
+                    })
+                else:
+                    data.update({"route": "/mealPlan"})
             if day in {2, 5}:
                 video_url = str(message_config.get("video_url") or "").strip()
                 if video_url:
