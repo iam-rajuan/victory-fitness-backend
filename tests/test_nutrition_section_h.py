@@ -253,3 +253,33 @@ def test_feature_separate_pre_and_post_workout_distinct_meals():
     # 80kg * 1.6 = 128g ± 5g
     assert 120 <= total_p <= 140
 
+    # Verify each meal strictly adheres to macro math kcal = (p*4) + (c*4) + (f*9)
+    for k in ["breakfast", "lunch", "pre_workout", "post_workout", "dinner"]:
+        meal = mon[k]
+        expected_kcal = (meal["p"] * 4) + (meal["c"] * 4) + (meal["f"] * 9)
+        assert abs(meal["kcal"] - expected_kcal) <= 5
+
+
+def test_nutrition_json_schemas_require_pre_and_post_workout():
+    """Verify NUTRITION_PLAN_JSON_SCHEMA, Monday schema, and Day schema require pre_workout and post_workout."""
+    from app.nutrition_ai import (
+        NUTRITION_PLAN_JSON_SCHEMA,
+        NUTRITION_PLAN_MONDAY_JSON_SCHEMA,
+        NUTRITION_PLAN_DAY_JSON_SCHEMA,
+    )
+
+    day_schema = NUTRITION_PLAN_JSON_SCHEMA["schema"]["properties"]["days"]["items"]
+    assert "pre_workout" in day_schema["required"]
+    assert "post_workout" in day_schema["required"]
+    assert "pre_workout" in day_schema["properties"]
+    assert "post_workout" in day_schema["properties"]
+
+    mon_day_schema = NUTRITION_PLAN_MONDAY_JSON_SCHEMA["schema"]["properties"]["day"]
+    assert "pre_workout" in mon_day_schema["required"]
+    assert "post_workout" in mon_day_schema["required"]
+
+    single_day_schema = NUTRITION_PLAN_DAY_JSON_SCHEMA["schema"]["properties"]["day"]
+    assert "pre_workout" in single_day_schema["required"]
+    assert "post_workout" in single_day_schema["required"]
+
+

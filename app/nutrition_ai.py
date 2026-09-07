@@ -100,7 +100,7 @@ NUTRITION_PLAN_JSON_SCHEMA = {
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
-                    "required": ["day", "breakfast", "lunch", "dinner"],
+                    "required": ["day", "breakfast", "lunch", "pre_workout", "post_workout", "dinner"],
                     "properties": {
                         "day": {
                             "type": "string",
@@ -108,6 +108,8 @@ NUTRITION_PLAN_JSON_SCHEMA = {
                         },
                         "breakfast": MEAL_ENTRY_SCHEMA,
                         "lunch": MEAL_ENTRY_SCHEMA,
+                        "pre_workout": MEAL_ENTRY_SCHEMA,
+                        "post_workout": MEAL_ENTRY_SCHEMA,
                         "dinner": MEAL_ENTRY_SCHEMA,
                     },
                 },
@@ -153,7 +155,7 @@ NUTRITION_PLAN_MONDAY_JSON_SCHEMA = {
             "day": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["day", "breakfast", "lunch", "dinner"],
+                "required": ["day", "breakfast", "lunch", "pre_workout", "post_workout", "dinner"],
                 "properties": {
                     "day": {
                         "type": "string",
@@ -161,6 +163,8 @@ NUTRITION_PLAN_MONDAY_JSON_SCHEMA = {
                     },
                     "breakfast": MEAL_ENTRY_SCHEMA,
                     "lunch": MEAL_ENTRY_SCHEMA,
+                    "pre_workout": MEAL_ENTRY_SCHEMA,
+                    "post_workout": MEAL_ENTRY_SCHEMA,
                     "dinner": MEAL_ENTRY_SCHEMA,
                 },
             },
@@ -182,7 +186,7 @@ NUTRITION_PLAN_DAY_JSON_SCHEMA = {
             "day": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["day", "breakfast", "lunch", "dinner"],
+                "required": ["day", "breakfast", "lunch", "pre_workout", "post_workout", "dinner"],
                 "properties": {
                     "day": {
                         "type": "string",
@@ -190,6 +194,8 @@ NUTRITION_PLAN_DAY_JSON_SCHEMA = {
                     },
                     "breakfast": MEAL_ENTRY_SCHEMA,
                     "lunch": MEAL_ENTRY_SCHEMA,
+                    "pre_workout": MEAL_ENTRY_SCHEMA,
+                    "post_workout": MEAL_ENTRY_SCHEMA,
                     "dinner": MEAL_ENTRY_SCHEMA,
                 },
             },
@@ -493,8 +499,9 @@ def _protein_target_instruction(payload: dict) -> str:
     target_protein = int(round(weight_kg * 1.6))
     return (
         f"PROTEIN ACCURACY TARGET: Daily protein across the 7-day plan must hit approximately {target_protein}g (1.6g/kg ±5g, tolerance range {target_protein - 5}g–{target_protein + 5}g). "
-        f"For this {weight_kg}kg user, ensure the average across all 7 days is approximately {target_protein}g/day (~128g/day for an 80kg user). "
-        f"Distribute: ~{int(target_protein * 0.25)}g breakfast, ~{int(target_protein * 0.35)}g lunch, ~{int(target_protein * 0.40)}g dinner. If goal is weight loss, keep protein high and reduce carbs.\n"
+        f"For this {weight_kg}kg user, ensure the daily total across all 5 meals (breakfast, lunch, pre_workout, post_workout, dinner) strictly hits approximately {target_protein}g/day (~128g/day for an 80kg user). "
+        f"Distribute across all 5 meals: ~{int(target_protein * 0.20)}g breakfast, ~{int(target_protein * 0.25)}g lunch, ~{int(target_protein * 0.15)}g pre_workout, ~{int(target_protein * 0.25)}g post_workout, ~{int(target_protein * 0.15)}g dinner. "
+        "Strict Macro Math: For each meal, kcal must equal (p * 4) + (c * 4) + (f * 9) within ±5 kcal. All meals must sum accurately to the daily calorie and protein totals.\n"
     )
 
 
@@ -598,13 +605,24 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         pre_dish = favorite_meals[(index + 1) % len(favorite_meals)] if has_explicit_favs else f"{display_cuisine.capitalize()} Energy Bowl"
         post_dish = favorite_meals[(index + 2) % len(favorite_meals)] if has_explicit_favs else f"Roasted {protein_name} Recovery Plate"
 
+        lunch_c = max(carb_target + 10, 52)
+        pre_c = max(carb_target + 18, 55)
+        post_c = 36
+        dinner_c = max(18, carb_target - 8)
+
+        b_kcal = (breakfast_p * 4) + (carb_target * 4) + (10 * 9)
+        l_kcal = (lunch_p * 4) + (lunch_c * 4) + (11 * 9)
+        pre_kcal = (pre_p * 4) + (pre_c * 4) + (5 * 9)
+        post_kcal = (post_p * 4) + (post_c * 4) + (7 * 9)
+        d_kcal = (dinner_p * 4) + (dinner_c * 4) + (12 * 9)
+
         days.append(
             {
                 "day": day_name,
                 "breakfast": {
                     "name": breakfast_name,
                     "desc": f"Morning energy anchor built around {breakfast_protein.lower()} and {breakfast_side}.",
-                    "kcal": base_kcal,
+                    "kcal": b_kcal,
                     "p": breakfast_p,
                     "c": carb_target,
                     "f": 10,
@@ -624,9 +642,9 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                 "lunch": {
                     "name": lunch_dish,
                     "desc": f"Midday fuel meal featuring {lunch_dish} with balanced macronutrients (Pre-workout 60–90 mins before training).",
-                    "kcal": base_kcal + 80,
+                    "kcal": l_kcal,
                     "p": lunch_p,
-                    "c": max(carb_target + 10, 52),  # Carb-forward substantial
+                    "c": lunch_c,  # Carb-forward substantial
                     "f": 11,
                     "timing": "Midday (12:30–13:30)",
                     "ingredients": [
@@ -645,9 +663,9 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                 "pre_workout": {
                     "name": f"Pre-Workout: {pre_dish}",
                     "desc": f"Pre-workout fuel ({pre_workout_timing}): Carb-forward energy snack to saturate glycogen stores.",
-                    "kcal": 280,
+                    "kcal": pre_kcal,
                     "p": pre_p,
-                    "c": max(carb_target + 18, 55),  # High carb-forward
+                    "c": pre_c,  # High carb-forward
                     "f": 5,  # Low fat
                     "timing": f"60–90m before workout ({workout_time})",
                     "ingredients": [
@@ -663,9 +681,9 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                 "post_workout": {
                     "name": f"Post-Workout: {post_dish}",
                     "desc": f"Post-workout recovery ({post_workout_timing}): High complete protein to trigger muscle repair.",
-                    "kcal": 380,
+                    "kcal": post_kcal,
                     "p": post_p,  # High protein-forward
-                    "c": 36,
+                    "c": post_c,
                     "f": 7,
                     "timing": "Within 45m of workout end",
                     "ingredients": [
@@ -681,10 +699,10 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                 },
                 "dinner": {
                     "name": dinner_dish,
-                    "desc": f"Post-workout recovery dinner (within 45 mins of training): High-protein recovery meal featuring {dinner_dish} providing sustained overnight amino acids.",
-                    "kcal": base_kcal + 60,
+                    "desc": f"Balanced evening recovery dinner featuring {dinner_dish} providing sustained overnight amino acids and micronutrients.",
+                    "kcal": d_kcal,
                     "p": dinner_p,  # Recovery protein
-                    "c": max(18, carb_target - 8),
+                    "c": dinner_c,
                     "f": 12,
                     "timing": "Evening (19:30–20:30)",
                     "ingredients": [
@@ -1185,7 +1203,7 @@ def _build_nutrition_plan_prompt(payload: dict) -> str:
         "{"
         '"summary": string, '
         '"goal_label": string, '
-        '"days": [{"day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun","breakfast":{...},"lunch":{...},"dinner":{...}}], '
+        '"days": [{"day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun","breakfast":{...},"lunch":{...},"pre_workout":{...},"post_workout":{...},"dinner":{...}}], '
         '"shopping_list": [{"category": string, "items": [{"name": string, "qty": string}]}]'
         "}\n"
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
@@ -1209,7 +1227,7 @@ def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
         "{"
         '"summary": string, '
         '"goal_label": string, '
-        '"day": {"day":"Mon","breakfast":{...},"lunch":{...},"dinner":{...}}'
+        '"day": {"day":"Mon","breakfast":{...},"lunch":{...},"pre_workout":{...},"post_workout":{...},"dinner":{...}}'
         "}\n"
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
         "Keep Monday realistic, practical, safe, and aligned to the full weekly goal.\n"
@@ -1231,7 +1249,7 @@ def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_pl
         "{"
         '"summary": string, '
         '"goal_label": string, '
-        '"days": [{"day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun","breakfast":{...},"lunch":{...},"dinner":{...}}], '
+        '"days": [{"day":"Mon|Tue|Wed|Thu|Fri|Sat|Sun","breakfast":{...},"lunch":{...},"pre_workout":{...},"post_workout":{...},"dinner":{...}}], '
         '"shopping_list": [{"category": string, "items": [{"name": string, "qty": string}]}]'
         "}\n"
         "Keep the provided Monday plan exactly consistent in food choices and meal structure.\n"
@@ -1256,7 +1274,7 @@ def _build_progressive_nutrition_plan_day_prompt(payload: dict, day_name: str, p
         "{"
         '"summary": string, '
         '"goal_label": string, '
-        f'"day": {{"day":"{day_name}","breakfast":{{...}},"lunch":{{...}},"dinner":{{...}}}}'
+        f'"day": {{"day":"{day_name}","breakfast":{{...}},"lunch":{{...}},"pre_workout":{{...}},"post_workout":{{...}},"dinner":{{...}}}}'
         "}\n"
         "Each meal entry must include: name, desc, kcal, p, c, f, ingredients, instructions.\n"
         "Keep the day consistent with the prior generated days, the user's goal, and the weekly nutrition direction.\n"
@@ -1639,20 +1657,26 @@ def _normalize_nutrition_plan(plan: dict) -> dict:
             for day in normalized_days
         ]
         avg_p = sum(day_proteins) / max(len(day_proteins), 1)
-        if abs(avg_p - target_p) > 5:
-            # Rebalance meals so the 7-day average strictly hits target_p ± 5g
-            for day in normalized_days:
-                keys = [k for k in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner") if k in day]
-                if not keys:
-                    continue
-                current_sum = sum(day[k].get("p", 0) for k in keys) or 1
-                for k in keys:
-                    meal = day[k]
-                    old_p = meal.get("p", 0)
+        # Strictly rebalance meals across all 7 days so daily protein hits target_p (1.6g/kg ± 5g) and kcal matches macros exactly
+        for day in normalized_days:
+            keys = [k for k in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner") if k in day]
+            if not keys:
+                continue
+            current_sum = sum(day[k].get("p", 0) for k in keys) or 1
+            allocated_p = 0
+            for idx, k in enumerate(keys):
+                meal = day[k]
+                old_p = meal.get("p", 0)
+                if idx == len(keys) - 1:
+                    new_p = max(target_p - allocated_p, 10)
+                else:
                     new_p = max(int(round(target_p * (old_p / current_sum))), 10)
-                    meal["p"] = new_p
-                    meal["kcal"] = max(int(meal.get("kcal", 400)) + (new_p - old_p) * 4, 150)
-            daily_protein = target_p
+                    allocated_p += new_p
+                meal["p"] = new_p
+                # Strict Macro Math: kcal = (p * 4) + (c * 4) + (f * 9)
+                calc_kcal = (meal["p"] * 4) + (meal.get("c", 30) * 4) + (meal.get("f", 10) * 9)
+                meal["kcal"] = max(calc_kcal, 100)
+        daily_protein = target_p
 
     if not daily_protein and normalized_days:
         daily_protein = sum(
@@ -1795,10 +1819,12 @@ def _normalize_day_plan(day: dict) -> dict:
         "lunch": _normalize_meal_entry(day.get("lunch", {})),
         "dinner": _normalize_meal_entry(day.get("dinner", {})),
     }
+
     if "pre_workout" in day and isinstance(day["pre_workout"], dict):
         result["pre_workout"] = _normalize_meal_entry(day["pre_workout"])
     if "post_workout" in day and isinstance(day["post_workout"], dict):
         result["post_workout"] = _normalize_meal_entry(day["post_workout"])
+
     return result
 
 
