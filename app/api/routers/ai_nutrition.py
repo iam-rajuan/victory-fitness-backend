@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...nutrition_ai import _build_fallback_nutrition_plan
 
 router = APIRouter()
 
@@ -260,7 +261,30 @@ async def nutrition_latest_plan(
     )
 
     if not record or not record.get("plan"):
-        return None
+        user_profile = dict(user.get("nutrition_onboarding_profile") or {})
+        if not user_profile:
+            user_profile = {
+                "goal": user.get("goal") or "g1",
+                "weight": float(user.get("weight") or 70.0),
+                "diet": user.get("diet") or "d1",
+                "cuisine": user.get("cuisine") or "balanced",
+            }
+        base_plan = _build_fallback_nutrition_plan(user_profile)
+        created_at = datetime.now(timezone.utc)
+        insert_res = await nutrition_plans_collection.insert_one(
+            {
+                "user_id": str(user["_id"]),
+                "profile_hash": "starter_baseline",
+                "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
+                "plan": base_plan,
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        )
+        record = {
+            "_id": insert_res.inserted_id,
+            "plan": base_plan,
+        }
 
     plan_data = dict(record["plan"])
 
@@ -303,8 +327,30 @@ async def nutrition_latest_plan_completion(
     )
 
     if not record or not record.get("plan"):
-
-        raise HTTPException(status_code=404, detail="Nutrition plan not found")
+        user_profile = dict(user.get("nutrition_onboarding_profile") or {})
+        if not user_profile:
+            user_profile = {
+                "goal": user.get("goal") or "g1",
+                "weight": float(user.get("weight") or 70.0),
+                "diet": user.get("diet") or "d1",
+                "cuisine": user.get("cuisine") or "balanced",
+            }
+        base_plan = _build_fallback_nutrition_plan(user_profile)
+        created_at = datetime.now(timezone.utc)
+        insert_res = await nutrition_plans_collection.insert_one(
+            {
+                "user_id": str(user["_id"]),
+                "profile_hash": "starter_baseline",
+                "generation_mode": STANDARD_NUTRITION_PLAN_MODE,
+                "plan": base_plan,
+                "created_at": created_at,
+                "updated_at": created_at,
+            }
+        )
+        record = {
+            "_id": insert_res.inserted_id,
+            "plan": base_plan,
+        }
 
     plan_data = dict(record["plan"])
 
@@ -337,6 +383,12 @@ async def nutrition_latest_plan_completion(
         },
 
     )
+
+    if payload.completed:
+        try:
+            await _record_trial_engagement(user, "meal_logged")
+        except Exception:
+            pass
 
     logger.info(
 
