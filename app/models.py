@@ -171,6 +171,7 @@ class MeResponse(BaseModel):
     training_trigger_context: str | None = None
     training_trigger_action: str | None = None
     daily_protein_target: int | None = None
+    share_activity_with_network: bool = True
 
 
 class UpdateMeRequest(BaseModel):
@@ -187,6 +188,7 @@ class UpdateMeRequest(BaseModel):
     training_trigger_context: str | None = Field(default=None, max_length=240)
     training_trigger_action: str | None = Field(default=None, max_length=240)
     daily_protein_target: int | None = None
+    share_activity_with_network: bool | None = None
 
 
 class PushTokenRequest(BaseModel):

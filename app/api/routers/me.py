@@ -122,8 +122,10 @@ async def update_me(
         update_doc["profile_image"] = payload.profileImage.strip()
 
     if payload.onboarding_completed is not None:
-
         update_doc["onboarding_completed"] = payload.onboarding_completed
+
+    if payload.share_activity_with_network is not None:
+        update_doc["share_activity_with_network"] = bool(payload.share_activity_with_network)
 
     if not update_doc:
 

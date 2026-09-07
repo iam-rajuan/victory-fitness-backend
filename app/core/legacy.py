@@ -9339,6 +9339,8 @@ async def _serialize_me_record(record: dict) -> dict:
         "trial_outcome": trial_summary["outcome"],
         "gold_trial": trial_summary,
         "marketing_consent": bool(record.get("marketing_consent")),
+        "daily_protein_target": record.get("daily_protein_target"),
+        "share_activity_with_network": bool(record.get("share_activity_with_network", True)),
 
     }
 
@@ -9445,21 +9447,20 @@ def _parse_completed_activity_date(value: object) -> datetime | None:
     return None
 
 def _calculate_current_streak(completed_dates: set) -> int:
-
     if not completed_dates:
-
+        return 0
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    
+    # If no workout logged today or yesterday, the streak broke after 24h
+    if today not in completed_dates and yesterday not in completed_dates:
         return 0
 
-    current_day = max(completed_dates)
-
+    current_day = today if today in completed_dates else yesterday
     streak = 0
-
     while current_day in completed_dates:
-
         streak += 1
-
         current_day = current_day - timedelta(days=1)
-
     return streak
 
 async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
@@ -9472,35 +9473,37 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
 
     ).to_list(length=None)
 
-    if not memberships:
-
-        return {
-
-            "points": 0,
-
-            "workouts_completed": 0,
-
-            "workouts_total": 0,
-
-            "streak_days": 0,
-
-            "rank": "Noob",
-
-            "next_rank": "Bronze",
-
-            "points_to_next_rank": 500,
-
-            "rank_progress_fraction": 0.0,
-
-        }
-
     points = 0
-
     workouts_completed = 0
-
     workouts_total = 0
-
     completed_dates: set = set()
+
+    # Query completed workout logs (independent of challenges)
+    try:
+        raw_logs = await workout_logs_collection.find(
+            {"user_id": user_id, "$or": [{"status": "completed"}, {"completed": True}]},
+            projection={"started_at": 1, "completed_at": 1, "created_at": 1}
+        ).to_list(length=500)
+        for log in raw_logs:
+            log_date = log.get("completed_at") or log.get("started_at") or log.get("created_at")
+            d = _parse_completed_activity_date(log_date)
+            if d:
+                completed_dates.add(d.date())
+                workouts_completed += 1
+    except Exception:
+        pass
+
+    if not memberships and not completed_dates:
+        return {
+            "points": 0,
+            "workouts_completed": 0,
+            "workouts_total": 0,
+            "streak_days": 0,
+            "rank": "Noob",
+            "next_rank": "Bronze",
+            "points_to_next_rank": 500,
+            "rank_progress_fraction": 0.0,
+        }
 
     challenge_ids: list[ObjectId] = []
 
