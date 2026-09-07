@@ -706,9 +706,9 @@ MEDIA_ROOT = Path("/tmp/victory-fitness-media") if settings.is_vercel else Path(
 
 MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 
-COMMUNITY_IMAGE_MAX_SIZE_BYTES = 1 * 1024 * 1024
+COMMUNITY_IMAGE_MAX_SIZE_BYTES = 15 * 1024 * 1024
 
-COMMUNITY_VIDEO_MAX_SIZE_BYTES = 20 * 1024 * 1024
+COMMUNITY_VIDEO_MAX_SIZE_BYTES = 50 * 1024 * 1024
 
 @lru_cache(maxsize=1)
 
@@ -5341,9 +5341,15 @@ def _upload_community_image_to_s3(
 
             "image/webp": ".webp",
 
+            "image/gif": ".gif",
+
+            "image/heic": ".heic",
+
+            "image/heif": ".heif",
+
         },
 
-        invalid_type_message="Only JPEG, PNG, and WEBP images are supported",
+        invalid_type_message="Only JPEG, PNG, WEBP, GIF, and HEIC images are supported",
 
         invalid_payload_message="Image payload is not valid base64",
 
@@ -5389,9 +5395,15 @@ def _upload_community_video_to_s3(
 
             "video/webm": ".webm",
 
+            "video/x-m4v": ".m4v",
+
+            "video/m4v": ".m4v",
+
+            "video/ogg": ".ogv",
+
         },
 
-        invalid_type_message="Only MP4, MOV, and WEBM videos are supported",
+        invalid_type_message="Only MP4, MOV, WEBM, and M4V videos are supported",
 
         invalid_payload_message="Video payload is not valid base64",
 

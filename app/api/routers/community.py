@@ -1,3 +1,4 @@
+import mimetypes
 from fastapi import APIRouter
 
 from ...core.legacy import *
@@ -82,7 +83,39 @@ async def create_community_post(
 
                     file_name = media_file.filename or file_name
 
-                    mime_type = str(media_file.content_type or mime_type).strip().lower() or mime_type
+                    raw_content_type = str(getattr(media_file, "content_type", "") or "").strip().lower()
+                    detected_mime = raw_content_type
+                    if not detected_mime or detected_mime in ("application/octet-stream", "binary/octet-stream"):
+                        if file_name:
+                            guessed_mime, _ = mimetypes.guess_type(file_name)
+                            if guessed_mime:
+                                detected_mime = guessed_mime.lower()
+                        if (not detected_mime or detected_mime in ("application/octet-stream", "binary/octet-stream")) and mime_type and mime_type not in ("application/octet-stream", "binary/octet-stream"):
+                            detected_mime = mime_type.lower()
+                        if not detected_mime or detected_mime in ("application/octet-stream", "binary/octet-stream"):
+                            lower_name = (file_name or "").lower()
+                            if lower_name.endswith((".jpg", ".jpeg")):
+                                detected_mime = "image/jpeg"
+                            elif lower_name.endswith(".png"):
+                                detected_mime = "image/png"
+                            elif lower_name.endswith(".webp"):
+                                detected_mime = "image/webp"
+                            elif lower_name.endswith(".gif"):
+                                detected_mime = "image/gif"
+                            elif lower_name.endswith((".heic", ".heif")):
+                                detected_mime = "image/heic"
+                            elif lower_name.endswith(".mp4"):
+                                detected_mime = "video/mp4"
+                            elif lower_name.endswith(".mov"):
+                                detected_mime = "video/quicktime"
+                            elif lower_name.endswith(".webm"):
+                                detected_mime = "video/webm"
+                            elif lower_name.endswith(".m4v"):
+                                detected_mime = "video/mp4"
+                            elif lower_name.endswith((".ogg", ".ogv")):
+                                detected_mime = "video/ogg"
+
+                    mime_type = detected_mime or mime_type or "image/jpeg"
 
                     if mime_type.startswith("image/"):
 
@@ -120,9 +153,15 @@ async def create_community_post(
 
                                     "image/webp": ".webp",
 
+                                    "image/gif": ".gif",
+
+                                    "image/heic": ".heic",
+
+                                    "image/heif": ".heif",
+
                                 },
 
-                                invalid_type_message="Only JPEG, PNG, and WEBP images are supported",
+                                invalid_type_message="Only JPEG, PNG, WEBP, GIF, and HEIC images are supported",
 
                                 max_size_bytes=COMMUNITY_IMAGE_MAX_SIZE_BYTES,
 
@@ -172,9 +211,15 @@ async def create_community_post(
 
                                     "video/webm": ".webm",
 
+                                    "video/x-m4v": ".m4v",
+
+                                    "video/m4v": ".m4v",
+
+                                    "video/ogg": ".ogv",
+
                                 },
 
-                                invalid_type_message="Only MP4, MOV, and WEBM videos are supported",
+                                invalid_type_message="Only MP4, MOV, WEBM, and M4V videos are supported",
 
                                 max_size_bytes=COMMUNITY_VIDEO_MAX_SIZE_BYTES,
 

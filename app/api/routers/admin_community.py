@@ -5,49 +5,48 @@ from ...core.legacy import *
 router = APIRouter()
 
 @router.get("/admin/community/posts", response_model=CommunityPostListResponse)
-
 async def admin_get_community_posts(
     page: int = Query(default=1, ge=1),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=50, ge=1, le=100),
     search: str = Query(default="", max_length=160),
+    audience: str = Query(default="", max_length=50),
     _: dict = Depends(_require_admin_user),
 ) -> CommunityPostListResponse:
+    search_str = search if isinstance(search, str) else str(getattr(search, "default", "") or "")
+    audience_str = audience if isinstance(audience, str) else str(getattr(audience, "default", "") or "")
+    page_num = page if isinstance(page, int) else int(getattr(page, "default", 1) or 1)
+    limit_num = limit if isinstance(limit, int) else int(getattr(limit, "default", 50) or 50)
 
     query: dict[str, Any] = {}
-    if search.strip():
+    if search_str.strip():
         query["$or"] = [
-            {"content": {"$regex": search.strip(), "$options": "i"}},
-            {"author_name": {"$regex": search.strip(), "$options": "i"}},
+            {"content": {"$regex": search_str.strip(), "$options": "i"}},
+            {"author_name": {"$regex": search_str.strip(), "$options": "i"}},
         ]
+    if audience_str.strip() and audience_str.strip().upper() != "ALL":
+        query["audience"] = audience_str.strip().upper()
     total = await community_posts_collection.count_documents(query)
     records = await community_posts_collection.find(
-
         query,
-
         sort=[("created_at", -1), ("_id", -1)],
-
-        skip=(page - 1) * limit,
-        limit=limit,
-
-    ).to_list(length=limit)
-
+        skip=(page_num - 1) * limit_num,
+        limit=limit_num,
+    ).to_list(length=limit_num)
     posts = await _serialize_community_post_records(records, None, comment_limit_per_post=200, include_reactions=True)
-
     return CommunityPostListResponse(
-
-        posts=[CommunityPostResponse(**post) for post in posts], page=page, limit=limit, total=total, has_more=page * limit < total
-
+        posts=[CommunityPostResponse(**post) for post in posts], page=page_num, limit=limit_num, total=total, has_more=page_num * limit_num < total
     )
 
 @router.get("/admin/community/feed", response_model=CommunityPostListResponse)
 async def admin_get_community_feed(
     page: int = Query(default=1, ge=1),
-    limit: int = Query(default=20, ge=1, le=100),
+    limit: int = Query(default=50, ge=1, le=100),
     search: str = Query(default="", max_length=160),
+    audience: str = Query(default="", max_length=50),
     admin_user: dict = Depends(_require_admin_user),
 ) -> CommunityPostListResponse:
     """Feed section endpoint kept separate from broadcast and analytics sections."""
-    return await admin_get_community_posts(page=page, limit=limit, search=search, _=admin_user)
+    return await admin_get_community_posts(page=page, limit=limit, search=search, audience=audience, _=admin_user)
 
 @router.post("/admin/community/posts", response_model=CommunityPostResponse, status_code=status.HTTP_201_CREATED)
 
@@ -88,6 +87,8 @@ async def admin_create_community_post(
     image_url = ""
 
     video_url = ""
+
+    audio_url = ""
 
     if payload.image_base64:
 
@@ -151,30 +152,26 @@ async def admin_create_community_post(
 
         video_url = external_video_url
 
+    admin_name = str(admin_user.get("name") or "Victory Team").strip() or "Victory Team"
+    admin_profile_image = str(admin_user.get("profile_image") or "").strip()
+    target_audience = str(payload.audience or "ALL").strip().upper() or "ALL"
+
     document = {
-
         "_id": ObjectId(),
-
         "author_id": str(admin_user["_id"]),
-
-        "audience": payload.audience.strip(),
-
+        "author_name": admin_name,
+        "author_role": "admin",
+        "author_profile_image": admin_profile_image,
+        "audience": target_audience,
         "content": payload.content.strip(),
-
         "image_url": image_url,
-
         "video_url": video_url,
-
         "audio_url": audio_url,
-
         "like_count": 0,
-
         "comment_count": 0,
-
+        "is_admin_broadcast": True,
         "created_at": now,
-
         "updated_at": now,
-
     }
 
     await community_posts_collection.insert_one(document)
@@ -258,8 +255,7 @@ async def admin_update_community_post(
         update_doc["content"] = payload.content.strip()
 
     if payload.audience is not None:
-
-        update_doc["audience"] = payload.audience.strip()
+        update_doc["audience"] = payload.audience.strip().upper()
 
     if payload.flagged is not None:
         update_doc["flagged"] = payload.flagged
