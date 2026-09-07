@@ -1,5 +1,7 @@
+import asyncio
 import mimetypes
 from fastapi import APIRouter
+from starlette.requests import ClientDisconnect
 
 from ...core.legacy import *
 
@@ -61,7 +63,10 @@ async def create_community_post(
 
     if "multipart/form-data" in content_type:
 
-        form = await request.form()
+        try:
+            form = await request.form()
+        except ClientDisconnect:
+            raise HTTPException(status_code=499, detail="Client closed connection before upload completed")
 
         content = str(form.get("content") or "").strip()
 
@@ -131,42 +136,25 @@ async def create_community_post(
 
                         try:
 
-                            image_url = _upload_binary_bytes_to_s3(
-
+                            image_url = await asyncio.to_thread(
+                                _upload_binary_bytes_to_s3,
                                 "community-images",
-
                                 str(user["_id"]),
-
                                 payload,
-
                                 mime_type,
-
                                 file_name,
-
                                 allowed_types={
-
                                     "image/jpeg": ".jpg",
-
                                     "image/jpg": ".jpg",
-
                                     "image/png": ".png",
-
                                     "image/webp": ".webp",
-
                                     "image/gif": ".gif",
-
                                     "image/heic": ".heic",
-
                                     "image/heif": ".heif",
-
                                 },
-
                                 invalid_type_message="Only JPEG, PNG, WEBP, GIF, and HEIC images are supported",
-
                                 max_size_bytes=COMMUNITY_IMAGE_MAX_SIZE_BYTES,
-
                                 upload_log_label="image",
-
                             )
 
                         except ValueError as exc:
@@ -191,40 +179,24 @@ async def create_community_post(
 
                         try:
 
-                            video_url = _upload_binary_bytes_to_s3(
-
+                            video_url = await asyncio.to_thread(
+                                _upload_binary_bytes_to_s3,
                                 "community-videos",
-
                                 str(user["_id"]),
-
                                 payload,
-
                                 mime_type,
-
                                 file_name,
-
                                 allowed_types={
-
                                     "video/mp4": ".mp4",
-
                                     "video/quicktime": ".mov",
-
                                     "video/webm": ".webm",
-
                                     "video/x-m4v": ".m4v",
-
                                     "video/m4v": ".m4v",
-
                                     "video/ogg": ".ogv",
-
                                 },
-
                                 invalid_type_message="Only MP4, MOV, WEBM, and M4V videos are supported",
-
                                 max_size_bytes=COMMUNITY_VIDEO_MAX_SIZE_BYTES,
-
                                 upload_log_label="video",
-
                             )
 
                         except ValueError as exc:
@@ -313,16 +285,12 @@ async def create_community_post(
 
         try:
 
-            image_url = _upload_community_image_to_s3(
-
+            image_url = await asyncio.to_thread(
+                _upload_community_image_to_s3,
                 str(user["_id"]),
-
                 image_base64,
-
                 mime_type,
-
                 file_name,
-
             )
 
         except ValueError as exc:
@@ -337,16 +305,12 @@ async def create_community_post(
 
         try:
 
-            video_url = _upload_community_video_to_s3(
-
+            video_url = await asyncio.to_thread(
+                _upload_community_video_to_s3,
                 str(user["_id"]),
-
                 video_base64,
-
                 mime_type,
-
                 file_name,
-
             )
 
         except ValueError as exc:
