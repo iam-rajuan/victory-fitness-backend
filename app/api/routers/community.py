@@ -5,34 +5,27 @@ from ...core.legacy import *
 router = APIRouter()
 
 @router.get("/community/posts", response_model=CommunityPostListResponse)
-
 async def get_community_posts(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=20, ge=1, le=100),
+    audience: str | None = Query(default=None),
     user: dict = Depends(_require_community_access_user),
 ) -> CommunityPostListResponse:
-
-    allowed_audiences = _get_allowed_community_audiences(user)
-
-    query = {"audience": {"$in": allowed_audiences}}
+    query: dict[str, Any] = {}
+    if audience and str(audience).strip().upper() != "ALL":
+        query["audience"] = str(audience).strip().upper()
     total = await community_posts_collection.count_documents(query)
     records = await community_posts_collection.find(
-
         query,
-
         sort=[("created_at", -1), ("_id", -1)],
-
         skip=(page - 1) * limit,
         limit=limit,
-
     ).to_list(length=limit)
 
     posts = await _serialize_community_post_records(records, user, include_reactions=False)
 
     return CommunityPostListResponse(
-
         posts=[CommunityPostResponse(**post) for post in posts], page=page, limit=limit, total=total, has_more=page * limit < total
-
     )
 
 @router.post("/community/posts", response_model=CommunityPostResponse, status_code=status.HTTP_201_CREATED)
@@ -340,12 +333,32 @@ async def create_community_post(
         "like_count": 0,
 
         "comment_count": 0,
-
         "created_at": now,
-
         "updated_at": now,
-
     }
+
+    is_workout_share = False
+    if "form" in locals():
+        is_workout_share = bool(form.get("is_workout_share")) or str(form.get("prefill_source") or "").strip().lower() in {"workout_completion", "workout_card"}
+    elif "raw_payload" in locals() and isinstance(raw_payload, dict):
+        is_workout_share = bool(raw_payload.get("is_workout_share")) or str(raw_payload.get("prefill_source") or "").strip().lower() in {"workout_completion", "workout_card"}
+
+    if not is_workout_share and ("workout completed" in content.lower() or "#workoutcompleted" in content.lower() or ("streak" in content.lower() and "kcal" in content.lower())):
+        is_workout_share = True
+
+    if is_workout_share:
+        document["is_workout_share"] = True
+        try:
+            if points_log_collection is not None:
+                await points_log_collection.insert_one({
+                    "user_id": str(user["_id"]),
+                    "points": 30,
+                    "reason": "Shared workout completion card to Community",
+                    "created_at": now,
+                })
+            await users_collection.update_one({"_id": user["_id"]}, {"$inc": {"points": 30}})
+        except Exception:
+            pass
 
     await community_posts_collection.insert_one(document)
 

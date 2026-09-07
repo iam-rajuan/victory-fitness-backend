@@ -341,46 +341,33 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
     update_doc = {
 
         "$set": {
-
             "name": full_name,
             "first_name": first_name,
             "last_name": last_name,
-
             "email": email,
             "contact_number": mobile,
             "marketing_consent": payload.marketing_consent,
             "signup_source": payload.signup_source.strip() or "organic",
             "phase_one_beta_requested_code": normalized_beta_access_code or None,
             "marketing_consent_at": now if payload.marketing_consent else None,
-
+            "referred_by_user_id": str(payload.inviter_id or "").strip() or None,
+            "invite_id": str(payload.invite_id or "").strip() or None,
+            "joined_via_challenge_id": str(payload.challenge_id or "").strip() or None,
+            "referral_code": str(payload.referral_code or "").strip() or None,
             "password_hash": hash_password(payload.password),
-
             "is_verified": False,
-
             "role": "user",
-
             "is_admin": False,
-
             "subscription_tier": "NONE",
-
             "subscription_role": "NONE",
-
             "subscription_status": "NONE",
-
             "subscription_billing_cycle": "yearly",
-
             "subscription_is_purchased": False,
-
             "subscription_purchase_source": "",
-
             "onboarding_completed": False,
-
             "verification_code_hash": hash_password(code),
-
             "verification_code_expires_at": now + timedelta(minutes=10),
-
             "updated_at": now,
-
         },
 
         "$setOnInsert": {"created_at": now},
@@ -488,6 +475,30 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
     )
 
     user["is_verified"] = True
+
+    # Award 50 points to inviter on friend registration verification
+    inviter_user_id = str(user.get("referred_by_user_id") or "").strip()
+    if not inviter_user_id and isinstance(user.get("referral_program"), dict):
+        inviter_user_id = str((user.get("referral_program") or {}).get("referred_by_user_id") or "").strip()
+    if inviter_user_id and not user.get("friend_registration_reward_awarded"):
+        try:
+            now_utc = datetime.now(timezone.utc)
+            if points_log_collection is not None:
+                await points_log_collection.insert_one({
+                    "user_id": inviter_user_id,
+                    "points": 50,
+                    "reason": "Friend registered via invite",
+                    "referred_friend_id": str(user["_id"]),
+                    "created_at": now_utc,
+                })
+            inviter_filter = {"_id": ObjectId(inviter_user_id)} if ObjectId.is_valid(inviter_user_id) else {"_id": inviter_user_id}
+            await users_collection.update_one(inviter_filter, {"$inc": {"points": 50}})
+            await users_collection.update_one({"_id": user["_id"]}, {"$set": {"friend_registration_reward_awarded": True}})
+            if user.get("invite_id") and invites_collection is not None:
+                inv_filter = {"_id": ObjectId(user["invite_id"])} if ObjectId.is_valid(user["invite_id"]) else {"_id": user["invite_id"]}
+                await invites_collection.update_one(inv_filter, {"$set": {"accepted": True, "accepted_at": now_utc, "accepted_by_user_id": str(user["_id"])}})
+        except Exception as e:
+            logger.error("Failed to award inviter registration points: %s", e)
 
     logger.info("auth_verify_success email=%s", email)
 

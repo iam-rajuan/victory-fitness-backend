@@ -8,6 +8,8 @@ from ...core.legacy import (
     _WorkoutLogRequest,
     dependency_require_access_user,
     workout_logs_collection,
+    points_log_collection,
+    users_collection,
     _record_analytics_event,
 )
 
@@ -54,6 +56,30 @@ async def create_workout_log(
         result = await workout_logs_collection.insert_one(doc)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"workout_logs insert failed: {exc}")
+
+    if payload.status == "completed":
+        try:
+            prev_completed = await workout_logs_collection.count_documents(
+                {"user_id": user_id, "status": "completed", "_id": {"$ne": result.inserted_id}}
+            )
+            if prev_completed == 0:
+                inviter_user_id = str(user.get("referred_by_user_id") or "").strip()
+                if not inviter_user_id and isinstance(user.get("referral_program"), dict):
+                    inviter_user_id = str((user.get("referral_program") or {}).get("referred_by_user_id") or "").strip()
+                if inviter_user_id and not user.get("first_workout_reward_awarded"):
+                    if points_log_collection is not None:
+                        await points_log_collection.insert_one({
+                            "user_id": inviter_user_id,
+                            "points": 50,
+                            "reason": "Referred friend completed first workout",
+                            "referred_friend_id": user_id,
+                            "created_at": now,
+                        })
+                    inviter_filter = {"_id": ObjectId(inviter_user_id)} if ObjectId.is_valid(inviter_user_id) else {"_id": inviter_user_id}
+                    await users_collection.update_one(inviter_filter, {"$inc": {"points": 50}})
+                    await users_collection.update_one({"_id": user.get("_id")}, {"$set": {"first_workout_reward_awarded": True}})
+        except Exception:
+            pass
     await _record_analytics_event(
         f"workout_{payload.status}",
         user_id=user_id,

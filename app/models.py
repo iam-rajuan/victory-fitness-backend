@@ -17,6 +17,10 @@ class RegisterRequest(BaseModel):
     marketing_consent: bool = False
     signup_source: str = Field(default="organic", max_length=120)
     beta_access_code: str | None = Field(default=None, min_length=3, max_length=120)
+    inviter_id: str | None = None
+    invite_id: str | None = None
+    referral_code: str | None = None
+    challenge_id: str | None = None
 
     @field_validator("name", "surname", "mobile")
     @classmethod
@@ -760,6 +764,8 @@ class CommunityPostResponse(BaseModel):
     flag_reason: str = ""
     moderation_status: str = "published"
     moderator_notes: str = ""
+    is_locked: bool = False
+    is_admin_broadcast: bool = False
 
 
 class CommunityPostListResponse(BaseModel):

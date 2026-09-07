@@ -7860,7 +7860,11 @@ def _serialize_community_post_record(record: dict, author_record: dict | None = 
 
         "moderator_notes": str(record.get("moderator_notes") or ""),
 
-}
+        "is_locked": False,
+
+        "is_admin_broadcast": author_role == "admin" or bool(record.get("is_admin_broadcast")),
+
+    }
 
 def _serialize_community_comment_record(record: dict, author_record: dict | None = None) -> dict:
 
@@ -7959,6 +7963,12 @@ async def _serialize_community_post_records(
         serialized = _serialize_community_post_record(record, author_records_by_id.get(author_id))
 
         post_id = serialized["id"]
+
+        allowed_audiences = set(_get_allowed_community_audiences(viewer_user)) if viewer_user else {"ALL"}
+        audience = str(serialized.get("audience") or "ALL").upper()
+        is_locked = bool(viewer_user) and not bool(viewer_user.get("is_admin")) and audience not in allowed_audiences
+        serialized["is_locked"] = is_locked
+        serialized["is_admin_broadcast"] = serialized.get("author_role") == "admin" or bool(record.get("is_admin_broadcast"))
 
         serialized["viewer_has_liked"] = post_id in liked_post_ids
 
@@ -9559,7 +9569,27 @@ async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
     except Exception:
         pass
 
-    if not memberships and not completed_dates:
+    extra_points = 0
+    try:
+        if points_log_collection is not None:
+            point_entries = await points_log_collection.find({"user_id": user_id}).to_list(length=1000)
+            for entry in point_entries:
+                extra_points += max(int(entry.get("points") or 0), 0)
+    except Exception:
+        pass
+    user_points = 0
+    try:
+        user_filter = {"_id": ObjectId(user_id)} if ObjectId.is_valid(user_id) else {"_id": user_id}
+        user_doc = await users_collection.find_one(user_filter, projection={"points": 1})
+        if user_doc:
+            user_points = max(int(user_doc.get("points") or 0), 0)
+    except Exception:
+        pass
+    if user_points > extra_points:
+        extra_points = user_points
+    points += extra_points
+
+    if not memberships and not completed_dates and points == 0:
         return {
             "points": 0,
             "workouts_completed": 0,
