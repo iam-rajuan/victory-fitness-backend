@@ -301,7 +301,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
 
     prompt = _build_nutrition_plan_prompt(payload)
     plan_text = _generate_nutrition_plan_json(prompt)
-    plan = _parse_or_repair_nutrition_plan(plan_text)
+    plan = _parse_or_repair_nutrition_plan(plan_text, payload=payload)
     if plan is None:
         plan = _build_fallback_nutrition_plan(payload)
 
@@ -1639,26 +1639,30 @@ def _parse_json_object(text: str) -> dict:
     raise json.JSONDecodeError("No valid JSON object found", cleaned, 0)
 
 
-def _normalize_nutrition_plan(plan: dict) -> dict:
+def _normalize_nutrition_plan(plan: dict, payload: dict | None = None) -> dict:
     normalized_days = _normalize_plan_days(plan.get("days", []))
     shopping_list = plan.get("shopping_list", [])
     daily_protein = plan.get("daily_protein_target")
 
-    baseline_w = plan.get("baseline_weight")
-    weight_kg = _parse_weight_kg(baseline_w) if baseline_w else 0.0
+    user_weight_input = (
+        (payload.get("weight") if payload else None)
+        or (plan.get("profile") if isinstance(plan.get("profile"), dict) else {}).get("weight")
+        or plan.get("baseline_weight")
+    )
+    user_goal_input = (
+        (payload.get("goal") if payload else None)
+        or (plan.get("profile") if isinstance(plan.get("profile"), dict) else {}).get("goal")
+        or plan.get("goal")
+    )
+
+    weight_kg = _parse_weight_kg(user_weight_input) if user_weight_input else 0.0
     if weight_kg <= 0 and daily_protein:
         weight_kg = round(daily_protein / 1.6, 1)
 
-    target_p = int(round(weight_kg * 1.6)) if weight_kg > 0 else 0
+    target_p, multiplier = calculate_protein_target(weight_kg, user_goal_input) if weight_kg > 0 else (0, 1.6)
 
-    # Ensure total protein across 7-day plan strictly hits 1.6g/kg ± 5g
+    # Ensure total protein across 7-day plan strictly hits target_p (1.6g/kg ± 5g)
     if target_p > 0 and normalized_days:
-        day_proteins = [
-            sum(meal.get("p", 0) for k, meal in day.items() if k != "day" and isinstance(meal, dict))
-            for day in normalized_days
-        ]
-        avg_p = sum(day_proteins) / max(len(day_proteins), 1)
-        # Strictly rebalance meals across all 7 days so daily protein hits target_p (1.6g/kg ± 5g) and kcal matches macros exactly
         for day in normalized_days:
             keys = [k for k in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner") if k in day]
             if not keys:
@@ -1688,7 +1692,7 @@ def _normalize_nutrition_plan(plan: dict) -> dict:
         "summary": _normalize_text(plan.get("summary"), "A practical weekly nutrition plan tailored to your profile."),
         "goal_label": _normalize_text(plan.get("goal_label"), "Personalized Nutrition Plan"),
         "daily_protein_target": daily_protein,
-        "protein_per_kg": 1.6 if weight_kg > 0 else plan.get("protein_per_kg"),
+        "protein_per_kg": multiplier if weight_kg > 0 else plan.get("protein_per_kg", 1.6),
         "baseline_weight": weight_kg if weight_kg > 0 else plan.get("baseline_weight"),
         "days": normalized_days,
         "shopping_list": _normalize_shopping_list(shopping_list, normalized_days),
@@ -1700,9 +1704,9 @@ def _normalize_nutrition_plan(plan: dict) -> dict:
     return _validate_nutrition_plan(normalized_plan)
 
 
-def _parse_or_repair_nutrition_plan(text: str) -> dict | None:
+def _parse_or_repair_nutrition_plan(text: str, payload: dict | None = None) -> dict | None:
     try:
-        return _normalize_nutrition_plan(_parse_json_object(text))
+        return _normalize_nutrition_plan(_parse_json_object(text), payload=payload)
     except json.JSONDecodeError:
         pass
 
@@ -1711,7 +1715,7 @@ def _parse_or_repair_nutrition_plan(text: str) -> dict | None:
         return None
 
     try:
-        return _normalize_nutrition_plan(_parse_json_object(repaired_text))
+        return _normalize_nutrition_plan(_parse_json_object(repaired_text), payload=payload)
     except json.JSONDecodeError:
         return None
 
