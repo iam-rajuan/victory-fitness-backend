@@ -110,6 +110,11 @@ async def workout_strength_plan_completion_report(
         raise HTTPException(status_code=404, detail="Strength workout plan not found")
     plan = _serialize_strength_workout_plan_record(record)
     plan_is_complete = bool(plan.days) and all(next((item.completed for item in plan.progress if item.day == workout_day.day), False) for workout_day in plan.days)
+    if duration_seconds <= 0:
+        for p in plan.progress:
+            if (p.day == day or not day) and p.duration_seconds:
+                duration_seconds = p.duration_seconds
+                break
     png_bytes, share_message = _build_strength_workout_completion_png(
         plan,
         str(user.get("name") or "Victory Member"),
@@ -609,6 +614,8 @@ async def workout_strength_plan_progress_update(
 
     if payload.duration_seconds is not None:
         day_progress["duration_seconds"] = int(payload.duration_seconds)
+    elif payload.completed is False:
+        day_progress["duration_seconds"] = None
 
     if is_completed:
 
