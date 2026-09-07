@@ -96,6 +96,10 @@ async def update_me(
         update_doc["motivation_statement"] = motivation_statement or None
         update_doc["onboarding_state.motivationStatement"] = motivation_statement
 
+    if payload.daily_protein_target is not None:
+        update_doc["daily_protein_target"] = payload.daily_protein_target
+        update_doc["onboarding_state.dailyProteinTarget"] = payload.daily_protein_target
+
     if payload.identity_statement is not None:
         identity_statement = payload.identity_statement
         update_doc["identity_statement"] = identity_statement if identity_statement.strip() else None

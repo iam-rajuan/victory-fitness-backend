@@ -170,6 +170,7 @@ class MeResponse(BaseModel):
     workout_unlock_label: str | None = None
     training_trigger_context: str | None = None
     training_trigger_action: str | None = None
+    daily_protein_target: int | None = None
 
 
 class UpdateMeRequest(BaseModel):
@@ -185,6 +186,7 @@ class UpdateMeRequest(BaseModel):
     workout_unlock_label: str | None = Field(default=None, max_length=120)
     training_trigger_context: str | None = Field(default=None, max_length=240)
     training_trigger_action: str | None = Field(default=None, max_length=240)
+    daily_protein_target: int | None = None
 
 
 class PushTokenRequest(BaseModel):
