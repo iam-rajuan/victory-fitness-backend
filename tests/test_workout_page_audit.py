@@ -1,11 +1,12 @@
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 from bson import ObjectId
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.models import StrengthWorkoutSessionFeedbackRequest
 from app.api.routers.ai_workout_plan import _adaptive_workout_adjustment
+from app.api.routers import workout_logs as workout_logs_router
 
 
 def test_adaptive_workout_adjustment_rubric():
@@ -138,3 +139,130 @@ async def test_workout_logs_pagination():
                 assert data3["page"] == 3
     finally:
         app.dependency_overrides.pop(dependency_require_access_user, None)
+
+
+@pytest.mark.anyio
+async def test_seven_day_workout_streak_awards_real_points_log(monkeypatch):
+    fake_user_id = str(ObjectId())
+    fake_user = {"_id": ObjectId(fake_user_id), "points": 100}
+    now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    new_log_id = ObjectId()
+
+    logs = [
+        {
+            "_id": ObjectId(),
+            "user_id": fake_user_id,
+            "status": "completed",
+            "completed_at": now - timedelta(days=day),
+        }
+        for day in range(7)
+    ]
+
+    class AsyncListCursor:
+        def __init__(self, data):
+            self.data = data
+
+        def sort(self, *args, **kwargs):
+            return self
+
+        async def to_list(self, length=None):
+            return self.data
+
+    class FakeWorkoutLogs:
+        async def count_documents(self, query):
+            return 0
+
+        def find(self, query):
+            return AsyncListCursor(logs)
+
+    class FakePointsLog:
+        def __init__(self):
+            self.inserted = []
+
+        async def count_documents(self, query):
+            return 0
+
+        async def insert_one(self, doc):
+            self.inserted.append(doc)
+
+    class FakeUsers:
+        def __init__(self):
+            self.updates = []
+
+        async def update_one(self, query, update):
+            self.updates.append((query, update))
+
+    fake_points = FakePointsLog()
+    fake_users = FakeUsers()
+    monkeypatch.setattr(workout_logs_router, "workout_logs_collection", FakeWorkoutLogs())
+    monkeypatch.setattr(workout_logs_router, "points_log_collection", fake_points)
+    monkeypatch.setattr(workout_logs_router, "users_collection", fake_users)
+
+    await workout_logs_router._award_streak_milestone_points(
+        user_id=fake_user_id,
+        user=fake_user,
+        new_log_id=new_log_id,
+        now=now,
+    )
+
+    assert len(fake_points.inserted) == 1
+    assert fake_points.inserted[0]["points"] == 25
+    assert fake_points.inserted[0]["event_type"] == "streak_milestone"
+    assert fake_points.inserted[0]["streak_days"] == 7
+    assert "7-day workout streak milestone" == fake_points.inserted[0]["reason"]
+    assert fake_users.updates[0][1]["$inc"] == {"points": 25}
+    assert fake_users.updates[0][1]["$set"]["streak_days"] == 7
+
+
+@pytest.mark.anyio
+async def test_streak_milestone_points_are_not_awarded_twice(monkeypatch):
+    fake_user_id = str(ObjectId())
+    now = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
+    logs = [
+        {
+            "_id": ObjectId(),
+            "user_id": fake_user_id,
+            "status": "completed",
+            "completed_at": now - timedelta(days=day),
+        }
+        for day in range(7)
+    ]
+
+    class AsyncListCursor:
+        def __init__(self, data):
+            self.data = data
+
+        def sort(self, *args, **kwargs):
+            return self
+
+        async def to_list(self, length=None):
+            return self.data
+
+    class FakeWorkoutLogs:
+        async def count_documents(self, query):
+            return 0
+
+        def find(self, query):
+            return AsyncListCursor(logs)
+
+    class FakePointsLog:
+        async def count_documents(self, query):
+            return 1
+
+        async def insert_one(self, doc):
+            raise AssertionError("duplicate streak awards must not be inserted")
+
+    class FakeUsers:
+        async def update_one(self, query, update):
+            raise AssertionError("duplicate streak awards must not update points")
+
+    monkeypatch.setattr(workout_logs_router, "workout_logs_collection", FakeWorkoutLogs())
+    monkeypatch.setattr(workout_logs_router, "points_log_collection", FakePointsLog())
+    monkeypatch.setattr(workout_logs_router, "users_collection", FakeUsers())
+
+    await workout_logs_router._award_streak_milestone_points(
+        user_id=fake_user_id,
+        user={"_id": ObjectId(fake_user_id)},
+        new_log_id=ObjectId(),
+        now=now,
+    )

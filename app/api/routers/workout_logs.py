@@ -1,5 +1,5 @@
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from bson import ObjectId
@@ -15,6 +15,13 @@ from ...core.legacy import (
 
 router = APIRouter()
 
+STREAK_MILESTONE_POINTS = {
+    3: 15,
+    7: 25,
+    14: 50,
+    30: 100,
+}
+
 
 def _serialize_workout_log(doc: dict[str, Any]) -> dict[str, Any]:
     started_at = doc.get("started_at")
@@ -29,6 +36,105 @@ def _serialize_workout_log(doc: dict[str, Any]) -> dict[str, Any]:
         "started_at": started_at.isoformat() if isinstance(started_at, datetime) else str(started_at or ""),
         "completed_at": completed_at.isoformat() if isinstance(completed_at, datetime) else str(completed_at or ""),
     }
+
+
+def _workout_log_completed_date(doc: dict[str, Any]) -> date | None:
+    value = doc.get("completed_at") or doc.get("started_at")
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).date()
+
+
+def _calculate_completed_workout_streak(logs: list[dict[str, Any]], *, now: datetime) -> int:
+    completed_dates = {
+        completed_date
+        for completed_date in (_workout_log_completed_date(log) for log in logs)
+        if completed_date is not None
+    }
+    if not completed_dates:
+        return 0
+
+    today = now.astimezone(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    if today not in completed_dates and yesterday not in completed_dates:
+        return 0
+
+    cursor = today if today in completed_dates else yesterday
+    streak = 0
+    while cursor in completed_dates:
+        streak += 1
+        cursor -= timedelta(days=1)
+    return streak
+
+
+async def _award_streak_milestone_points(
+    *,
+    user_id: str,
+    user: dict[str, Any],
+    new_log_id: Any,
+    now: datetime,
+) -> None:
+    if points_log_collection is None or users_collection is None:
+        return
+
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_start = today_start + timedelta(days=1)
+    existing_today_count = await workout_logs_collection.count_documents(
+        {
+            "user_id": user_id,
+            "status": "completed",
+            "_id": {"$ne": new_log_id},
+            "completed_at": {"$gte": today_start, "$lt": tomorrow_start},
+        }
+    )
+    if existing_today_count > 0:
+        return
+
+    cursor = workout_logs_collection.find({"user_id": user_id, "status": "completed"}).sort("completed_at", -1)
+    logs = await cursor.to_list(length=400)
+    current_streak = _calculate_completed_workout_streak(logs, now=now)
+    points = STREAK_MILESTONE_POINTS.get(current_streak)
+    if not points:
+        return
+
+    existing_award_count = await points_log_collection.count_documents(
+        {
+            "user_id": user_id,
+            "event_type": "streak_milestone",
+            "streak_days": current_streak,
+        }
+    )
+    if existing_award_count > 0:
+        return
+
+    await points_log_collection.insert_one(
+        {
+            "user_id": user_id,
+            "points": points,
+            "reason": f"{current_streak}-day workout streak milestone",
+            "event_type": "streak_milestone",
+            "streak_days": current_streak,
+            "workout_log_id": str(new_log_id),
+            "created_at": now,
+        }
+    )
+    await users_collection.update_one(
+        {"_id": user.get("_id")},
+        {
+            "$inc": {"points": points},
+            "$set": {
+                "streak_days": current_streak,
+                "updated_at": now,
+            },
+        },
+    )
 
 
 @router.post("/workout-logs", status_code=status.HTTP_201_CREATED)
@@ -59,6 +165,12 @@ async def create_workout_log(
 
     if payload.status == "completed":
         try:
+            await _award_streak_milestone_points(
+                user_id=user_id,
+                user=user,
+                new_log_id=result.inserted_id,
+                now=now,
+            )
             prev_completed = await workout_logs_collection.count_documents(
                 {"user_id": user_id, "status": "completed", "_id": {"$ne": result.inserted_id}}
             )
