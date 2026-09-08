@@ -1,11 +1,12 @@
 import math
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from bson import ObjectId
 
 from ...core.legacy import (
-    _WorkoutLogRequest,
     dependency_require_access_user,
     workout_logs_collection,
     points_log_collection,
@@ -23,13 +24,37 @@ STREAK_MILESTONE_POINTS = {
 }
 
 
+class WorkoutLogCreateRequest(BaseModel):
+    workout_id: str = Field(min_length=1, max_length=120)
+    title: Optional[str] = Field(default=None, max_length=200)
+    duration_seconds: int = 0
+    status: str = Field(default="started", pattern=r"^(started|completed|abandoned)$")
+    market: Optional[str] = Field(default=None, min_length=2, max_length=2)
+
+
+def _format_workout_title(title: str, workout_id: str) -> str:
+    raw = (title or "").strip()
+    if re.search(r'[0-9a-fA-F]{24}', raw):
+        remainder = re.sub(r'[0-9a-fA-F]{24}', '', raw).strip(" -_")
+        if remainder:
+            return f"Strength Session - {remainder.title()}"
+        return "Strength Workout Session"
+    if not raw or raw.lower() == "workout session":
+        clean_id = re.sub(r'^[0-9a-fA-F]{24}[-_]?', '', workout_id or '')
+        clean_name = clean_id.replace("-", " ").replace("_", " ").strip().title()
+        return clean_name if clean_name else "Strength Workout Session"
+    return raw
+
+
 def _serialize_workout_log(doc: dict[str, Any]) -> dict[str, Any]:
     started_at = doc.get("started_at")
     completed_at = doc.get("completed_at")
+    raw_title = str(doc.get("title") or doc.get("workout_id") or "Workout Session")
+    workout_id = str(doc.get("workout_id") or "")
     return {
         "id": str(doc.get("_id") or ""),
-        "workout_id": str(doc.get("workout_id") or ""),
-        "title": str(doc.get("title") or doc.get("workout_id") or "Workout Session"),
+        "workout_id": workout_id,
+        "title": _format_workout_title(raw_title, workout_id),
         "duration_seconds": int(doc.get("duration_seconds") or 0),
         "status": str(doc.get("status") or "completed"),
         "market": doc.get("market"),
@@ -139,7 +164,7 @@ async def _award_streak_milestone_points(
 
 @router.post("/workout-logs", status_code=status.HTTP_201_CREATED)
 async def create_workout_log(
-    payload: _WorkoutLogRequest,
+    payload: WorkoutLogCreateRequest,
     user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, Any]:
     user_id = str(user.get("_id") or user.get("id") or "")
@@ -148,10 +173,40 @@ async def create_workout_log(
     now = datetime.now(timezone.utc)
     if workout_logs_collection is None:
         return {"status": "noop"}
+
+    resolved_title = (payload.title or "").strip()
+    if not resolved_title or re.search(r'[0-9a-fA-F]{24}', resolved_title):
+        parts = payload.workout_id.split("-", 1)
+        if len(parts) == 2 and ObjectId.is_valid(parts[0]):
+            plan_id_str, day_suffix = parts
+            try:
+                from .ai_workout_plan import strength_workout_plans_collection
+                if strength_workout_plans_collection is not None:
+                    plan_doc = await strength_workout_plans_collection.find_one({"_id": ObjectId(plan_id_str)})
+                    if plan_doc:
+                        plan_data = plan_doc.get("plan", {})
+                        days = plan_data.get("days", [])
+                        matched_day = next((d for d in days if d.get("day", "").lower() == day_suffix.lower()), None)
+                        day_name = matched_day.get("title") or matched_day.get("day") if matched_day else day_suffix.title()
+                        summary = plan_data.get("summary", "")
+                        if " using " in summary:
+                            plan_name = summary.split(" using ")[0].replace(" plan", "").replace(" PLAN", "").strip().title()
+                        elif " plan" in summary.lower():
+                            plan_name = summary.lower().split(" plan")[0].strip().title()
+                        else:
+                            plan_name = summary.strip().title() if summary else "Strength Plan"
+                        resolved_title = f"{plan_name} - {day_name}" if day_name else plan_name
+            except Exception:
+                pass
+        if not resolved_title:
+            clean_id = re.sub(r'^[0-9a-fA-F]{24}[-_]?', '', payload.workout_id)
+            clean_name = clean_id.replace("-", " ").replace("_", " ").strip().title()
+            resolved_title = clean_name if clean_name else "Strength Workout Session"
+
     doc = {
         "user_id": user_id,
         "workout_id": payload.workout_id,
-        "title": payload.workout_id.replace("-", " ").title(),
+        "title": resolved_title,
         "duration_seconds": payload.duration_seconds,
         "status": payload.status,
         "market": (payload.market or "").upper() or None,

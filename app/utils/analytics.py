@@ -4,6 +4,7 @@ All helpers are pure functions over Mongo result sets so they are easy to test.
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
@@ -129,7 +130,10 @@ def market_filter(market: str | None) -> dict:
         return {
             "$or": [
                 {"country_code": code},
-                {"country_code": {"$exists": False}, "country": {"$regex": code_to_country_regex(code), "$options": "i"}},
+                {"country_code": code.lower()},
+                {"countryCode": {"$in": [code, code.lower()]}},
+                {"onboarding_state.countryCode": {"$in": [code, code.lower()]}},
+                {"country": {"$regex": code_to_country_regex(code), "$options": "i"}},
             ]
         }
     if m == "other":
@@ -137,6 +141,8 @@ def market_filter(market: str | None) -> dict:
         return {
             "$and": [
                 {"country_code": {"$nin": primary_codes + [None, ""]}},
+                {"countryCode": {"$nin": primary_codes + [None, ""]}},
+                {"onboarding_state.countryCode": {"$nin": primary_codes + [None, ""]}},
                 {"country": {"$not": {"$regex": r"ghana|germany|india", "$options": "i"}}},
             ]
         }
@@ -147,7 +153,10 @@ def market_filter(market: str | None) -> dict:
         return {
             "$or": [
                 {"country_code": code},
-                {"country_code": {"$exists": False}, "country": {"$regex": f"^{m}$", "$options": "i"}},
+                {"country_code": code.lower()},
+                {"countryCode": {"$in": [code, code.lower()]}},
+                {"onboarding_state.countryCode": {"$in": [code, code.lower()]}},
+                {"country": {"$regex": f"^{re.escape(m)}$", "$options": "i"}},
             ]
         }
 
@@ -159,12 +168,15 @@ def market_filter(market: str | None) -> dict:
         return {
             "$or": [
                 {"country_code": code},
-                {"country_code": {"$exists": False}, "country": {"$regex": f"^{cap_name}$", "$options": "i"}},
+                {"country_code": code.lower()},
+                {"countryCode": {"$in": [code, code.lower()]}},
+                {"onboarding_state.countryCode": {"$in": [code, code.lower()]}},
+                {"country": {"$regex": f"^{re.escape(cap_name)}$", "$options": "i"}},
             ]
         }
 
     return {
-        "country": {"$regex": f"^{market.strip()}$", "$options": "i"}
+        "country": {"$regex": f"^{re.escape(market.strip())}$", "$options": "i"}
     }
 
 

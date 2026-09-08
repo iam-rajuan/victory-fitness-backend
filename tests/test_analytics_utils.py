@@ -30,8 +30,17 @@ def test_custom_range_is_inclusive_and_compares_equal_window():
 
 
 def test_market_filter_prefers_iso_country_code():
-    assert {"country_code": "GH"} in market_filter("ghana")["$or"]
+    clauses = market_filter("ghana")["$or"]
+    assert {"country_code": "GH"} in clauses
+    assert {"countryCode": {"$in": ["GH", "gh"]}} in clauses
+    assert {"onboarding_state.countryCode": {"$in": ["GH", "gh"]}} in clauses
     assert market_filter("all") == {}
+
+
+def test_market_filter_resolves_non_primary_country_name():
+    clauses = market_filter("Bangladesh")["$or"]
+    assert {"country_code": "BD"} in clauses
+    assert {"country": {"$regex": "^Bangladesh$", "$options": "i"}} in clauses
 
 
 def test_viral_coefficient_is_per_ten_not_percentage():

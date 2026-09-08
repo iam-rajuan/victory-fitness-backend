@@ -81,7 +81,7 @@ from .utils.analytics import (
     trend_arrow,
     viral_coefficient,
 )
-from .utils.country import PRIMARY_MARKETS, market_bucket
+from .utils.country import CODE_TO_COUNTRY_NAME, COUNTRY_NAME_TO_CODE, PRIMARY_MARKETS, market_bucket
 
 router = APIRouter(prefix="/admin/analytics", tags=["admin-analytics"])
 
@@ -268,6 +268,102 @@ async def _latest_market_day7_retention(market: str, anchor: datetime) -> float:
         ids.extend((user.get("_id"), str(user.get("_id"))))
     active = await _active_ids_for_users(ids, cohort_end, current_week_start)
     return round(safe_ratio(len(active), len(cohort_users)), 1)
+
+
+def _market_name_and_code(value: str) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    if len(raw) == 2:
+        code = raw.upper()
+        return CODE_TO_COUNTRY_NAME.get(code, code), code
+    name = raw.title()
+    return name, COUNTRY_NAME_TO_CODE.get(name, raw[:2].upper())
+
+
+def _id_variants(users: list[dict]) -> list[Any]:
+    values: list[Any] = []
+    seen: set[tuple[str, str]] = set()
+    for user in users:
+        user_id = user.get("_id")
+        if user_id is None:
+            continue
+        for value in (user_id, str(user_id)):
+            marker = (type(value).__name__, str(value))
+            if marker not in seen:
+                seen.add(marker)
+                values.append(value)
+    return values
+
+
+def _within(value: Any, start: datetime, end: datetime) -> bool:
+    parsed = _as_utc_datetime(value)
+    return bool(parsed and start <= parsed <= end)
+
+
+def _trial_conversion_for_period(users: list[dict], start: datetime, end: datetime) -> float:
+    decided = 0
+    converted = 0
+    for user in users:
+        started_at = _trial_started_at(user)
+        if not started_at:
+            continue
+        outcome = _trial_user_outcome(user, end)
+        decision_at = _as_utc_datetime(user.get("trial_outcome_at"))
+        if decision_at is None and outcome == "converted_gold":
+            decision_at = _as_utc_datetime(user.get("subscription_confirmed_at"))
+        if decision_at is None and outcome in {"lapsed", "downgraded_silver"}:
+            decision_at = _trial_end_at(user, started_at)
+        if not decision_at or not (start <= decision_at <= end):
+            continue
+        decided += 1
+        if outcome == "converted_gold":
+            converted += 1
+    return round(safe_ratio(converted, decided), 1)
+
+
+async def _market_revenue(
+    market_name: str,
+    market_code: str,
+    user_ids: list[Any],
+    start: datetime,
+    end: datetime,
+) -> tuple[float, str | None]:
+    market_values = [market_code, market_code.lower(), market_name, market_name.lower()]
+    owner_filter = {"$or": [{"market": {"$in": market_values}}]}
+    if user_ids:
+        owner_filter["$or"].append({"user_id": {"$in": user_ids}})
+    date_filter = {"created_at": {"$gte": start, "$lte": end}}
+
+    rows = await _safe_find(
+        revenue_ledger_collection,
+        _and(date_filter, {"status": {"$in": ["success", "SUCCESS"]}}, owner_filter),
+        projection={"recognized_amount": 1, "gross_amount": 1, "currency": 1},
+        limit=5000,
+    )
+    if not rows:
+        rows = await _safe_find(
+            payment_events_collection,
+            _and(date_filter, {"status": {"$in": ["success", "SUCCESS", "paid", "PAID"]}}, owner_filter),
+            projection={"amount": 1, "currency": 1},
+            limit=5000,
+        )
+
+    amounts: dict[str, float] = defaultdict(float)
+    for row in rows:
+        currency = str(row.get("currency") or "").strip().upper()
+        if not currency:
+            continue
+        try:
+            amount = float(row.get("recognized_amount") or row.get("amount") or row.get("gross_amount") or 0)
+        except (TypeError, ValueError):
+            continue
+        amounts[currency] += amount
+    if not amounts:
+        return 0.0, None
+
+    # A scalar cannot truthfully combine different currencies. Use the largest
+    # recorded currency bucket and expose its code to the dashboard.
+    currency, amount = max(amounts.items(), key=lambda item: abs(item[1]))
+    return round(amount, 2), currency
 
 
 def _range_dict(preset: str, market: str, start: datetime, end: datetime, prev_start: datetime, prev_end: datetime) -> dict:
@@ -1336,69 +1432,68 @@ async def market_breakdown(
     country: str | None = Query(default=None),
     _: dict = Depends(require_admin_user),
 ) -> MarketBreakdownResponse:
-    default_map = {"Ghana": "GH", "Germany": "DE", "India": "IN"}
     markets = ["Ghana", "Germany", "India"]
     if country:
-        from .utils.country import COUNTRY_NAME_TO_CODE, CODE_TO_COUNTRY_NAME
-        norm_country = country.strip()
-        if len(norm_country) == 2:
-            norm_name = CODE_TO_COUNTRY_NAME.get(norm_country.upper(), norm_country.upper())
-        else:
-            norm_name = norm_country.title()
+        norm_name, _ = _market_name_and_code(country)
         if norm_name and norm_name not in markets:
             markets.append(norm_name)
 
     out: list[MarketBreakdownRow] = []
     start, end, _, _ = parse_time_range(preset, from_date, to_date)
     rng_q = {"created_at": {"$gte": start, "$lte": end}}
-    shares_rng = {"$and": [rng_q, {"shared_to_whatsapp": True}]}
     for market_name in markets:
-        if market_name in default_map:
-            market_code = default_map[market_name]
-            regex_str = {"Ghana": "ghana", "Germany": "germany|german", "India": "india|indian"}[market_name]
-            m_filter = {"$or": [{"country_code": market_code}, {"country_code": {"$exists": False}, "country": {"$regex": regex_str, "$options": "i"}}]}
-        else:
-            from .utils.country import COUNTRY_NAME_TO_CODE
-            market_code = COUNTRY_NAME_TO_CODE.get(market_name, market_name[:2].upper())
-            m_filter = {"$or": [{"country_code": market_code}, {"country_code": {"$exists": False}, "country": {"$regex": f"^{market_name}$", "$options": "i"}}]}
-
-        activity_market = await _market_user_filter(market_name.lower())
-        active = len(await _active_user_ids(start, end, market_name.lower()))
-        new_users = await _safe_count(users_collection, {"$and": [m_filter, rng_q]})
-        converted = await _safe_count(users_collection, {"$and": [m_filter, {"trial_outcome": "converted_gold"}, {"trial_outcome_at": {"$gte": start, "$lte": end}}]})
-        trial_conversion = safe_ratio(converted, max(new_users, 1))
-        revenue_local = 0.0
-        if payment_events_collection is not None:
-            try:
-                pipeline = [
-                    {"$match": {"$and": [rng_q, {"status": "success"}, {"market": market_code}]}},
-                    {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
-                ]
-                rows = await payment_events_collection.aggregate(pipeline).to_list(length=1)
-                if rows:
-                    revenue_local = round(float(rows[0].get("total") or 0), 2)
-            except Exception:
-                pass
+        _, market_code = _market_name_and_code(market_name)
+        users = await _safe_find(
+            users_collection,
+            _and(
+                market_filter(market_name),
+                {"is_admin": {"$ne": True}},
+                {"role": {"$nin": ["ADMIN", "admin"]}},
+            ),
+            projection={
+                "_id": 1,
+                "created_at": 1,
+                "trial_start_at": 1,
+                "trial_end_at": 1,
+                "trial_outcome": 1,
+                "trial_outcome_at": 1,
+                "subscription_started_at": 1,
+                "subscription_confirmed_at": 1,
+                "subscription_status": 1,
+                "subscription_is_purchased": 1,
+                "subscription_purchase_source": 1,
+                "subscription_tier": 1,
+            },
+        )
+        user_ids = _id_variants(users)
+        activity_market = {"user_id": {"$in": user_ids}}
+        active = len(await _active_ids_for_users(user_ids, start, end + timedelta(microseconds=1)))
+        new_users = sum(1 for user in users if _within(user.get("created_at"), start, end))
+        trial_conversion = _trial_conversion_for_period(users, start, end)
+        revenue_local, revenue_currency = await _market_revenue(
+            market_name, market_code, user_ids, start, end
+        )
         shares = await _safe_count(
             completion_cards_collection,
-            _and(shares_rng, activity_market),
+            _and(rng_q, {"shared_to_whatsapp": True}, activity_market),
         )
-        viral = 0.0
-        if invites_collection is not None:
-            try:
-                accepted = await _safe_count(
-                    invites_collection,
-                    _and(rng_q, activity_market, {"accepted": True}),
-                )
-                viral = round(viral_coefficient(accepted, new_users), 2)
-            except Exception:
-                pass
+        accepted = await _safe_count(
+            invites_collection,
+            _and(
+                {"accepted_at": {"$gte": start, "$lte": end}},
+                activity_market,
+                {"accepted": True},
+            ),
+        )
+        invites_sent = await _safe_count(invites_collection, _and(rng_q, activity_market))
+        viral = round(viral_coefficient(accepted, new_users), 2)
         out.append(MarketBreakdownRow(
             name=market_name,
             activeUsers=active,
             newUsersThisWeek=new_users,
-            trialConversionRate=round(trial_conversion, 1),
+            trialConversionRate=trial_conversion,
             revenueLocal=revenue_local,
+            revenueCurrency=revenue_currency,
             whatsappShares=shares,
             day7RetentionPct=await _latest_market_day7_retention(market_name.lower(), end),
             viralCoefficient=viral,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import unittest
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -10,6 +11,43 @@ analytics_module = importlib.import_module("app.analytics")
 
 
 class AnalyticsDashboardTests(unittest.IsolatedAsyncioTestCase):
+    async def test_market_revenue_attributes_stripe_row_through_user_id(self) -> None:
+        now = datetime.now(timezone.utc)
+        ledger_row = {"recognized_amount": 19.5, "currency": "eur"}
+        safe_find = AsyncMock(return_value=[ledger_row])
+
+        with patch.object(analytics_module, "_safe_find", safe_find):
+            amount, currency = await analytics_module._market_revenue(
+                "Ghana", "GH", ["user-1"], now - timedelta(days=7), now
+            )
+
+        self.assertEqual(amount, 19.5)
+        self.assertEqual(currency, "EUR")
+        query = safe_find.await_args.args[1]
+        owner_filter = query["$and"][-1]
+        self.assertIn({"user_id": {"$in": ["user-1"]}}, owner_filter["$or"])
+
+    def test_trial_conversion_uses_trials_decided_in_period(self) -> None:
+        now = datetime.now(timezone.utc)
+        users = [
+            {
+                "trial_start_at": now - timedelta(days=6),
+                "trial_outcome": "converted_gold",
+                "trial_outcome_at": now - timedelta(days=1),
+            },
+            {
+                "trial_start_at": now - timedelta(days=6),
+                "trial_outcome": "lapsed",
+                "trial_outcome_at": now - timedelta(days=2),
+            },
+        ]
+
+        result = analytics_module._trial_conversion_for_period(
+            users, now - timedelta(days=7), now
+        )
+
+        self.assertEqual(result, 50.0)
+
     async def test_daily_wins_counts_uppercase_completed_challenges(self) -> None:
         challenge_memberships_collection = SimpleNamespace(
             count_documents=AsyncMock(return_value=2),
@@ -35,4 +73,3 @@ class AnalyticsDashboardTests(unittest.IsolatedAsyncioTestCase):
             challenge_query["$and"][-1],
             {"status": {"$in": ["completed", "COMPLETED"]}},
         )
-

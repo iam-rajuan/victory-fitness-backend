@@ -2524,6 +2524,7 @@ class MarketBreakdownRow(BaseModel):
     newUsersThisWeek: int
     trialConversionRate: float
     revenueLocal: float
+    revenueCurrency: str | None = None
     whatsappShares: int
     day7RetentionPct: float
     viralCoefficient: float
