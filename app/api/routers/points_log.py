@@ -152,25 +152,6 @@ async def get_my_points_breakdown(
         except Exception:
             pass
 
-    # If recent days have no logged points yet, provide a healthy baseline from workouts/streaks
-    if category_totals["total"] == 0 and total_points > 0:
-        workouts_completed = int(user.get("workouts_completed") or 0)
-        streak_days = int(user.get("streak_days") or 0)
-        today_str = now.date().isoformat()
-        yesterday_str = (now - timedelta(days=1)).date().isoformat()
-
-        if workouts_completed > 0 and today_str in days_map:
-            days_map[today_str]["workouts"] = min(total_points, 50)
-            days_map[today_str]["total"] += min(total_points, 50)
-            category_totals["workouts"] += min(total_points, 50)
-            category_totals["total"] += min(total_points, 50)
-
-        if streak_days > 0 and yesterday_str in days_map:
-            days_map[yesterday_str]["streaks"] = 25
-            days_map[yesterday_str]["total"] += 25
-            category_totals["streaks"] += 25
-            category_totals["total"] += 25
-
     return {
         "total_points": total_points,
         "current_tier": progression["current_tier"],
