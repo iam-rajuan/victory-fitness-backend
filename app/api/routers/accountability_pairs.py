@@ -362,13 +362,9 @@ async def nudge_accountability_partner(
 
 @router.post("/accountability-pairs/run-8pm-nudges")
 async def run_8pm_accountability_nudges(
-    authorization: str | None = Header(default=None),
+    user: dict = Depends(dependency_require_access_user),
 ) -> dict[str, Any]:
     """Automated job: scans active pairs and sends 8pm nudges to any partner who hasn't trained today."""
-    expected = str(getattr(settings, "cron_secret", "") or "").strip()
-    supplied = str(authorization or "").replace("Bearer ", "", 1).strip()
-    if not expected or supplied != expected:
-        raise HTTPException(status_code=401, detail="Invalid cron authorization")
     now = datetime.now(timezone.utc)
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
 

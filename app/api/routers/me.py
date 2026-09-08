@@ -13,7 +13,7 @@ router = APIRouter()
 
 def _can_edit_gold_habit_fields(user: dict) -> bool:
     tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
-    return tier in {"GOLD", "GOLD_BETA", "PLATINUM", "INNER_CIRCLE"} or _trial_is_active(user)
+    return tier in {"SILVER", "GOLD", "GOLD_BETA", "PLATINUM", "INNER_CIRCLE"} or _trial_is_active(user)
 
 
 def _ensure_gold_habit_edit_allowed(user: dict, value: str | None) -> None:
