@@ -246,6 +246,10 @@ class GoogleOAuthCallbackTests(unittest.IsolatedAsyncioTestCase):
             "code",
             "https://victory-fitness-backend.onrender.com/auth/google/callback",
         )
+        self.assertIn(
+            "result_origin=https%3A%2F%2Fvictory-fitness-backend.onrender.com",
+            response.headers["location"],
+        )
 
     async def test_google_callback_saves_userinfo_picture_before_issuing_tokens(self) -> None:
         user = {

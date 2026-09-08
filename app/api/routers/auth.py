@@ -110,8 +110,16 @@ def _google_oauth_complete_redirect(origin: str, payload: dict) -> RedirectRespo
     return RedirectResponse(f"{origin}/google-auth-complete#victory_google_auth={encoded_payload}")
 
 
-def _google_oauth_result_redirect(origin: str, flow_id: str) -> RedirectResponse:
-    return RedirectResponse(f"{origin}/google-auth-complete?{urlencode({'status': 'complete', 'flow_id': flow_id})}")
+def _google_oauth_result_redirect(
+    origin: str,
+    flow_id: str,
+    result_origin: str = "",
+) -> RedirectResponse:
+    params = {"status": "complete", "flow_id": flow_id}
+    normalized_result_origin = str(result_origin or "").rstrip("/")
+    if normalized_result_origin:
+        params["result_origin"] = normalized_result_origin
+    return RedirectResponse(f"{origin}/google-auth-complete?{urlencode(params)}")
 
 
 def _store_google_oauth_result(flow_id: str, payload: dict) -> None:
@@ -220,6 +228,13 @@ async def google_oauth_callback(
     error_description: str | None = None,
 ) -> FastAPIResponse:
     origin = "*"
+    callback_uri = _resolve_google_redirect_uri(request)
+    callback_parts = urlparse(callback_uri)
+    result_origin = (
+        f"{callback_parts.scheme}://{callback_parts.netloc}"
+        if callback_parts.scheme in {"http", "https"} and callback_parts.netloc
+        else ""
+    )
     try:
         if not state:
             return _google_oauth_error_page("Google sign-in state was missing.")
@@ -236,16 +251,16 @@ async def google_oauth_callback(
         if error:
             detail = html.unescape(str(error_description or error))
             _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": detail or "Google sign-in was cancelled."})
-            return _google_oauth_result_redirect(origin, flow_id)
+            return _google_oauth_result_redirect(origin, flow_id, result_origin)
         if not code:
             _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": "Google authorization code was missing."})
-            return _google_oauth_result_redirect(origin, flow_id)
+            return _google_oauth_result_redirect(origin, flow_id, result_origin)
 
-        token_response = _exchange_google_oauth_code(code, _resolve_google_redirect_uri(request))
+        token_response = _exchange_google_oauth_code(code, callback_uri)
         id_token = str(token_response.get("id_token") or "").strip()
         if not id_token:
             _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": False, "error": "Google did not return an ID token."})
-            return _google_oauth_result_redirect(origin, flow_id)
+            return _google_oauth_result_redirect(origin, flow_id, result_origin)
 
         profile = _verify_google_id_token(id_token)
         access_token = str(token_response.get("access_token") or "").strip()
@@ -259,20 +274,20 @@ async def google_oauth_callback(
                     raise
         user = await _upsert_google_user(profile)
         user = await _maybe_activate_phase_one_beta_subscription(user)
-        redirect = _google_oauth_result_redirect(origin, flow_id)
+        redirect = _google_oauth_result_redirect(origin, flow_id, result_origin)
         auth = await _issue_tokens(user, redirect, issue_cookies=True)
         _store_google_oauth_result(flow_id, {"type": "victory-google-auth", "ok": True, "auth": auth.model_dump(mode="json")})
         return redirect
     except HTTPException as exc:
         if origin != "*":
             _store_google_oauth_result(locals().get("flow_id", ""), {"type": "victory-google-auth", "ok": False, "error": str(exc.detail)})
-            return _google_oauth_result_redirect(origin, locals().get("flow_id", ""))
+            return _google_oauth_result_redirect(origin, locals().get("flow_id", ""), result_origin)
         return _google_oauth_error_page(str(exc.detail), origin=origin)
     except Exception:
         logger.exception("auth_google_callback_failed")
         if origin != "*":
             _store_google_oauth_result(locals().get("flow_id", ""), {"type": "victory-google-auth", "ok": False, "error": "Google sign-in failed. Please try again."})
-            return _google_oauth_result_redirect(origin, locals().get("flow_id", ""))
+            return _google_oauth_result_redirect(origin, locals().get("flow_id", ""), result_origin)
         return _google_oauth_error_page("Google sign-in failed. Please try again.", origin=origin)
 
 
