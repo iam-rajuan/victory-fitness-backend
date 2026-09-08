@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter
 
 from ...core.legacy import *
@@ -15,12 +17,15 @@ router = APIRouter()
 
 
 def _serialize_notification_template_items(templates: list[dict]) -> list[AdminNotificationTemplateItem]:
+    now = datetime.now(timezone.utc)
     return [
         AdminNotificationTemplateItem(
             id=str(item.get("id") or item.get("type") or ""),
             type=str(item.get("type") or "").strip(),
             title=str(item.get("title") or "").strip(),
             frequencyCapHours=max(int(item.get("frequencyCapHours") or 24), 1),
+            requiresContentReview=bool(item.get("requiresContentReview")),
+            reviewStatus=str(item.get("reviewStatus") or ("pending_review" if item.get("requiresContentReview") else "approved")),
             variants=[
                 NotificationTemplateVariantItem(
                     key=str(variant.get("key") or "a").strip().lower(),
@@ -30,6 +35,7 @@ def _serialize_notification_template_items(templates: list[dict]) -> list[AdminN
                 for variant in (item.get("variants") or [])
                 if isinstance(variant, dict)
             ],
+            updatedAt=item.get("updated_at") or item.get("updatedAt") or now,
         )
         for item in templates
     ]
@@ -137,10 +143,12 @@ async def admin_replace_notification_templates(
     for item in payload:
         normalized_items.append(
             {
-                "id": item.id.strip(),
+                "id": (item.id or item.type).strip(),
                 "type": item.type.strip(),
                 "title": item.title.strip(),
                 "frequencyCapHours": max(int(item.frequencyCapHours or 24), 1),
+                "requiresContentReview": bool(item.requiresContentReview),
+                "reviewStatus": item.reviewStatus,
                 "variants": [
                     {
                         "key": variant.key.strip().lower(),

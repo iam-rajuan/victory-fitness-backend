@@ -7,6 +7,16 @@ from typing import Any
 from .config import settings
 from .database import feature_flags_collection
 
+DEFAULT_FEATURE_FLAGS = [
+    {
+        "key": "upgrade_entry_animation",
+        "description": "Section 17.3 Silver-to-Gold upgrade screen entry animation.",
+        "enabled": True,
+        "rollout_pct": 50,
+        "allowed_countries": [],
+    }
+]
+
 
 def _rollout_bucket(*parts: str) -> int:
     seed = ":".join(str(part or "").strip().lower() for part in parts if str(part or "").strip())
@@ -15,6 +25,13 @@ def _rollout_bucket(*parts: str) -> int:
 
 
 async def list_feature_flags() -> list[dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+    for item in DEFAULT_FEATURE_FLAGS:
+        await feature_flags_collection.update_one(
+            {"key": item["key"]},
+            {"$setOnInsert": {**item, "created_at": now, "updated_at": now}},
+            upsert=True,
+        )
     rows = await feature_flags_collection.find({}).sort("key", 1).to_list(length=None)
     return [dict(row) for row in rows if isinstance(row, dict)]
 

@@ -2397,6 +2397,8 @@ class AdminNotificationTemplateItem(BaseModel):
     type: str
     title: str
     frequencyCapHours: int = 0
+    requiresContentReview: bool = False
+    reviewStatus: str = "approved"
     variants: list[NotificationTemplateVariantItem] = Field(default_factory=list)
     updatedAt: datetime
 
@@ -2406,9 +2408,12 @@ class AdminNotificationTemplateListResponse(BaseModel):
 
 
 class AdminNotificationTemplateRequest(BaseModel):
+    id: str | None = Field(default=None, max_length=120)
     type: str = Field(min_length=2, max_length=80)
     title: str = Field(min_length=1, max_length=200)
     frequencyCapHours: int = Field(default=0, ge=0, le=720)
+    requiresContentReview: bool = False
+    reviewStatus: str = Field(default="approved", pattern=r"^(draft|pending_review|approved)$")
     variants: list[NotificationTemplateVariantItem] = Field(default_factory=list)
 
 

@@ -25,6 +25,7 @@ RETENTION_NOTIFICATION_WINDOW_DAYS = 14
 DEFAULT_NOTIFICATION_HOUR = 18
 WEEKLY_DIGEST_TARGET_HOUR = 8
 ACCOUNTABILITY_NUDGE_HOUR = 20
+ACCOUNTABILITY_WEEKLY_SUMMARY_HOUR = 18
 RETENTION_STATE_PATH = "retention"
 COMEBACK_DAYS = (3, 7, 14, 30)
 
@@ -139,6 +140,11 @@ def _is_paid_user(user: dict) -> bool:
     return tier not in {"", "NONE"} and (bool(user.get("subscription_is_purchased")) or status in {"ACTIVE", "PAID"})
 
 
+def _is_platinum_or_above(user: dict) -> bool:
+    tier = str(user.get("subscription_tier") or user.get("subscription_role") or "").upper().replace(" ", "_")
+    return tier in {"PLATINUM", "INNER_CIRCLE"}
+
+
 async def _trial_usage_snapshot(user: dict, start: datetime, end: datetime) -> dict[str, int]:
     user_id = str(user.get("_id") or "")
     if not user_id:
@@ -169,13 +175,47 @@ async def _trial_usage_snapshot(user: dict, start: datetime, end: datetime) -> d
     return {"workouts": workouts, "coach_messages": coach_messages, "nutrition_actions": nutrition_actions}
 
 
-def _build_digest_message(user: dict, usage: dict[str, int], start: datetime, end: datetime) -> tuple[str, str]:
+async def _habit_digest_snapshot(user: dict, start: datetime, end: datetime) -> dict[str, Any]:
+    user_id = str(user.get("_id") or "")
+    if not user_id:
+        return {"trigger_days": 0, "trained_trigger_days": 0, "score": 0}
+    trigger_context = str(user.get("training_trigger_context") or "").strip()
+    trigger_action = str(user.get("training_trigger_action") or "").strip()
+    if not trigger_context or not trigger_action:
+        return {"trigger_days": 0, "trained_trigger_days": 0, "score": 0}
+    logs = await workout_logs_collection.find(
+        {
+            "user_id": user_id,
+            "status": "completed",
+            "$or": [
+                {"completed_at": {"$gte": start, "$lte": end}},
+                {"started_at": {"$gte": start, "$lte": end}},
+                {"created_at": {"$gte": start, "$lte": end}},
+            ],
+        }
+    ).to_list(length=200)
+    trained_dates: set[str] = set()
+    for log in logs:
+        completed_at = _as_utc(log.get("completed_at")) or _as_utc(log.get("started_at")) or _as_utc(log.get("created_at"))
+        if completed_at is not None:
+            trained_dates.add(completed_at.date().isoformat())
+    trigger_days = 7
+    trained_trigger_days = len(trained_dates)
+    return {
+        "trigger_days": trigger_days,
+        "trained_trigger_days": trained_trigger_days,
+        "score": round((trained_trigger_days / trigger_days) * 100, 1),
+    }
+
+
+def _build_digest_message(user: dict, usage: dict[str, int], start: datetime, end: datetime, habit_snapshot: dict[str, Any] | None = None) -> tuple[str, str]:
     name = str(user.get("name") or "there").strip() or "there"
     motivation_statement = str(user.get("motivation_statement") or "").strip()
     workout_count = int(usage.get("workouts") or 0)
     coach_count = int(usage.get("coach_messages") or 0)
     nutrition_count = int(usage.get("nutrition_actions") or 0)
     streak = int(user.get("streak_days") or 0)
+    habit_snapshot = dict(habit_snapshot or {})
     summary_parts = []
     if workout_count:
         summary_parts.append(f"{workout_count} completed workout{'s' if workout_count != 1 else ''}")
@@ -187,11 +227,31 @@ def _build_digest_message(user: dict, usage: dict[str, int], start: datetime, en
         summary_parts.append("a quiet week inside the app")
     summary_text = ", ".join(summary_parts)
     subject = "Victory Fitness — Your weekly AI coaching digest"
+    habit_line = ""
+    if _is_platinum_or_above(user):
+        identity_statement = str(user.get("identity_statement") or "").strip()
+        trigger_context = str(user.get("training_trigger_context") or "").strip()
+        workout_unlock = str(user.get("workout_unlock_label") or "").strip()
+        trigger_days = int(habit_snapshot.get("trigger_days") or 0)
+        trained_trigger_days = int(habit_snapshot.get("trained_trigger_days") or 0)
+        habit_parts = []
+        if identity_statement:
+            habit_parts.append(identity_statement)
+        if trigger_context and trigger_days:
+            habit_parts.append(
+                f"This week you trained {workout_count} time(s). Your trigger is {trigger_context} — you used it on {trained_trigger_days} of those {trigger_days} days."
+            )
+        if workout_unlock:
+            habit_parts.append(f"Your unlock {workout_unlock} was ready for your sessions.")
+        if habit_parts:
+            habit_line = "\n\n" + " ".join(habit_parts)
+
     body = (
         f"{name}, here is your coaching digest for the last 7 days.\n\n"
         f"{f'You said you want to {motivation_statement}. Keep using that as your anchor this week.\\n\\n' if motivation_statement else ''}"
         f"You logged {summary_text} between {start.strftime('%B %d, %Y')} and {end.strftime('%B %d, %Y')}.\n"
         f"Your current streak is {streak} day{'s' if streak != 1 else ''}.\n\n"
+        f"{habit_line}"
         "Next best move:\n"
         + (
             "Keep your current momentum and schedule your next session today."
@@ -224,7 +284,8 @@ async def _send_weekly_digest(now: datetime) -> int:
         end = now
         start = now - timedelta(days=7)
         usage = await _trial_usage_snapshot(user, start, end)
-        subject, body = _build_digest_message(user, usage, start, end)
+        habit_snapshot = await _habit_digest_snapshot(user, start, end) if _is_platinum_or_above(user) else {}
+        subject, body = _build_digest_message(user, usage, start, end, habit_snapshot)
         await notify_user(
             users_collection,
             user,
@@ -410,6 +471,72 @@ async def _send_accountability_nudges(now: datetime) -> int:
     return processed
 
 
+async def _send_accountability_weekly_summaries(now: datetime) -> int:
+    processed = 0
+    pairs = await accountability_pairs_collection.find({"status": "active"}).to_list(length=None)
+    for pair in pairs:
+        user_ids = [str(item) for item in (pair.get("user_ids") or []) if str(item).strip()]
+        if len(user_ids) != 2:
+            continue
+        users = await users_collection.find(
+            {"_id": {"$in": [ObjectId(uid) for uid in user_ids if ObjectId.is_valid(uid)]}}
+        ).to_list(length=2)
+        users_by_id = {str(item.get("_id")): item for item in users}
+        if len(users_by_id) != 2:
+            continue
+
+        local_now = _local_time_for_user(next(iter(users_by_id.values())), now)
+        if local_now.weekday() != 6 or local_now.hour < ACCOUNTABILITY_WEEKLY_SUMMARY_HOUR:
+            continue
+        week_key = f"{local_now.isocalendar().year}-W{local_now.isocalendar().week:02d}"
+        if str(pair.get("weekly_summary_last_sent_week") or "") == week_key:
+            continue
+
+        start = now - timedelta(days=7)
+        counts: dict[str, int] = {}
+        for uid in user_ids:
+            counts[uid] = await workout_logs_collection.count_documents(
+                {
+                    "user_id": uid,
+                    "status": "completed",
+                    "$or": [
+                        {"completed_at": {"$gte": start, "$lte": now}},
+                        {"started_at": {"$gte": start, "$lte": now}},
+                        {"created_at": {"$gte": start, "$lte": now}},
+                    ],
+                }
+            )
+
+        for uid in user_ids:
+            recipient = users_by_id.get(uid)
+            partner_id = next((item for item in user_ids if item != uid), "")
+            partner = users_by_id.get(partner_id) or {}
+            if not recipient:
+                continue
+            partner_name = str(partner.get("name") or "Your partner")
+            await notify_user(
+                users_collection,
+                recipient,
+                "Your accountability week",
+                f"You trained {counts.get(uid, 0)} time(s). {partner_name} trained {counts.get(partner_id, 0)} time(s). Start next week together.",
+                "accountability_weekly_summary",
+                {
+                    "route": "/profile",
+                    "pairId": str(pair.get("_id") or ""),
+                    "weekKey": week_key,
+                    "yourWorkouts": counts.get(uid, 0),
+                    "partnerWorkouts": counts.get(partner_id, 0),
+                },
+            )
+            processed += 1
+
+        await accountability_pairs_collection.update_one(
+            {"_id": pair["_id"]},
+            {"$set": {"weekly_summary_last_sent_week": week_key, "weekly_summary_last_sent_at": now, "updated_at": now}},
+        )
+    return processed
+
+
 async def _send_weight_update_reminders(now: datetime) -> int:
     cutoff = now - timedelta(days=28)
     users = await users_collection.find(
@@ -497,10 +624,12 @@ async def process_retention_jobs() -> dict[str, int]:
     comeback = await _send_comeback_flow(now)
     digest = await _send_weekly_digest(now)
     nudges = await _send_accountability_nudges(now)
+    joint_summaries = await _send_accountability_weekly_summaries(now)
     weight_reminders = await _send_weight_update_reminders(now)
     return {
         "comebackMessages": comeback,
         "weeklyDigests": digest,
         "accountabilityNudges": nudges,
+        "accountabilityWeeklySummaries": joint_summaries,
         "weightReminders": weight_reminders,
     }

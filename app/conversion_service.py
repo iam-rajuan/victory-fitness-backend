@@ -35,6 +35,41 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
             {"key": "c", "title": "Most consistent members do this early", "message": "Lock in one protein-rich meal and keep your recovery standard high."},
         ],
     },
+    {
+        "id": "streak_protection",
+        "type": "streak_protection",
+        "title": "Streak protection",
+        "frequencyCapHours": 24,
+        "requiresContentReview": True,
+        "reviewStatus": "approved",
+        "variants": [
+            {"key": "a", "title": "Protect today's rhythm", "message": "One focused session today keeps your routine warm."},
+            {"key": "b", "title": "Momentum is easier to keep than restart", "message": "Open your plan and bank one simple training win today."},
+            {"key": "c", "title": "Your training circle is active", "message": "People around you are showing up today. Join them with one session."},
+        ],
+    },
+    {
+        "id": "challenge_update",
+        "type": "challenge_update",
+        "title": "Challenge update",
+        "frequencyCapHours": 12,
+        "variants": [
+            {"key": "a", "title": "Your challenge has a new step", "message": "Open the challenge and complete the next action."},
+            {"key": "b", "title": "Do not let the next challenge step get stale", "message": "A quick check-in keeps your challenge progress current."},
+            {"key": "c", "title": "Your challenge group is moving", "message": "Teammates are progressing. Open the challenge and add your update."},
+        ],
+    },
+    {
+        "id": "leaderboard_change",
+        "type": "leaderboard_change",
+        "title": "Leaderboard change",
+        "frequencyCapHours": 12,
+        "variants": [
+            {"key": "a", "title": "Leaderboard update", "message": "Check your position and choose your next move."},
+            {"key": "b", "title": "The board changed today", "message": "A small action now can keep you in the mix."},
+            {"key": "c", "title": "People near you are active", "message": "Your leaderboard group is moving. Open Victory Fitness to respond."},
+        ],
+    },
 ]
 
 
@@ -152,7 +187,20 @@ async def ensure_notification_templates() -> list[dict[str, Any]]:
         upsert=True,
     )
     record = await app_content_collection.find_one({"key": NOTIFICATION_TEMPLATES_KEY})
-    return [dict(item) for item in (record or {}).get("items") or [] if isinstance(item, dict)]
+    existing_items = [dict(item) for item in (record or {}).get("items") or [] if isinstance(item, dict)]
+    existing_types = {str(item.get("type") or item.get("id") or "").strip() for item in existing_items}
+    missing_defaults = [
+        dict(item)
+        for item in DEFAULT_NOTIFICATION_TEMPLATES
+        if str(item.get("type") or item.get("id") or "").strip() not in existing_types
+    ]
+    if missing_defaults:
+        existing_items.extend(missing_defaults)
+        await app_content_collection.update_one(
+            {"key": NOTIFICATION_TEMPLATES_KEY},
+            {"$set": {"items": existing_items, "updated_at": now}},
+        )
+    return existing_items
 
 
 async def list_notification_templates() -> list[dict[str, Any]]:
@@ -165,7 +213,7 @@ async def replace_notification_templates(items: list[dict[str, Any]]) -> None:
     now = datetime.now(timezone.utc)
     await app_content_collection.update_one(
         {"key": NOTIFICATION_TEMPLATES_KEY},
-        {"$set": {"key": NOTIFICATION_TEMPLATES_KEY, "items": [dict(item) for item in items], "updated_at": now}, "$setOnInsert": {"created_at": now}},
+        {"$set": {"key": NOTIFICATION_TEMPLATES_KEY, "items": [{**dict(item), "updated_at": now} for item in items], "updated_at": now}, "$setOnInsert": {"created_at": now}},
         upsert=True,
     )
 
@@ -180,6 +228,8 @@ async def resolve_notification_variant(user: dict, notification_type: str, fallb
     template = next((item for item in templates if str(item.get("type") or "").strip() == notification_type), None)
     if not template:
         return fallback_title, fallback_message, "a"
+    if bool(template.get("requiresContentReview")) and str(template.get("reviewStatus") or "").strip() != "approved":
+        return fallback_title, fallback_message, "review_pending"
     variants = [dict(item) for item in template.get("variants") or [] if isinstance(item, dict)]
     if not variants:
         return fallback_title, fallback_message, "a"

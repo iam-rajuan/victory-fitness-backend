@@ -1,5 +1,6 @@
 import hashlib
 import time
+from typing import Any
 from fastapi import APIRouter
 
 from ...core.legacy import *
@@ -99,6 +100,40 @@ async def get_homepage_quote(app_version: str | None = None) -> HomepageQuote | 
 
 _network_activity_cache: dict[str, tuple[float, dict]] = {}
 
+def _time_ago_label(moment: datetime | None) -> str:
+    if not isinstance(moment, datetime):
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    minutes = max(int((datetime.now(timezone.utc) - moment.astimezone(timezone.utc)).total_seconds() // 60), 0)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    return f"{days}d ago"
+
+
+def _avatar_color_for_user(user_id: str) -> str:
+    palette = ["#00F0D0", "#A855F7", "#FFD700", "#38BDF8", "#FB7185"]
+    digest = hashlib.sha256(str(user_id or "").encode("utf-8")).hexdigest()
+    return palette[int(digest[:2], 16) % len(palette)]
+
+
+def _coerce_utc_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
 async def _get_optional_auth_user(
     credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
     access_token: str | None = Cookie(default=None),
@@ -120,7 +155,6 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
             return cached_data
 
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_start_iso = today_start.isoformat()
     
     connected_user_ids: set[str] = set()
     user_trained_today = False
@@ -132,9 +166,9 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
             user_log = await workout_logs_collection.find_one({
                 "user_id": uid,
                 "$or": [
-                    {"started_at": {"$gte": today_start_iso}},
-                    {"completed_at": {"$gte": today_start_iso}},
-                    {"created_at": {"$gte": today_start_iso}}
+                    {"started_at": {"$gte": today_start}},
+                    {"completed_at": {"$gte": today_start}},
+                    {"created_at": {"$gte": today_start}}
                 ]
             })
             if user_log:
@@ -145,10 +179,17 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
         # 1. Connected via invites
         try:
             invites = await invites_collection.find({
-                "$or": [{"inviter_id": uid}, {"invited_user_id": uid}, {"invitee_id": uid}]
+                "accepted": True,
+                "$or": [
+                    {"user_id": uid},
+                    {"inviter_id": uid},
+                    {"accepted_by_user_id": uid},
+                    {"invited_user_id": uid},
+                    {"invitee_id": uid},
+                ]
             }).to_list(length=100)
             for inv in invites:
-                for key in ["inviter_id", "invited_user_id", "invitee_id"]:
+                for key in ["user_id", "inviter_id", "accepted_by_user_id", "invited_user_id", "invitee_id"]:
                     other_id = str(inv.get(key) or "").strip()
                     if other_id and other_id != uid:
                         connected_user_ids.add(other_id)
@@ -158,9 +199,19 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
         # 2. Connected via accountability_pairs
         try:
             pairs = await accountability_pairs_collection.find({
-                "$or": [{"user_a_id": uid}, {"user_b_id": uid}, {"user_id": uid}, {"partner_id": uid}]
+                "status": "active",
+                "$or": [
+                    {"user_ids": uid},
+                    {"user_a_id": uid},
+                    {"user_b_id": uid},
+                    {"user_id": uid},
+                    {"partner_id": uid},
+                ]
             }).to_list(length=100)
             for p in pairs:
+                for other_id in [str(item) for item in (p.get("user_ids") or [])]:
+                    if other_id and other_id != uid:
+                        connected_user_ids.add(other_id)
                 for key in ["user_a_id", "user_b_id", "user_id", "partner_id"]:
                     other_id = str(p.get(key) or "").strip()
                     if other_id and other_id != uid:
@@ -200,9 +251,9 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
                     {
                         "user_id": {"$in": list(allowed_ids)},
                         "$or": [
-                            {"started_at": {"$gte": today_start_iso}},
-                            {"completed_at": {"$gte": today_start_iso}},
-                            {"created_at": {"$gte": today_start_iso}}
+                            {"started_at": {"$gte": today_start}},
+                            {"completed_at": {"$gte": today_start}},
+                            {"created_at": {"$gte": today_start}}
                         ]
                     }
                 )
@@ -210,13 +261,49 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
         except Exception:
             pass
 
-    if not connected_user_ids:
-        # Fallback to broader network activity if user has no connections yet
-        user_count = await users_collection.count_documents({})
-        day_offset = (datetime.now(timezone.utc).day * 23) % 95
-        count = max(1240 + day_offset, user_count * 4)
+    recent_completions = []
+    if connected_user_ids:
+        try:
+            allowed_users = await users_collection.find(
+                {
+                    "_id": {"$in": [ObjectId(cid) for cid in connected_user_ids if ObjectId.is_valid(cid)]},
+                    "share_activity_with_network": {"$ne": False},
+                },
+                projection={"_id": 1, "name": 1},
+            ).to_list(length=len(connected_user_ids))
+            allowed_by_id = {str(u["_id"]): u for u in allowed_users}
+            if allowed_by_id:
+                cursor = (
+                    workout_logs_collection.find(
+                        {
+                            "user_id": {"$in": list(allowed_by_id.keys())},
+                            "$or": [
+                                {"started_at": {"$gte": today_start}},
+                                {"completed_at": {"$gte": today_start}},
+                                {"created_at": {"$gte": today_start}},
+                            ],
+                        }
+                    )
+                    .sort("completed_at", -1)
+                    .limit(5)
+                )
+                for log in await cursor.to_list(length=5):
+                    log_user_id = str(log.get("user_id") or "")
+                    connected_user = allowed_by_id.get(log_user_id) or {}
+                    completed_at = _coerce_utc_datetime(log.get("completed_at") or log.get("started_at") or log.get("created_at"))
+                    title = str(log.get("title") or log.get("workout_id") or "completed a workout").strip()
+                    recent_completions.append(
+                        {
+                            "id": str(log.get("_id") or ""),
+                            "name": str(connected_user.get("name") or "Someone"),
+                            "action": f"completed {title}",
+                            "time_ago": _time_ago_label(completed_at),
+                            "avatar_color": _avatar_color_for_user(log_user_id),
+                        }
+                    )
+        except Exception:
+            recent_completions = []
 
-    # 3 exact copy variants according to Section 20.2
     if user_trained_today:
         headline = f"You trained today — {count} other{'s' if count != 1 else ''} did too."
     elif count > 0:
@@ -236,13 +323,7 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
         "user_trained_today": user_trained_today,
         "headline": headline,
         "is_silver_or_above": is_silver_or_above,
-        "recent_completions": [
-            {"id": "1", "name": "Marcus V.", "action": "completed Push Strength Day 2", "time_ago": "4m ago", "avatar_color": "#00F0D0"},
-            {"id": "2", "name": "Elena R.", "action": "logged 20 min HIIT Cardio", "time_ago": "12m ago", "avatar_color": "#A855F7"},
-            {"id": "3", "name": "David K.", "action": "finished Full Body Video Workout", "time_ago": "23m ago", "avatar_color": "#FFD700"},
-            {"id": "4", "name": "Sophia L.", "action": "hit daily protein goal", "time_ago": "35m ago", "avatar_color": "#38BDF8"},
-            {"id": "5", "name": "Thomas B.", "action": "completed 5km Outdoor Run", "time_ago": "48m ago", "avatar_color": "#FB7185"},
-        ],
+        "recent_completions": recent_completions,
     }
     _network_activity_cache[user_id] = (now_ts, data)
     return data

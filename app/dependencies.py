@@ -104,7 +104,7 @@ SUBSCRIPTION_FEATURE_CATALOG = [
         "label": "Coach Victor",
         "description": "AI Coach Victor chat, conversation history, and direct coaching entry points.",
         "category": "Premium Coaching",
-        "defaultTiers": ["INNER_CIRCLE"],
+        "defaultTiers": ["GOLD", "GOLD_BETA", "PLATINUM", "INNER_CIRCLE"],
         "routeHints": ["/chat"],
     },
     {
@@ -120,8 +120,8 @@ SUBSCRIPTION_FEATURE_KEYS = {item["key"] for item in SUBSCRIPTION_FEATURE_CATALO
 SUBSCRIPTION_ACCESS = {
     "NONE": [],
     "SILVER": ["home", "workout", "challenge", "community", "profile"],
-    "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
-    "GOLD_BETA": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
+    "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile", "coach_victor"],
+    "GOLD_BETA": ["home", "workout", "challenge", "community", "mealPlan", "profile", "coach_victor"],
     "PLATINUM": [
         "home",
         "workout",

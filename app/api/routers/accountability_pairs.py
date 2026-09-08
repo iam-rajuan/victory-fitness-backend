@@ -331,6 +331,23 @@ async def nudge_accountability_partner(
 
     now = datetime.now(timezone.utc)
     sender_name = str(user.get("name") or "Your partner")
+    day_key = _pair_day_key(user, now)
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    pair_status = dict((pair.get("daily_status") or {}).get(day_key) or {})
+    if bool(pair_status.get(partner_id)):
+        raise HTTPException(status_code=400, detail="Your partner has already trained today")
+    partner_logged = await workout_logs_collection.find_one(
+        {
+            "user_id": partner_id,
+            "$or": [
+                {"completed_at": {"$gte": start_of_day}},
+                {"started_at": {"$gte": start_of_day}},
+                {"created_at": {"$gte": start_of_day}},
+            ],
+        }
+    )
+    if partner_logged:
+        raise HTTPException(status_code=400, detail="Your partner has already trained today")
 
     # Insert nudge in partner's notifications
     partner_obj_id = ObjectId(partner_id) if ObjectId.is_valid(partner_id) else partner_id
@@ -342,8 +359,8 @@ async def nudge_accountability_partner(
                     "id": str(ObjectId()),
                     "type": "accountability_nudge",
                     "title": "Accountability Nudge ⚡",
-                    "message": f"{sender_name} completed training today! Don't let your partner down—get your session in!",
-                    "data": {"pair_id": pair_id, "nudge_type": "8pm_daily"},
+                    "message": f"{sender_name} is cheering you on. Your plan is ready when you are.",
+                    "data": {"pair_id": pair_id, "nudge_type": "manual"},
                     "created_at": now,
                     "read": False,
                 }
@@ -362,9 +379,14 @@ async def nudge_accountability_partner(
 
 @router.post("/accountability-pairs/run-8pm-nudges")
 async def run_8pm_accountability_nudges(
-    user: dict = Depends(dependency_require_access_user),
+    authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Automated job: scans active pairs and sends 8pm nudges to any partner who hasn't trained today."""
+    expected = str(getattr(settings, "cron_secret", "") or "").strip()
+    supplied = str(authorization or "").replace("Bearer ", "", 1).strip()
+    if not expected or supplied != expected:
+        raise HTTPException(status_code=401, detail="Invalid cron authorization")
+
     now = datetime.now(timezone.utc)
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
 

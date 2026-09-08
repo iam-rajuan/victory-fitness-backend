@@ -810,9 +810,9 @@ SUBSCRIPTION_ACCESS = {
 
     "SILVER": ["home", "workout", "challenge", "community", "profile"],
 
-    "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
+    "GOLD": ["home", "workout", "challenge", "community", "mealPlan", "profile", "coach_victor"],
 
-    "GOLD_BETA": ["home", "workout", "challenge", "community", "mealPlan", "profile"],
+    "GOLD_BETA": ["home", "workout", "challenge", "community", "mealPlan", "profile", "coach_victor"],
 
     "PLATINUM": [
 

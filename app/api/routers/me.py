@@ -1,4 +1,5 @@
 import re
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 
@@ -13,7 +14,7 @@ router = APIRouter()
 
 def _can_edit_gold_habit_fields(user: dict) -> bool:
     tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
-    return tier in {"SILVER", "GOLD", "GOLD_BETA", "PLATINUM", "INNER_CIRCLE"} or _trial_is_active(user)
+    return tier in {"GOLD", "GOLD_BETA", "PLATINUM", "INNER_CIRCLE"} or _trial_is_active(user)
 
 
 def _ensure_gold_habit_edit_allowed(user: dict, value: str | None) -> None:
@@ -37,6 +38,79 @@ def _validate_minimum_supported_age(age_value: str | None) -> None:
 async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
 
     return MeResponse(**(await _serialize_me_record(user)))
+
+
+@router.get("/me/habit-consistency")
+async def get_my_habit_consistency(user: dict = Depends(_require_access_user)) -> dict:
+    _ensure_subscription_feature_access(
+        user,
+        "longevity",
+        "Your current plan does not include habit consistency trends",
+    )
+    user_id = str(user.get("_id") or user.get("id") or "")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    trigger_context = str(user.get("training_trigger_context") or "").strip()
+    trigger_action = str(user.get("training_trigger_action") or "").strip()
+    has_trigger = bool(trigger_context and trigger_action)
+    now = datetime.now(timezone.utc)
+    today = now.date()
+    weeks = []
+
+    for index in range(3, -1, -1):
+        week_end_date = today - timedelta(days=index * 7)
+        week_start_date = week_end_date - timedelta(days=6)
+        start_dt = datetime.combine(week_start_date, datetime.min.time(), tzinfo=timezone.utc)
+        end_dt = datetime.combine(week_end_date, datetime.max.time(), tzinfo=timezone.utc)
+        logs = await workout_logs_collection.find(
+            {
+                "user_id": user_id,
+                "status": "completed",
+                "$or": [
+                    {"completed_at": {"$gte": start_dt, "$lte": end_dt}},
+                    {"started_at": {"$gte": start_dt, "$lte": end_dt}},
+                    {"created_at": {"$gte": start_dt, "$lte": end_dt}},
+                ],
+            }
+        ).to_list(length=200)
+
+        trained_dates = set()
+        for log in logs:
+            completed_at = log.get("completed_at") or log.get("started_at") or log.get("created_at")
+            if isinstance(completed_at, str):
+                try:
+                    completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+                except ValueError:
+                    completed_at = None
+            if isinstance(completed_at, datetime):
+                if completed_at.tzinfo is None:
+                    completed_at = completed_at.replace(tzinfo=timezone.utc)
+                trained_dates.add(completed_at.astimezone(timezone.utc).date().isoformat())
+
+        trigger_days = 7 if has_trigger else 0
+        trained_trigger_days = len(trained_dates) if has_trigger else 0
+        weeks.append(
+            {
+                "label": f"{week_start_date.strftime('%b %d')} - {week_end_date.strftime('%b %d')}",
+                "week_start": week_start_date.isoformat(),
+                "week_end": week_end_date.isoformat(),
+                "trigger_days": trigger_days,
+                "trained_trigger_days": trained_trigger_days,
+                "score": round((trained_trigger_days / trigger_days) * 100, 1) if trigger_days else 0,
+            }
+        )
+
+    latest = weeks[-1] if weeks else {}
+    return {
+        "identity_statement": str(user.get("identity_statement") or ""),
+        "workout_unlock_label": str(user.get("workout_unlock_label") or ""),
+        "training_trigger_context": trigger_context,
+        "training_trigger_action": trigger_action,
+        "has_trigger": has_trigger,
+        "current_score": float(latest.get("score") or 0),
+        "weeks": weeks,
+    }
 
 @router.get("/me/onboarding", response_model=OnboardingStateResponse)
 async def get_me_onboarding(user: dict = Depends(_require_access_user)) -> OnboardingStateResponse:
