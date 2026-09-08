@@ -106,11 +106,22 @@ def _identity_sentence(identity_statement: str, suffix: str) -> str:
 def build_personalized_workout_reminder_copy(user: dict, fallback_title: str, fallback_message: str) -> tuple[str, str, str] | None:
     trigger_context = str(user.get("training_trigger_context") or "").strip()
     trigger_action = str(user.get("training_trigger_action") or "").strip()
+    workout_unlock = str(user.get("workout_unlock_label") or "").strip()
     if trigger_context and trigger_action:
+        message = f"{trigger_context}? That means — {trigger_action}."
+        if _is_gold_or_above(user) and workout_unlock:
+            message = f"{message} {workout_unlock} is waiting for you."
         return (
             "Your training trigger is ready",
-            f"When {trigger_context}? That means — {trigger_action}.",
+            message,
             "training_trigger",
+        )
+
+    if _is_gold_or_above(user) and workout_unlock:
+        return (
+            fallback_title or "Time to train",
+            f"Time to train — {workout_unlock} is waiting for you.",
+            "workout_unlock",
         )
 
     identity_statement = str(user.get("identity_statement") or "")

@@ -11,6 +11,16 @@ from ...utils.country import derive_country_code
 router = APIRouter()
 
 
+def _can_edit_gold_habit_fields(user: dict) -> bool:
+    tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+    return tier in {"GOLD", "GOLD_BETA", "PLATINUM", "INNER_CIRCLE"} or _trial_is_active(user)
+
+
+def _ensure_gold_habit_edit_allowed(user: dict, value: str | None) -> None:
+    if value is not None and str(value).strip() and not _can_edit_gold_habit_fields(user):
+        raise HTTPException(status_code=403, detail="Gold membership is required to save this habit setting")
+
+
 def _validate_minimum_supported_age(age_value: str | None) -> None:
     normalized = str(age_value or "").strip()
     if not normalized:
@@ -101,19 +111,23 @@ async def update_me(
         update_doc["onboarding_state.dailyProteinTarget"] = payload.daily_protein_target
 
     if payload.identity_statement is not None:
+        _ensure_gold_habit_edit_allowed(user, payload.identity_statement)
         identity_statement = payload.identity_statement
         update_doc["identity_statement"] = identity_statement if identity_statement.strip() else None
         update_doc["onboarding_state.identityStatement"] = identity_statement
 
     if payload.workout_unlock_label is not None:
+        _ensure_gold_habit_edit_allowed(user, payload.workout_unlock_label)
         workout_unlock_label = payload.workout_unlock_label.strip()
         update_doc["workout_unlock_label"] = workout_unlock_label or None
 
     if payload.training_trigger_context is not None:
+        _ensure_gold_habit_edit_allowed(user, payload.training_trigger_context)
         training_trigger_context = payload.training_trigger_context.strip()
         update_doc["training_trigger_context"] = training_trigger_context or None
 
     if payload.training_trigger_action is not None:
+        _ensure_gold_habit_edit_allowed(user, payload.training_trigger_action)
         training_trigger_action = payload.training_trigger_action.strip()
         update_doc["training_trigger_action"] = training_trigger_action or None
 
@@ -188,6 +202,7 @@ async def update_me_onboarding(
         update_doc["motivation_statement"] = motivation_statement or None
 
     if payload.identityStatement is not None:
+        _ensure_gold_habit_edit_allowed(user, payload.identityStatement)
         identity_statement = payload.identityStatement
         next_state["identityStatement"] = identity_statement
         update_doc["identity_statement"] = identity_statement if identity_statement.strip() else None

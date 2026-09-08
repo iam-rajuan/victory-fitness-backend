@@ -8920,11 +8920,92 @@ def _resolve_subscription_access(tier: str) -> list[str]:
 
     return list(SUBSCRIPTION_ACCESS.get(normalized_tier, []))
 
+def _parse_subscription_datetime(value: object) -> datetime | None:
+
+    if isinstance(value, datetime):
+
+        parsed = value
+
+    elif isinstance(value, str) and value.strip():
+
+        try:
+
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+        except ValueError:
+
+            return None
+
+    else:
+
+        return None
+
+    if parsed.tzinfo is None:
+
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+def _subscription_has_active_access_window(user: dict) -> bool:
+
+    now = datetime.now(timezone.utc)
+
+    if str(user.get("subscription_purchase_source") or "").strip() == PHASE_ONE_BETA_SUBSCRIPTION_SOURCE:
+
+        started_at = _trial_started_at(user)
+
+        ended_at = _trial_ended_at(user, started_at)
+
+        return bool(started_at and ended_at and started_at <= now < ended_at)
+
+    tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+
+    status = _normalize_subscription_status(user.get("subscription_status"), tier)
+
+    if tier == "NONE":
+
+        return False
+
+    if status in {"ACTIVE", "PENDING_PAYMENT"}:
+
+        return True
+
+    if status == "CANCELLED":
+
+        expires_at = _parse_subscription_datetime(
+            user.get("subscription_expires_at")
+            or (user.get("subscription") if isinstance(user.get("subscription"), dict) else {}).get("expires_at")
+            or (user.get("subscription") if isinstance(user.get("subscription"), dict) else {}).get("current_period_end")
+        )
+
+        return bool(expires_at and expires_at > now)
+
+    return False
+
 def _user_has_subscription_access(user: dict, feature: str) -> bool:
 
     if bool(user.get("is_admin")):
 
         return True
+
+    if _is_phase_one_beta_user(user):
+        if _phase_one_beta_is_active(user):
+            configured_access = user.get("subscription_access")
+            subscription = user.get("subscription") if isinstance(user.get("subscription"), dict) else {}
+            if not configured_access and isinstance(subscription.get("access"), list):
+                configured_access = subscription.get("access")
+            if isinstance(configured_access, list) and configured_access:
+                return feature in {str(item).strip() for item in configured_access if str(item).strip()}
+            return feature in set(_resolve_subscription_access("GOLD"))
+        return False
+
+    if _trial_is_active(user) and feature in _resolve_subscription_access("GOLD"):
+
+        return True
+
+    if not _subscription_has_active_access_window(user):
+
+        return False
 
     configured_access = user.get("subscription_access")
 
@@ -8937,15 +9018,6 @@ def _user_has_subscription_access(user: dict, feature: str) -> bool:
     if isinstance(configured_access, list) and configured_access:
 
         return feature in {str(item).strip() for item in configured_access if str(item).strip()}
-
-    if _is_phase_one_beta_user(user):
-        if _phase_one_beta_is_active(user):
-            return feature in set(_resolve_subscription_access("GOLD"))
-        return False
-
-    if _trial_is_active(user) and feature in _resolve_subscription_access("GOLD"):
-
-        return True
 
     return feature in _resolve_subscription_access(
 

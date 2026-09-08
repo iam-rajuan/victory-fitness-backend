@@ -21,6 +21,23 @@ class PhaseOneBetaEntitlementTests(unittest.TestCase):
         self.assertTrue(legacy_module._user_has_subscription_access(user, "coach_victor"))
         self.assertFalse(legacy_module._user_has_subscription_access(user, "application"))
 
+    def test_cancelled_subscription_keeps_access_until_period_end_only(self) -> None:
+        future_user = {
+            "subscription_tier": "GOLD",
+            "subscription_status": "CANCELLED",
+            "subscription_expires_at": "2099-01-01T00:00:00+00:00",
+            "subscription_access": ["coach_victor"],
+        }
+        expired_user = {
+            "subscription_tier": "GOLD",
+            "subscription_status": "CANCELLED",
+            "subscription_expires_at": "2000-01-01T00:00:00+00:00",
+            "subscription_access": ["coach_victor"],
+        }
+
+        self.assertTrue(legacy_module._user_has_subscription_access(future_user, "coach_victor"))
+        self.assertFalse(legacy_module._user_has_subscription_access(expired_user, "coach_victor"))
+
     def test_beta_subscription_summary_preserves_configured_access_and_beta_tier(self) -> None:
         now = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
         summary = legacy_module._build_subscription_summary(

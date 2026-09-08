@@ -230,7 +230,7 @@ class AICoachFeatureTests(unittest.IsolatedAsyncioTestCase):
             "Workout reminder",
             "Move today.",
         )
-        self.assertEqual(triggered[1], "When Kids in bed? That means — open the app and start my workout.")
+        self.assertEqual(triggered[1], "Kids in bed? That means — open the app and start my workout.")
 
         identity_only = build_personalized_workout_reminder_copy(
             {"subscription_tier": "GOLD", "identity_statement": "I am someone who keeps promises."},

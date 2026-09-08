@@ -60,6 +60,30 @@ class ConversionServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message, "B body")
         self.assertEqual(variant, "b")
 
+    def test_workout_unlock_reminder_copy_for_gold_users(self) -> None:
+        copy = conversion_service.build_personalized_workout_reminder_copy(
+            {"subscription_tier": "GOLD", "workout_unlock_label": "Favorite Podcast"},
+            "Workout reminder",
+            "Move today.",
+        )
+
+        self.assertEqual(copy[1], "Time to train — Favorite Podcast is waiting for you.")
+        self.assertEqual(copy[2], "workout_unlock")
+
+    def test_training_trigger_reminder_can_include_unlock_label(self) -> None:
+        copy = conversion_service.build_personalized_workout_reminder_copy(
+            {
+                "subscription_tier": "GOLD",
+                "training_trigger_context": "Kids in bed",
+                "training_trigger_action": "open the app and start my workout",
+                "workout_unlock_label": "Favorite Podcast",
+            },
+            "Workout reminder",
+            "Move today.",
+        )
+
+        self.assertEqual(copy[1], "Kids in bed? That means — open the app and start my workout. Favorite Podcast is waiting for you.")
+
 
 class OnboardingSerializationTests(unittest.TestCase):
     def test_serialize_onboarding_state_includes_motivation_statement(self) -> None:
@@ -86,6 +110,15 @@ class OnboardingSerializationTests(unittest.TestCase):
         self.assertEqual(serialized["motivationStatement"], "feel stronger for my kids")
         self.assertEqual(serialized["identityStatement"], " I am becoming consistent ")
         self.assertEqual(serialized["countryCode"], "DE")
+
+    def test_gold_habit_edit_guard_allows_gold_and_blocks_free(self) -> None:
+        from fastapi import HTTPException
+        from app.api.routers.me import _ensure_gold_habit_edit_allowed
+
+        _ensure_gold_habit_edit_allowed({"subscription_tier": "GOLD"}, "I am someone who trains.")
+        _ensure_gold_habit_edit_allowed({"subscription_tier": "NONE"}, "")
+        with self.assertRaises(HTTPException):
+            _ensure_gold_habit_edit_allowed({"subscription_tier": "NONE"}, "I am someone who trains.")
 
 
 if __name__ == "__main__":

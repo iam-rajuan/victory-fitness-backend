@@ -140,6 +140,106 @@ async def create_subscription_checkout_session(
     return StripeCheckoutSessionResponse(checkout_url=checkout_url, session_id=str(session.id))
 
 
+def _stripe_subscription_id(user: dict) -> str:
+    return str(user.get("stripe_subscription_id") or (user.get("subscription") or {}).get("stripe_subscription_id") or "").strip()
+
+
+def _user_uses_stripe_subscription(user: dict) -> bool:
+    return str(user.get("subscription_purchase_source") or (user.get("subscription") or {}).get("purchase_source") or "").strip().lower() == "stripe" and bool(_stripe_subscription_id(user))
+
+
+async def cancel_stripe_subscription_at_period_end(user: dict) -> None:
+    if not _user_uses_stripe_subscription(user):
+        return
+    _require_stripe_configured()
+    subscription_id = _stripe_subscription_id(user)
+
+    def update_subscription() -> stripe.Subscription:
+        stripe.api_key = settings.stripe_secret_key
+        return stripe.Subscription.modify(subscription_id, cancel_at_period_end=True)
+
+    await asyncio.to_thread(update_subscription)
+
+
+async def pause_stripe_subscription_collection(user: dict, resume_at: datetime) -> None:
+    if not _user_uses_stripe_subscription(user):
+        return
+    _require_stripe_configured()
+    subscription_id = _stripe_subscription_id(user)
+    resume_ts = int(resume_at.timestamp())
+
+    def update_subscription() -> stripe.Subscription:
+        stripe.api_key = settings.stripe_secret_key
+        return stripe.Subscription.modify(
+            subscription_id,
+            pause_collection={"behavior": "void", "resumes_at": resume_ts},
+        )
+
+    await asyncio.to_thread(update_subscription)
+
+
+async def resume_stripe_subscription_collection(user: dict) -> None:
+    if not _user_uses_stripe_subscription(user):
+        return
+    _require_stripe_configured()
+    subscription_id = _stripe_subscription_id(user)
+
+    def update_subscription() -> stripe.Subscription:
+        stripe.api_key = settings.stripe_secret_key
+        return stripe.Subscription.modify(subscription_id, pause_collection="")
+
+    await asyncio.to_thread(update_subscription)
+
+
+async def change_stripe_subscription_plan(
+    user: dict,
+    *,
+    title: str,
+    tier: str,
+    billing_cycle: str,
+    plan_id: str,
+    amount: float,
+) -> None:
+    if not _user_uses_stripe_subscription(user):
+        return
+    _require_stripe_configured()
+    subscription_id = _stripe_subscription_id(user)
+    unit_amount = _to_stripe_amount(amount)
+    interval = "month" if billing_cycle == "monthly" else "year"
+
+    def update_subscription() -> stripe.Subscription:
+        stripe.api_key = settings.stripe_secret_key
+        subscription = stripe.Subscription.retrieve(subscription_id)
+        items = getattr(subscription, "items", None)
+        data = getattr(items, "data", None) if items is not None else None
+        if not data:
+            raise HTTPException(status_code=502, detail="Stripe subscription has no updatable subscription item")
+        product = stripe.Product.create(
+            name=str(title or f"Victory {tier.title()}"),
+            metadata={"plan_id": plan_id, "subscription_tier": tier},
+        )
+        price = stripe.Price.create(
+            currency=settings.stripe_currency,
+            unit_amount=unit_amount,
+            recurring={"interval": interval},
+            product=product.id,
+            metadata={"plan_id": plan_id, "subscription_tier": tier, "billing_cycle": billing_cycle},
+        )
+        return stripe.Subscription.modify(
+            subscription_id,
+            items=[{"id": data[0].id, "price": price.id}],
+            proration_behavior="create_prorations",
+            metadata={
+                "user_id": str(user.get("_id") or ""),
+                "subscription_tier": tier,
+                "billing_cycle": billing_cycle,
+                "plan_id": plan_id,
+            },
+        )
+
+    await asyncio.to_thread(update_subscription)
+
+
 def _extract_event_object(event: dict[str, Any]) -> dict[str, Any]:
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     obj = data.get("object") if isinstance(data.get("object"), dict) else {}
