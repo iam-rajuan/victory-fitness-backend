@@ -2049,6 +2049,7 @@ class StrengthWorkoutSessionFeedbackRequest(BaseModel):
     energy: str = Field(default="medium", pattern=r"^(low|medium|high)$")
     soreness: str = Field(default="medium", pattern=r"^(low|medium|high)$")
     notes: str = Field(default="", max_length=500)
+    pain_details: str = Field(default="", max_length=500)
     pain_flag: bool = False
     sweet_spot_flag: bool = False
 

@@ -596,13 +596,28 @@ def _classify_equipment(equipment: list[str]) -> str:
     """Classifies user equipment into: 'bodyweight_only', 'dumbbells_only', or 'full_gym'."""
     if not equipment:
         return "bodyweight_only"
-    normalized = {str(item).strip().lower() for item in equipment if str(item).strip()}
-    if not normalized:
+    normalized_items = [str(item).strip().lower() for item in equipment if str(item).strip()]
+    if not normalized_items:
         return "bodyweight_only"
+    normalized_text = " ".join(normalized_items)
 
-    has_no_equip = any(term in normalized for term in ["no equipment", "none", "bodyweight", "bodyweight only", "outdoors"])
-    has_gym_equip = any(term in normalized for term in ["barbell", "squat_rack", "cable", "machines", "smith", "crossfit", "full gym", "gym"])
-    has_dumbbells = any(term in normalized for term in ["dumbbells", "kettlebells", "home gym", "bands", "bench"])
+    has_no_equip = any(term in normalized_text for term in ["no equipment", "none", "bodyweight", "bodyweight only", "outdoors"])
+    has_gym_equip = any(
+        term in normalized_text
+        for term in [
+            "barbell",
+            "squat rack",
+            "squat_rack",
+            "cable",
+            "machine",
+            "machines",
+            "smith",
+            "crossfit",
+            "full gym",
+            "gym",
+        ]
+    )
+    has_dumbbells = any(term in normalized_text for term in ["dumbbell", "kettlebell", "home gym", "band", "bench", "pull-up", "pullup"])
 
     if has_no_equip and not has_gym_equip and not has_dumbbells:
         return "bodyweight_only"
@@ -723,12 +738,29 @@ def _catalog_candidates(goal: str, equipment: list[str], focus: str) -> list[dic
         if focus != "full_body" and not muscles & allowed:
             continue
         candidates.append(item)
-    normalized_goal = _normalize_strength_goal(goal)
-    if normalized_goal == "PURE STRENGTH":
-        candidates.sort(key=lambda item: 0 if item.get("type") == "Compound" else 1)
-    elif normalized_goal == "POWER & SPEED":
-        candidates.sort(key=lambda item: 0 if any(term in str(item.get("name", "")).lower() for term in ["jump", "carry", "push-up"]) else 1)
+    candidates.sort(key=lambda item: _exercise_priority(item, equip_type, goal))
     return candidates
+
+
+def _exercise_priority(item: dict, equip_type: str, goal: str) -> tuple[int, int, str]:
+    name = str(item.get("name") or "").lower()
+    metadata_equipment = set(item.get("equipment") or [])
+    type_rank = 0 if item.get("type") == "Compound" else 1
+    normalized_goal = _normalize_strength_goal(goal)
+    if equip_type == "full_gym":
+        if metadata_equipment == {"full_gym"}:
+            equipment_rank = 0
+        elif "full_gym" in metadata_equipment and "dumbbells_only" in metadata_equipment:
+            equipment_rank = 1
+        else:
+            equipment_rank = 2
+        if normalized_goal == "POWER & SPEED" and any(term in name for term in ["jump", "carry"]):
+            type_rank = -1
+        return (equipment_rank, type_rank, name)
+    if equip_type == "dumbbells_only":
+        equipment_rank = 0 if any(term in name for term in ["dumbbell", "farmer"]) else 1
+        return (equipment_rank, type_rank, name)
+    return (0, type_rank, name)
 
 
 def _rotate_candidates(candidates: list[dict], day_index: int, count: int) -> list[dict]:

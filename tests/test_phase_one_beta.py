@@ -154,6 +154,28 @@ class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DependencyEntitlementTests(unittest.TestCase):
+    def test_platinum_includes_coach_victor_in_both_entitlement_resolvers(self) -> None:
+        user = {
+            "subscription_tier": "PLATINUM",
+            "subscription_status": "ACTIVE",
+            "subscription_access": ["home", "workout", "mealPlan", "workoutplan"],
+        }
+
+        self.assertIn("coach_victor", dependencies_module.resolve_subscription_access("PLATINUM"))
+        self.assertIn("coach_victor", backend_module._resolve_subscription_access("PLATINUM"))
+        self.assertTrue(dependencies_module.user_has_subscription_access(user, "coach_victor"))
+        self.assertTrue(backend_module._user_has_subscription_access(user, "coach_victor"))
+
+    def test_silver_does_not_gain_coach_victor_access(self) -> None:
+        user = {
+            "subscription_tier": "SILVER",
+            "subscription_status": "ACTIVE",
+            "subscription_access": ["home", "workout", "challenge", "profile"],
+        }
+
+        self.assertFalse(dependencies_module.user_has_subscription_access(user, "coach_victor"))
+        self.assertFalse(backend_module._user_has_subscription_access(user, "coach_victor"))
+
     def test_dependencies_module_denies_expired_beta_gold_access(self) -> None:
         now = _utc_now()
         user = {

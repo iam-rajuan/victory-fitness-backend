@@ -133,6 +133,7 @@ SUBSCRIPTION_ACCESS = {
         "profile",
         "workoutplan",
         "longevity",
+        "coach_victor",
     ],
     "INNER_CIRCLE": [
         "home",
@@ -300,12 +301,14 @@ def user_has_subscription_access(user: dict, feature: str) -> bool:
     subscription = user.get("subscription") if isinstance(user.get("subscription"), dict) else {}
     if not configured_access and isinstance(subscription.get("access"), list):
         configured_access = subscription.get("access")
-    if isinstance(configured_access, list) and configured_access:
-        return feature in {str(item).strip() for item in configured_access if str(item).strip()}
     if user_has_active_gold_trial(user) and feature in resolve_subscription_access("GOLD"):
         return True
     tier = user.get("subscription_tier") or user.get("subscription_role") or user.get("tier")
-    return feature in resolve_subscription_access(tier)
+    tier_access = set(resolve_subscription_access(tier))
+    if isinstance(configured_access, list) and configured_access:
+        configured_set = {str(item).strip() for item in configured_access if str(item).strip()}
+        return feature in configured_set or feature in tier_access
+    return feature in tier_access
 
 
 def ensure_subscription_feature_access(user: dict, feature: str, detail: str) -> None:

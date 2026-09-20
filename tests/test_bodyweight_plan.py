@@ -20,6 +20,9 @@ def test_equipment_classification():
     assert _classify_equipment(["Outdoors"]) == "bodyweight_only"
     assert _classify_equipment(["Dumbbells"]) == "dumbbells_only"
     assert _classify_equipment(["Gym", "Barbell"]) == "full_gym"
+    assert _classify_equipment(["Cable Machine", "Gym Machines"]) == "full_gym"
+    assert _classify_equipment(["Squat Rack", "Bench"]) == "full_gym"
+    assert _classify_equipment(["Resistance Bands", "Pull-up Bar"]) == "dumbbells_only"
 
 
 def test_bodyweight_workout_plan_strictly_excludes_gym_equipment():
@@ -177,6 +180,63 @@ def test_duration_and_equipment_constraints_are_applied():
         assert int(day["est_time"].split()[0]) <= 35
         for exercise in day["exercises"]:
             assert exercise["weight"] in ["Bodyweight", "-"]
+
+
+def test_full_gym_focused_plan_prioritizes_gym_equipment_over_bodyweight():
+    plan_input = StrengthWorkoutPlanInput(
+        goal="Hypertrophy",
+        level="Intermediate",
+        split="Upper / Lower",
+        muscle_group="Legs",
+        duration_minutes="45",
+        height="175",
+        gender="Male",
+        bench="",
+        squat="100",
+        deadlift="120",
+        equipment=["Cable Machine", "Gym Machines", "Squat Rack", "Bench"],
+        frequency="3",
+        days=["Mon", "Wed", "Fri"],
+        age="28",
+        weight="75",
+        language="en",
+    )
+
+    plan = generate_strength_workout_plan(plan_input)
+    names = [exercise["name"] for day in plan["days"] for exercise in day["exercises"]]
+    gym_terms = ["Barbell", "Romanian Deadlift", "Leg Press", "Leg Extension", "Hamstring Curl", "Hip Thrust"]
+    bodyweight_terms = ["Bodyweight", "Push-Up", "Glute Bridge", "Lunge"]
+
+    assert any(any(term in name for term in gym_terms) for name in names)
+    first_day_names = [exercise["name"] for exercise in plan["days"][0]["exercises"]]
+    assert not any(any(term in name for term in bodyweight_terms) for name in first_day_names[:3])
+
+
+def test_home_gym_plan_uses_dumbbell_or_bodyweight_without_barbells_or_machines():
+    plan_input = StrengthWorkoutPlanInput(
+        goal="Hypertrophy",
+        level="Intermediate",
+        split="Full Body",
+        muscle_group="Full Body",
+        duration_minutes="45",
+        height="175",
+        gender="Male",
+        bench="",
+        squat="",
+        deadlift="",
+        equipment=["Dumbbells", "Resistance Bands", "Bench"],
+        frequency="3",
+        days=["Mon", "Wed", "Fri"],
+        age="28",
+        weight="75",
+        language="en",
+    )
+
+    plan = generate_strength_workout_plan(plan_input)
+    names = [exercise["name"].lower() for day in plan["days"] for exercise in day["exercises"]]
+
+    assert any("dumbbell" in name for name in names)
+    assert not any(any(term in name for term in ["barbell", "cable", "machine", "leg press"]) for name in names)
 
 
 def test_ai_response_is_corrected_before_returning():

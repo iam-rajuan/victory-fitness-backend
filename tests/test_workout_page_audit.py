@@ -6,6 +6,7 @@ from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.models import StrengthWorkoutSessionFeedbackRequest
 from app.api.routers.ai_workout_plan import _adaptive_workout_adjustment
+from app.api.routers import ai_workout_plan as ai_workout_plan_router
 from app.api.routers import workout_logs as workout_logs_router
 
 
@@ -49,6 +50,88 @@ def test_adaptive_workout_adjustment_rubric():
     assert adj_pct == 0
     assert direction == "maintain"
     assert "Sweet spot achieved" in what_went_well
+
+
+@pytest.mark.anyio
+async def test_strength_feedback_persists_written_and_pain_details(monkeypatch):
+    plan_id = ObjectId()
+    user_id = ObjectId()
+    record = {
+        "_id": plan_id,
+        "user_id": str(user_id),
+        "plan": {
+          "summary": "Test strength plan",
+          "days": [
+              {
+                  "day": "Mon",
+                  "title": "Lower Body",
+                  "est_time": "30 min",
+                  "volume": "12 sets",
+                  "intensity": "RPE 7.0",
+                  "sections": [],
+                  "exercises": [],
+              },
+              {
+                  "day": "Tue",
+                  "title": "Upper Body",
+                  "est_time": "30 min",
+                  "volume": "12 sets",
+                  "intensity": "RPE 7.0",
+                  "sections": [],
+                  "exercises": [],
+              },
+          ],
+        },
+        "progress": [],
+        "session_feedback": [],
+        "created_at": datetime.now(timezone.utc),
+    }
+
+    class FakePlans:
+        def __init__(self):
+            self.update = None
+
+        async def find_one(self, query):
+            return record
+
+        async def update_one(self, query, update):
+            self.update = update
+            return MagicMock(modified_count=1)
+
+    class FakeUsers:
+        def __init__(self):
+            self.update = None
+
+        async def update_one(self, query, update):
+            self.update = update
+            return MagicMock(modified_count=1)
+
+    fake_plans = FakePlans()
+    fake_users = FakeUsers()
+    monkeypatch.setattr(ai_workout_plan_router, "strength_workout_plans_collection", fake_plans)
+    monkeypatch.setattr(ai_workout_plan_router, "users_collection", fake_users)
+
+    payload = StrengthWorkoutSessionFeedbackRequest(
+        day="Mon",
+        perceived_difficulty="too_hard",
+        energy="low",
+        soreness="high",
+        notes="Felt unstable on the last set.",
+        pain_details="Knee discomfort during lunges.",
+        pain_flag=True,
+    )
+
+    response = await ai_workout_plan_router.workout_strength_plan_feedback(
+        str(plan_id),
+        payload,
+        user={"_id": user_id},
+    )
+
+    feedback = fake_plans.update["$set"]["session_feedback"][-1]
+    assert response.adjustment_pct == -10
+    assert feedback["notes"] == "Felt unstable on the last set."
+    assert feedback["pain_details"] == "Knee discomfort during lunges."
+    assert fake_users.update["$addToSet"]["injury_flags"]["$each"] == ["knee"]
 
 
 @pytest.mark.anyio

@@ -74,13 +74,27 @@ async def get_onboarding_content() -> OnboardingContentResponse:
     return OnboardingContentResponse(slides=slides)
 
 @router.get("/content/homepage/quote", response_model=HomepageQuote | None)
-async def get_homepage_quote(app_version: str | None = None) -> HomepageQuote | None:
+async def get_homepage_quote(
+    app_version: str | None = None,
+    rotate: bool = False,
+    previous_quote_id: str | None = None,
+    nonce: str | None = None,
+) -> HomepageQuote | None:
     items = await _load_homepage_quotes()
     active_items = [item for item in items if item.get("active", True)]
     if not active_items:
         active_items = DEFAULT_HOMEPAGE_QUOTES
     if not active_items:
         return None
+
+    if rotate:
+        rotation_pool = active_items
+        previous_id = str(previous_quote_id or "").strip()
+        if previous_id and len(rotation_pool) > 1:
+            rotation_pool = [item for item in rotation_pool if str(item.get("id") or "") != previous_id] or active_items
+        seed_source = nonce or f"{time.time_ns()}:{app_version or ''}:{previous_id}"
+        seed = int(hashlib.sha256(str(seed_source).encode("utf-8")).hexdigest()[:8], 16)
+        return HomepageQuote(**rotation_pool[seed % len(rotation_pool)])
 
     # 1. Highest priority: Quote explicitly selected by admin in the dashboard
     selected_items = [item for item in active_items if item.get("selected")]

@@ -714,7 +714,7 @@ async def workout_strength_plan_feedback(
         plan_days[selected_index + 1] = next_day
         plan_data["days"] = plan_days
 
-    notes_lower = str(payload.notes or "").lower()
+    notes_lower = f"{payload.notes or ''} {payload.pain_details or ''}".lower()
     pain_flags = []
     if payload.pain_flag or "knee" in notes_lower:
         pain_flags.append("knee")
@@ -744,6 +744,7 @@ async def workout_strength_plan_feedback(
             "energy": payload.energy,
             "soreness": payload.soreness,
             "notes": str(payload.notes or "").strip(),
+            "pain_details": str(payload.pain_details or "").strip(),
             "pain_flag": payload.pain_flag,
             "sweet_spot_flag": payload.sweet_spot_flag,
             "adjustment_pct": adjustment_pct,
