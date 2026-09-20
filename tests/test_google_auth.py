@@ -122,6 +122,55 @@ class GoogleTokenVerificationTests(unittest.TestCase):
         self.assertEqual(profile["sub"], "google-sub-3")
         self.assertEqual(profile["email"], "verified@example.com")
 
+    def test_tokeninfo_fallback_accepts_configured_mobile_client_audience(self) -> None:
+        expires_at = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+
+        with patch.object(
+            legacy_module,
+            "_read_json_url",
+            return_value={
+                "aud": "android-client-id",
+                "iss": "https://accounts.google.com",
+                "exp": str(expires_at),
+                "sub": "google-sub-mobile",
+                "email": "mobile@example.com",
+                "email_verified": "true",
+                "name": "Mobile User",
+            },
+        ):
+            profile = legacy_module._verify_google_id_token_with_tokeninfo(
+                "id-token-value",
+                ["web-client-id", "android-client-id"],
+                fallback_reason="local_verify_failed",
+            )
+
+        self.assertEqual(profile["sub"], "google-sub-mobile")
+        self.assertEqual(profile["email"], "mobile@example.com")
+
+    def test_tokeninfo_fallback_rejects_unconfigured_audience(self) -> None:
+        expires_at = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+
+        with patch.object(
+            legacy_module,
+            "_read_json_url",
+            return_value={
+                "aud": "unexpected-client-id",
+                "iss": "https://accounts.google.com",
+                "exp": str(expires_at),
+                "sub": "google-sub-mobile",
+                "email": "mobile@example.com",
+                "email_verified": "true",
+            },
+        ):
+            with self.assertRaises(Exception) as context:
+                legacy_module._verify_google_id_token_with_tokeninfo(
+                    "id-token-value",
+                    ["web-client-id", "android-client-id"],
+                    fallback_reason="local_verify_failed",
+                )
+
+        self.assertEqual(getattr(context.exception, "status_code", None), 401)
+
 
 class GoogleRouteTests(unittest.TestCase):
     @classmethod

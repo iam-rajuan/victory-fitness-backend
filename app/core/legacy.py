@@ -2586,11 +2586,31 @@ def _verify_firebase_id_token(id_token: str) -> dict[str, Any]:
 
     return payload
 
+def _get_google_token_audiences() -> list[str]:
+
+    configured_ids = []
+
+    for value in getattr(settings, "google_client_ids", []) or []:
+
+        configured_ids.extend(str(value or "").split(","))
+
+    configured_ids.extend(
+        [
+            getattr(settings, "google_client_id", ""),
+            getattr(settings, "google_web_client_id", ""),
+            getattr(settings, "google_android_client_id", ""),
+            getattr(settings, "google_ios_client_id", ""),
+        ]
+    )
+
+    return list(dict.fromkeys(item.strip() for item in configured_ids if item and item.strip()))
+
+
 def _verify_google_id_token(id_token: str) -> dict[str, Any]:
 
-    google_client_id = (getattr(settings, "google_client_id", "") or "").strip()
+    google_client_ids = _get_google_token_audiences()
 
-    if not google_client_id:
+    if not google_client_ids:
 
         raise HTTPException(status_code=500, detail="Google auth is not configured")
 
@@ -2627,7 +2647,7 @@ def _verify_google_id_token(id_token: str) -> dict[str, Any]:
 
         logger.warning("auth_google_token_unknown_kid kid=%s", kid)
 
-        return _verify_google_id_token_with_tokeninfo(id_token, google_client_id, fallback_reason="unknown_kid")
+        return _verify_google_id_token_with_tokeninfo(id_token, google_client_ids, fallback_reason="unknown_kid")
 
     last_error: Exception | None = None
 
@@ -2635,31 +2655,33 @@ def _verify_google_id_token(id_token: str) -> dict[str, Any]:
 
         for issuer in ("https://accounts.google.com", "accounts.google.com"):
 
-            try:
+            for audience in google_client_ids:
 
-                return jwt.decode(
+                try:
 
-                    id_token,
+                    return jwt.decode(
 
-                    candidate_key,
+                        id_token,
 
-                    algorithms=["RS256"],
+                        candidate_key,
 
-                    audience=google_client_id,
+                        algorithms=["RS256"],
 
-                    issuer=issuer,
+                        audience=audience,
 
-                )
+                        issuer=issuer,
 
-            except Exception as exc:
+                    )
 
-                last_error = exc
+                except Exception as exc:
+
+                    last_error = exc
 
     logger.warning("auth_google_token_verify_failed kid=%s error=%s", kid, type(last_error).__name__ if last_error else "unknown")
 
-    return _verify_google_id_token_with_tokeninfo(id_token, google_client_id, fallback_reason="local_verify_failed")
+    return _verify_google_id_token_with_tokeninfo(id_token, google_client_ids, fallback_reason="local_verify_failed")
 
-def _verify_google_id_token_with_tokeninfo(id_token: str, google_client_id: str, *, fallback_reason: str) -> dict[str, Any]:
+def _verify_google_id_token_with_tokeninfo(id_token: str, google_client_ids: str | list[str], *, fallback_reason: str) -> dict[str, Any]:
 
     try:
 
@@ -2669,9 +2691,15 @@ def _verify_google_id_token_with_tokeninfo(id_token: str, google_client_id: str,
 
         raise HTTPException(status_code=401, detail="Invalid Google token") from exc
 
+    allowed_audiences = (
+        [google_client_ids]
+        if isinstance(google_client_ids, str)
+        else [str(item or "").strip() for item in google_client_ids]
+    )
+    allowed_audiences = [item for item in allowed_audiences if item]
     audience = str(payload.get("aud") or "").strip()
 
-    if audience != google_client_id:
+    if audience not in allowed_audiences:
 
         logger.warning("auth_google_tokeninfo_audience_mismatch reason=%s", fallback_reason)
 

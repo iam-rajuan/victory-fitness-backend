@@ -159,6 +159,14 @@ class Settings:
         self.admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)
         self.admin_seed_sync_password = _get_bool("ADMIN_SEED_SYNC_PASSWORD", True)
         self.google_client_id = _get_secret("GOOGLE_CLIENT_ID")
+        configured_google_client_ids = [
+            *(_get_csv_list("GOOGLE_CLIENT_IDS") or []),
+            self.google_client_id,
+            _get_secret("GOOGLE_WEB_CLIENT_ID"),
+            _get_secret("GOOGLE_ANDROID_CLIENT_ID"),
+            _get_secret("GOOGLE_IOS_CLIENT_ID"),
+        ]
+        self.google_client_ids = list(dict.fromkeys(item for item in configured_google_client_ids if item))
         self.google_client_secret = _get_secret("GOOGLE_CLIENT_SECRET")
         self.google_redirect_uri = _get_str("GOOGLE_REDIRECT_URI")
         self.google_project_id = _get_str("GOOGLE_PROJECT_ID")

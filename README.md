@@ -135,7 +135,8 @@ Important environment variables:
 | `ANTHROPIC_MODEL` | Optional | Anthropic model name. |
 | `VIMEO_ACCESS_TOKEN` | Optional | Enables Vimeo workout sync and integration status. |
 | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_S3_BUCKET` | Optional | Enables S3 archive and media upload behavior. |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_PROJECT_ID` | Optional | Google OAuth settings. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_PROJECT_ID` | Optional | Google OAuth settings. `GOOGLE_CLIENT_ID` is the desktop/web OAuth client used for the backend browser callback flow. |
+| `GOOGLE_CLIENT_IDS`, `GOOGLE_WEB_CLIENT_ID`, `GOOGLE_ANDROID_CLIENT_ID`, `GOOGLE_IOS_CLIENT_ID` | Optional | Allowed Google ID-token audiences for app login. Configure the web, Android, and iOS OAuth client IDs used by the user app so desktop and native tokens verify without accepting unknown audiences. |
 | `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, `FIREBASE_PRIVATE_KEY` | Optional | Firebase auth and push notification credentials. |
 | `ADMIN_SEED_ENABLED` | No | Seeds an admin user on startup when enabled. |
 | `ADMIN_EMAIL_Primary`, `ADMIN_PASSWORD_Primary`, `ADMIN_EMAIL_DEV`, `ADMIN_PASSWORD_DEV` | Required when admin seed is enabled | Admin dashboard accounts seeded on startup. |
