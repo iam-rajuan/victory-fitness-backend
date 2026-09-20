@@ -194,6 +194,16 @@ def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict
         else:
             split = "Push Pull Legs"
 
+    muscle_group = str(payload.muscle_group or "").strip()
+    if not muscle_group:
+        muscle_group = "Full Body"
+
+    duration_minutes = str(payload.duration_minutes or "").strip()
+    if not duration_minutes:
+        raw_time = str(anamnese.get("timePerSession") or "").strip()
+        match_time = re.search(r"(\d+)", raw_time)
+        duration_minutes = match_time.group(1) if match_time else "45"
+
     # Equipment: strictly check onboarding equipmentAccess
     equipment = [str(item).strip() for item in (payload.equipment or []) if str(item).strip()]
     if not equipment:
@@ -238,6 +248,8 @@ def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict
         goal=goal,
         level=level,
         split=split,
+        muscle_group=muscle_group,
+        duration_minutes=duration_minutes,
         height=height,
         gender=gender,
         bench=bench,
@@ -269,6 +281,8 @@ async def workout_strength_plan(
                 "goal": hydrated_input.goal,
                 "level": hydrated_input.level,
                 "split": hydrated_input.split,
+                "muscle_group": hydrated_input.muscle_group,
+                "duration_minutes": hydrated_input.duration_minutes,
                 "height": hydrated_input.height,
                 "gender": hydrated_input.gender,
                 "bench": hydrated_input.bench,

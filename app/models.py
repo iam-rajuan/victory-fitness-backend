@@ -2007,6 +2007,8 @@ class StrengthWorkoutPlanRequest(BaseModel):
     goal: str | None = None
     level: str | None = None
     split: str | None = None
+    muscle_group: str | None = None
+    duration_minutes: str | None = None
     height: str | None = None
     gender: str | None = None
     bench: str | None = None

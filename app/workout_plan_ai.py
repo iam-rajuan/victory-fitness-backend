@@ -25,6 +25,8 @@ class StrengthWorkoutPlanInput:
     days: list[str]
     age: str
     weight: str
+    muscle_group: str = ""
+    duration_minutes: str = ""
     language: str = "en"
     injury_flags: list[str] = field(default_factory=list)
 
@@ -53,6 +55,55 @@ LOWER_BACK_AGGRAVATING_TERMS = [
     "back squat", "good morning", "heavy deadlift", "deficit deadlift",
     "barbell row", "pendlay row",
 ]
+
+EXERCISE_CATALOG = [
+    {"name": "Bodyweight Tempo Squat", "muscles": ["legs", "quads", "glutes"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Reverse Lunge", "muscles": ["legs", "quads", "glutes"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Accessory"},
+    {"name": "Walking Lunge", "muscles": ["legs", "quads", "glutes"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Accessory"},
+    {"name": "Single-Leg Glute Bridge", "muscles": ["legs", "glutes", "hamstrings"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Accessory"},
+    {"name": "Jump Squat", "muscles": ["legs", "quads", "glutes"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Push-Up", "muscles": ["chest", "triceps", "shoulders"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Pike Push-Up", "muscles": ["shoulders", "triceps"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Diamond Push-Up", "muscles": ["chest", "triceps"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Inverted Bodyweight Row", "muscles": ["back", "biceps"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Chair / Bench Dips", "muscles": ["triceps", "chest"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Accessory"},
+    {"name": "Plank", "muscles": ["core"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Core"},
+    {"name": "Hollow Hold", "muscles": ["core"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Core"},
+    {"name": "Mountain Climber", "muscles": ["core", "conditioning"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Core"},
+    {"name": "Russian Twist", "muscles": ["core"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Core"},
+    {"name": "Dumbbell Goblet Squat", "muscles": ["legs", "quads", "glutes"], "equipment": ["dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Dumbbell Bulgarian Split Squat", "muscles": ["legs", "quads", "glutes"], "equipment": ["dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Dumbbell Romanian Deadlift", "muscles": ["legs", "hamstrings", "glutes"], "equipment": ["dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Dumbbell Floor Press", "muscles": ["chest", "triceps"], "equipment": ["dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Dumbbell Chest Flye", "muscles": ["chest"], "equipment": ["dumbbells_only", "full_gym"], "type": "Accessory"},
+    {"name": "Dumbbell Row", "muscles": ["back", "biceps"], "equipment": ["dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Dumbbell Overhead Press", "muscles": ["shoulders", "triceps"], "equipment": ["dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Dumbbell Lateral Raise", "muscles": ["shoulders"], "equipment": ["dumbbells_only", "full_gym"], "type": "Isolation"},
+    {"name": "Dumbbell Curl", "muscles": ["biceps", "arms"], "equipment": ["dumbbells_only", "full_gym"], "type": "Isolation"},
+    {"name": "Dumbbell Skull Crusher", "muscles": ["triceps", "arms"], "equipment": ["dumbbells_only", "full_gym"], "type": "Isolation"},
+    {"name": "Barbell Back Squat", "muscles": ["legs", "quads", "glutes"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Romanian Deadlift", "muscles": ["legs", "hamstrings", "glutes"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Deadlift", "muscles": ["legs", "back", "hamstrings", "glutes"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Leg Press", "muscles": ["legs", "quads", "glutes"], "equipment": ["full_gym"], "type": "Accessory"},
+    {"name": "Leg Extension", "muscles": ["legs", "quads"], "equipment": ["full_gym"], "type": "Isolation"},
+    {"name": "Hamstring Curl", "muscles": ["legs", "hamstrings"], "equipment": ["full_gym"], "type": "Isolation"},
+    {"name": "Calf Raise", "muscles": ["legs", "calves"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Isolation"},
+    {"name": "Hip Thrust", "muscles": ["legs", "glutes", "hamstrings"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Glute Bridge", "muscles": ["legs", "glutes"], "equipment": ["bodyweight_only", "dumbbells_only", "full_gym"], "type": "Accessory"},
+    {"name": "Bench Press", "muscles": ["chest", "triceps"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Incline Dumbbell Press", "muscles": ["chest", "shoulders", "triceps"], "equipment": ["dumbbells_only", "full_gym"], "type": "Accessory"},
+    {"name": "Cable Row", "muscles": ["back", "biceps"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Weighted Row", "muscles": ["back", "biceps"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Chest-Supported Row", "muscles": ["back", "biceps"], "equipment": ["dumbbells_only", "full_gym"], "type": "Compound"},
+    {"name": "Pull-Up", "muscles": ["back", "biceps"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Overhead Press", "muscles": ["shoulders", "triceps"], "equipment": ["full_gym"], "type": "Compound"},
+    {"name": "Lateral Raise", "muscles": ["shoulders"], "equipment": ["dumbbells_only", "full_gym"], "type": "Isolation"},
+    {"name": "Cable Face Pull", "muscles": ["shoulders", "back"], "equipment": ["full_gym"], "type": "Accessory"},
+    {"name": "Cable Crunch", "muscles": ["core"], "equipment": ["full_gym"], "type": "Core"},
+    {"name": "Farmer Carry", "muscles": ["core", "traps"], "equipment": ["dumbbells_only", "full_gym"], "type": "Accessory"},
+]
+
+EXERCISE_BY_NAME = {str(item["name"]).lower(): item for item in EXERCISE_CATALOG}
 
 
 def _replacement_for_injury(exercise_name: str, injury_flags: list[str]) -> str | None:
@@ -139,13 +190,20 @@ def _sanitize_plan_injuries(plan: dict, injury_flags: list[str]) -> dict:
 def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
     ai_plan = _generate_strength_workout_plan_with_ai(input_data)
     if _looks_like_strength_plan(ai_plan):
-        return _sanitize_plan_injuries(ai_plan, getattr(input_data, "injury_flags", []))
+        sanitized = _sanitize_plan_injuries(ai_plan, getattr(input_data, "injury_flags", []))
+        return _validate_and_correct_strength_plan(sanitized, input_data)
 
+    return _build_strength_workout_plan(input_data)
+
+
+def _build_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
     frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
     preferred_days = _normalize_preferred_days(input_data.days)
     active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
-    title_cycle = _strength_title_cycle(input_data.split, input_data.goal)
-    exercise_pool = _strength_exercise_pool(input_data.goal, input_data.equipment)
+    title_cycle = _strength_title_cycle(input_data.split, input_data.goal, input_data.muscle_group)
+    exercise_pool = _strength_exercise_pool(input_data.goal, input_data.equipment, input_data.muscle_group, input_data.duration_minutes, input_data.level)
+
+    frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
 
     injury_list = [str(item).lower() for item in getattr(input_data, "injury_flags", []) if str(item).strip()]
     if "knee" in injury_list:
@@ -180,6 +238,7 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
                     "type": exercise["type"],
                 }
             )
+        exercises = _fit_exercises_to_duration(exercises, input_data.duration_minutes)
 
         working_sets = sum(int(item["sets"]) for item in exercises)
         average_weight = max(_safe_int(input_data.weight, 75, minimum=40, maximum=180), 40)
@@ -203,9 +262,13 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
             }
         )
 
+    focus = _normalize_muscle_group(input_data.muscle_group)
+    focus_label = "full-body" if focus == "full_body" else focus.replace("_", " ")
+    duration = _requested_duration_minutes(input_data.duration_minutes)
+    duration_text = f" around {duration} minutes per session" if duration else ""
     summary = (
-        f"{input_data.level or 'Intermediate'} {input_data.goal or 'strength'} plan using a "
-        f"{input_data.split or 'balanced'} split with {frequency} main training days."
+        f"{input_data.level or 'Intermediate'} {input_data.goal or 'strength'} plan focused on {focus_label}, using a "
+        f"{input_data.split or 'balanced'} split with {frequency} main training days{duration_text}."
     )
     return {"summary": summary, "days": days}
 
@@ -320,7 +383,9 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- Each day needs: day, title, est_time, volume, intensity, exercises.\n"
         "- Each exercise needs: id, name, sets, reps, rest, weight, type.\n"
         "- Weight should be realistic based on the user's lifts when provided, otherwise estimate conservatively.\n"
-        "- Split, goal, experience level, equipment, and frequency must visibly affect the plan.\n"
+        "- Split, goal, experience level, selected muscle group, available duration, equipment, and frequency must visibly affect the plan.\n"
+        "- STRICT MUSCLE GROUP CONSTRAINT: If muscle_group is not full body, every exercise must train that selected muscle group or a directly supporting sub-muscle. Do not include unrelated chest, back, shoulder, or arm work in a legs-focused plan.\n"
+        "- STRICT DURATION CONSTRAINT: Estimate each session inside the requested duration window by adjusting exercise count, sets, and rest. Do not return longer sessions than requested.\n"
         "- STRICT EQUIPMENT CONSTRAINT: If equipment includes 'no equipment', 'bodyweight', or 'outdoors', you MUST ONLY prescribe calisthenics/bodyweight exercises. NEVER include Barbell, Dumbbell, Cable, Machine, or Leg Press lifts. Weight must be 'Bodyweight'.\n"
         "- If equipment is 'home gym' or 'dumbbells', use only dumbbells and bodyweight. NEVER prescribe barbells or cable machines.\n"
         f"{injury_line}"
@@ -487,7 +552,19 @@ def _normalize_preferred_days(days: list[str]) -> list[str]:
     return normalized
 
 
-def _strength_title_cycle(split: str, goal: str) -> list[str]:
+def _strength_title_cycle(split: str, goal: str, muscle_group: str = "") -> list[str]:
+    focus = _normalize_muscle_group(muscle_group)
+    if focus != "full_body":
+        label = focus.replace("_", " ").title()
+        normalized_goal = _normalize_strength_goal(goal)
+        if normalized_goal == "POWER & SPEED":
+            return [f"{label} Power", f"{label} Speed", f"{label} Athletic Strength"]
+        if normalized_goal == "PURE STRENGTH":
+            return [f"{label} Strength", f"{label} Heavy Strength", f"{label} Strength Practice"]
+        if normalized_goal == "BODY RECOMP":
+            return [f"{label} Recomp", f"{label} Conditioning Strength", f"{label} Volume"]
+        return [f"{label} Hypertrophy", f"{label} Volume", f"{label} Strength"]
+
     split_map = {
         "FULL BODY": ["Full Body Strength", "Full Body Hypertrophy", "Full Body Power"],
         "UPPER / LOWER": ["Upper Body Strength", "Lower Body Strength", "Upper Body Volume", "Lower Body Power"],
@@ -550,13 +627,255 @@ def _calculate_day_est_time(exercises: list[dict]) -> str:
     return f"{mins} min"
 
 
-def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]:
+def _normalize_muscle_group(value: str | None) -> str:
+    text = re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+    if not text:
+        return "full_body"
+    if any(term in text for term in ["full", "total", "whole", "general"]):
+        return "full_body"
+    if any(term in text for term in ["leg", "lower", "quad", "hamstring", "glute", "calf"]):
+        return "legs"
+    if "chest" in text or "pec" in text:
+        return "chest"
+    if any(term in text for term in ["back", "lat", "pull"]):
+        return "back"
+    if any(term in text for term in ["shoulder", "delt"]):
+        return "shoulders"
+    if any(term in text for term in ["arm", "bicep", "tricep"]):
+        return "arms"
+    if any(term in text for term in ["core", "abs", "abdominal"]):
+        return "core"
+    return text.replace(" ", "_")
+
+
+def _requested_duration_minutes(value: str | int | None) -> int:
+    if isinstance(value, int):
+        return max(20, min(value, 90))
+    match = re.search(r"(\d+)", str(value or ""))
+    if not match:
+        return 45
+    return max(20, min(int(match.group(1)), 90))
+
+
+def _target_exercise_count(duration_minutes: str | int | None) -> int:
+    duration = _requested_duration_minutes(duration_minutes)
+    if duration <= 30:
+        return 3
+    if duration <= 45:
+        return 4
+    if duration <= 60:
+        return 5
+    return 6
+
+
+def _estimated_minutes_value(exercises: list[dict]) -> int:
+    match = re.search(r"(\d+)", _calculate_day_est_time(exercises))
+    return int(match.group(1)) if match else 45
+
+
+def _fit_exercises_to_duration(exercises: list[dict], duration_minutes: str | int | None) -> list[dict]:
+    duration = _requested_duration_minutes(duration_minutes)
+    fitted = [dict(exercise) for exercise in exercises]
+    while len(fitted) > 3 and _estimated_minutes_value(fitted) > duration + 5:
+        fitted.pop()
+    if _estimated_minutes_value(fitted) <= duration + 5:
+        return fitted
+    for exercise in fitted:
+        exercise["sets"] = min(max(int(exercise.get("sets") or 3), 1), 3)
+        rest_match = re.search(r"(\d+)", str(exercise.get("rest") or "60s"))
+        rest_value = int(rest_match.group(1)) if rest_match else 60
+        exercise["rest"] = f"{min(rest_value, 90)}s"
+    return fitted
+
+
+def _allowed_focuses(focus: str) -> set[str]:
+    if focus == "arms":
+        return {"arms", "biceps", "triceps"}
+    if focus == "legs":
+        return {"legs", "quads", "hamstrings", "glutes", "calves"}
+    if focus == "full_body":
+        return {"legs", "quads", "hamstrings", "glutes", "calves", "chest", "back", "shoulders", "arms", "biceps", "triceps", "core"}
+    return {focus}
+
+
+def _exercise_matches_constraints(exercise_name: str, input_data: StrengthWorkoutPlanInput) -> bool:
+    metadata = EXERCISE_BY_NAME.get(str(exercise_name or "").strip().lower())
+    if not metadata:
+        return False
+    equip_type = _classify_equipment(input_data.equipment)
+    if equip_type not in metadata.get("equipment", []):
+        return False
+    focus = _normalize_muscle_group(input_data.muscle_group)
+    if focus == "full_body":
+        return True
+    muscles = {str(item).lower() for item in metadata.get("muscles", [])}
+    return bool(muscles & _allowed_focuses(focus))
+
+
+def _catalog_candidates(goal: str, equipment: list[str], focus: str) -> list[dict]:
+    equip_type = _classify_equipment(equipment)
+    allowed = _allowed_focuses(focus)
+    candidates = []
+    for item in EXERCISE_CATALOG:
+        if equip_type not in item.get("equipment", []):
+            continue
+        muscles = {str(value).lower() for value in item.get("muscles", [])}
+        if focus != "full_body" and not muscles & allowed:
+            continue
+        candidates.append(item)
+    normalized_goal = _normalize_strength_goal(goal)
+    if normalized_goal == "PURE STRENGTH":
+        candidates.sort(key=lambda item: 0 if item.get("type") == "Compound" else 1)
+    elif normalized_goal == "POWER & SPEED":
+        candidates.sort(key=lambda item: 0 if any(term in str(item.get("name", "")).lower() for term in ["jump", "carry", "push-up"]) else 1)
+    return candidates
+
+
+def _rotate_candidates(candidates: list[dict], day_index: int, count: int) -> list[dict]:
+    if not candidates:
+        return []
+    ordered = candidates[day_index:] + candidates[:day_index]
+    while len(ordered) < count:
+        ordered.extend(candidates)
+    return ordered[:count]
+
+
+def _prescribe_exercise(source: dict, goal: str, level: str, duration_minutes: str | int | None) -> dict:
+    exercise = dict(source)
+    normalized_goal = _normalize_strength_goal(goal)
+    normalized_level = str(level or "").strip().lower()
+    duration = _requested_duration_minutes(duration_minutes)
+    is_compound = str(exercise.get("type") or "").lower() == "compound"
+
+    if normalized_goal == "PURE STRENGTH":
+        sets = 5 if is_compound else 3
+        reps = "3-5" if is_compound else "6-8"
+        rest = "180s" if is_compound else "90s"
+    elif normalized_goal == "POWER & SPEED":
+        sets = 4 if is_compound else 3
+        reps = "3-6 explosive" if is_compound else "8-10"
+        rest = "120s" if is_compound else "75s"
+    elif normalized_goal == "BODY RECOMP":
+        sets = 3
+        reps = "10-15"
+        rest = "60s"
+    else:
+        sets = 4 if is_compound else 3
+        reps = "8-12" if is_compound else "12-15"
+        rest = "75s" if is_compound else "60s"
+
+    if normalized_level == "beginner":
+        sets = min(sets, 3)
+        rest = "60s" if rest != "180s" else "120s"
+    elif normalized_level == "advanced":
+        sets = min(sets + (1 if is_compound and duration >= 45 else 0), 5)
+
+    if duration <= 30:
+        sets = min(sets, 3)
+        rest = "90s" if normalized_goal == "PURE STRENGTH" and is_compound else "60s"
+
+    exercise.update({"sets": sets, "reps": reps, "rest": rest})
+    return exercise
+
+
+def _shape_pool_for_constraints(pool: list[list[dict]], goal: str, level: str, duration_minutes: str | int | None) -> list[list[dict]]:
+    target_count = _target_exercise_count(duration_minutes)
+    shaped = []
+    for day in pool:
+        shaped.append([
+            _prescribe_exercise(exercise, goal, level, duration_minutes)
+            for exercise in day[:target_count]
+        ])
+    return shaped
+
+
+def _validate_and_correct_strength_plan(plan: dict, input_data: StrengthWorkoutPlanInput) -> dict:
+    frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
+    preferred_days = _normalize_preferred_days(input_data.days)
+    active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
+    fallback = _build_strength_workout_plan(input_data)
+    fallback_by_day = {str(day.get("day")): day for day in fallback.get("days", []) if isinstance(day, dict)}
+    incoming_by_day = {str(day.get("day")): day for day in plan.get("days", []) if isinstance(day, dict)}
+
+    corrected_days = []
+    for day_index, day_name in enumerate(active_days):
+        incoming = dict(incoming_by_day.get(day_name) or {})
+        fallback_day = dict(fallback_by_day.get(day_name) or fallback["days"][day_index % len(fallback["days"])])
+        clean_exercises = []
+        seen_names = set()
+        for raw_exercise in incoming.get("exercises") or []:
+            if not isinstance(raw_exercise, dict):
+                continue
+            name = str(raw_exercise.get("name") or "").strip()
+            if not name or name.lower() in seen_names:
+                continue
+            if not _exercise_matches_constraints(name, input_data):
+                continue
+            metadata = EXERCISE_BY_NAME[name.lower()]
+            prescribed = _prescribe_exercise(metadata, input_data.goal, input_data.level, input_data.duration_minutes)
+            clean_exercises.append(
+                {
+                    "id": str(raw_exercise.get("id") or f"{day_name.lower()}-{len(clean_exercises) + 1}"),
+                    "name": metadata["name"],
+                    "sets": prescribed["sets"],
+                    "reps": prescribed["reps"],
+                    "rest": prescribed["rest"],
+                    "weight": _exercise_weight_label(metadata["name"], input_data),
+                    "type": str(raw_exercise.get("type") or prescribed["type"]),
+                }
+            )
+            seen_names.add(name.lower())
+
+        target_count = _target_exercise_count(input_data.duration_minutes)
+        for fallback_exercise in fallback_day.get("exercises") or []:
+            if len(clean_exercises) >= target_count:
+                break
+            name = str(fallback_exercise.get("name") or "").strip()
+            if not name or name.lower() in seen_names:
+                continue
+            clean_exercises.append({**fallback_exercise, "id": f"{day_name.lower()}-{len(clean_exercises) + 1}"})
+            seen_names.add(name.lower())
+
+        corrected_day = {
+            "day": day_name,
+            "title": str(incoming.get("title") or fallback_day.get("title") or f"{day_name} Strength"),
+            "est_time": _calculate_day_est_time(_fit_exercises_to_duration(clean_exercises, input_data.duration_minutes)),
+            "volume": str(fallback_day.get("volume") or incoming.get("volume") or ""),
+            "intensity": _strength_intensity_label(input_data.goal, input_data.level),
+            "exercises": _fit_exercises_to_duration(clean_exercises, input_data.duration_minutes),
+        }
+        corrected_days.append(corrected_day)
+
+    summary = str(plan.get("summary") or fallback.get("summary") or "").strip() or fallback["summary"]
+    return {"summary": summary, "days": corrected_days}
+
+
+def _strength_exercise_pool(
+    goal: str,
+    equipment: list[str],
+    muscle_group: str = "",
+    duration_minutes: str | int = "",
+    level: str = "",
+) -> list[list[dict]]:
     normalized_goal = _normalize_strength_goal(goal)
     equip_type = _classify_equipment(equipment)
+    focus = _normalize_muscle_group(muscle_group)
+    if focus != "full_body":
+        candidates = _catalog_candidates(goal, equipment, focus)
+        if not candidates:
+            candidates = _catalog_candidates(goal, equipment, "full_body")
+        target_count = _target_exercise_count(duration_minutes)
+        return [
+            [
+                _prescribe_exercise(candidate, goal, level, duration_minutes)
+                for candidate in _rotate_candidates(candidates, day_index, target_count)
+            ]
+            for day_index in range(5)
+        ]
 
     # 1. BODYWEIGHT / NO EQUIPMENT SPLIT
     if equip_type == "bodyweight_only":
-        return [
+        return _shape_pool_for_constraints([
             # Day 1: Full Body / Lower Focus
             [
                 {"name": "Bodyweight Tempo Squat", "sets": 4, "reps": "12-15", "rest": "60s", "type": "Compound"},
@@ -580,11 +899,11 @@ def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]
                 {"name": "Walking Lunge", "sets": 3, "reps": "12/side", "rest": "60s", "type": "Accessory"},
                 {"name": "Mountain Climber", "sets": 3, "reps": "30s", "rest": "45s", "type": "Core"},
             ],
-        ]
+        ], goal, level, duration_minutes)
 
     # 2. HOME GYM / DUMBBELLS SPLIT
     if equip_type == "dumbbells_only":
-        return [
+        return _shape_pool_for_constraints([
             [
                 {"name": "Dumbbell Goblet Squat", "sets": 4, "reps": "10-12", "rest": "75s", "type": "Compound"},
                 {"name": "Dumbbell Floor Press", "sets": 4, "reps": "8-12", "rest": "75s", "type": "Compound"},
@@ -599,11 +918,11 @@ def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]
                 {"name": "Dumbbell Lateral Raise", "sets": 3, "reps": "12-15", "rest": "45s", "type": "Isolation"},
                 {"name": "Russian Twist", "sets": 3, "reps": "20 total", "rest": "45s", "type": "Core"},
             ],
-        ]
+        ], goal, level, duration_minutes)
 
     # 3. FULL GYM SPLIT
     if normalized_goal == "PURE STRENGTH":
-        return [
+        return _shape_pool_for_constraints([
             [
                 {"name": "Barbell Back Squat", "sets": 5, "reps": "4-6", "rest": "180s", "type": "Compound"},
                 {"name": "Bench Press", "sets": 5, "reps": "4-6", "rest": "180s", "type": "Compound"},
@@ -616,9 +935,9 @@ def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]
                 {"name": "Pull-Up", "sets": 4, "reps": "6-8", "rest": "90s", "type": "Compound"},
                 {"name": "Split Squat", "sets": 3, "reps": "8/side", "rest": "75s", "type": "Accessory"},
             ],
-        ]
+        ], goal, level, duration_minutes)
 
-    return [
+    return _shape_pool_for_constraints([
         [
             {"name": "Barbell Back Squat", "sets": 4, "reps": "6-8", "rest": "180s", "type": "Compound"},
             {"name": "Romanian Deadlift", "sets": 3, "reps": "8-10", "rest": "120s", "type": "Compound"},
@@ -637,7 +956,7 @@ def _strength_exercise_pool(goal: str, equipment: list[str]) -> list[list[dict]]
             {"name": "Walking Lunge", "sets": 3, "reps": "10/side", "rest": "75s", "type": "Accessory"},
             {"name": "Cable Crunch", "sets": 3, "reps": "12-15", "rest": "45s", "type": "Core"},
         ],
-    ]
+    ], goal, level, duration_minutes)
 
 
 def _exercise_weight_label(exercise_name: str, input_data: StrengthWorkoutPlanInput) -> str:

@@ -82,6 +82,150 @@ def test_hydration_from_onboarding_profile():
     assert hydrated.equipment == ["No equipment"]
     assert hydrated.weight == "62"
     assert hydrated.age == "32"
+    assert hydrated.muscle_group == "Full Body"
+    assert hydrated.duration_minutes == "30"
+
+
+def test_leg_workout_excludes_unrelated_chest_exercises():
+    plan_input = StrengthWorkoutPlanInput(
+        goal="Hypertrophy",
+        level="Intermediate",
+        split="Upper / Lower",
+        muscle_group="Legs",
+        duration_minutes="45",
+        height="175",
+        gender="Male",
+        bench="",
+        squat="",
+        deadlift="",
+        equipment=["Gym", "Barbell", "Dumbbells", "Machines"],
+        frequency="3",
+        days=["Mon", "Wed", "Fri"],
+        age="28",
+        weight="75",
+        language="en",
+    )
+
+    plan = generate_strength_workout_plan(plan_input)
+
+    assert [day["day"] for day in plan["days"]] == ["Mon", "Wed", "Fri"]
+    forbidden = ["bench", "chest", "press", "push-up", "flye"]
+    for day in plan["days"]:
+        for exercise in day["exercises"]:
+            lowered = exercise["name"].lower()
+            assert not any(term in lowered for term in forbidden), exercise["name"]
+
+
+def test_goal_and_level_change_strength_prescription():
+    beginner_hypertrophy = StrengthWorkoutPlanInput(
+        goal="Hypertrophy",
+        level="Beginner",
+        split="Full Body",
+        muscle_group="Legs",
+        duration_minutes="45",
+        height="175",
+        gender="Male",
+        bench="",
+        squat="",
+        deadlift="",
+        equipment=["Gym", "Barbell"],
+        frequency="3",
+        days=["Mon", "Wed", "Fri"],
+        age="28",
+        weight="75",
+        language="en",
+    )
+    advanced_strength = StrengthWorkoutPlanInput(
+        **{**beginner_hypertrophy.__dict__, "goal": "Pure Strength", "level": "Advanced"}
+    )
+
+    beginner_plan = generate_strength_workout_plan(beginner_hypertrophy)
+    advanced_plan = generate_strength_workout_plan(advanced_strength)
+
+    assert beginner_plan["days"][0]["intensity"] == "RPE 7.0 (Controlled)"
+    assert advanced_plan["days"][0]["intensity"] == "RPE 8.5 (High)"
+    assert advanced_plan["days"][0]["exercises"][0]["reps"] == "3-5"
+    assert beginner_plan["days"][0]["exercises"][0]["sets"] <= advanced_plan["days"][0]["exercises"][0]["sets"]
+
+
+def test_duration_and_equipment_constraints_are_applied():
+    plan_input = StrengthWorkoutPlanInput(
+        goal="Body Recomp",
+        level="Beginner",
+        split="Full Body",
+        muscle_group="Full Body",
+        duration_minutes="30",
+        height="165",
+        gender="Female",
+        bench="",
+        squat="",
+        deadlift="",
+        equipment=["No equipment"],
+        frequency="4",
+        days=["Monday", "Tuesday", "Thursday", "Friday"],
+        age="32",
+        weight="62",
+        language="en",
+    )
+
+    plan = generate_strength_workout_plan(plan_input)
+
+    assert len(plan["days"]) == 4
+    assert [day["day"] for day in plan["days"]] == ["Mon", "Tue", "Thu", "Fri"]
+    for day in plan["days"]:
+        assert len(day["exercises"]) <= 3
+        assert int(day["est_time"].split()[0]) <= 35
+        for exercise in day["exercises"]:
+            assert exercise["weight"] in ["Bodyweight", "-"]
+
+
+def test_ai_response_is_corrected_before_returning():
+    bad_ai_plan = {
+        "summary": "Bad plan",
+        "days": [
+            {
+                "day": "Mon",
+                "title": "Legs",
+                "est_time": "60 min",
+                "volume": "",
+                "intensity": "",
+                "exercises": [
+                    {"id": "x", "name": "Bench Press", "sets": 5, "reps": "5", "rest": "180s", "weight": "80kg", "type": "Compound"},
+                    {"id": "y", "name": "Imaginary Chest Blaster", "sets": 3, "reps": "12", "rest": "60s", "weight": "20kg", "type": "Accessory"},
+                ],
+            }
+        ],
+    }
+    original = wai._generate_strength_workout_plan_with_ai
+    wai._generate_strength_workout_plan_with_ai = lambda _: bad_ai_plan
+    try:
+        plan = generate_strength_workout_plan(
+            StrengthWorkoutPlanInput(
+                goal="Hypertrophy",
+                level="Intermediate",
+                split="Upper / Lower",
+                muscle_group="Legs",
+                duration_minutes="45",
+                height="175",
+                gender="Male",
+                bench="",
+                squat="",
+                deadlift="",
+                equipment=["Gym", "Barbell"],
+                frequency="3",
+                days=["Mon", "Wed", "Fri"],
+                age="28",
+                weight="75",
+                language="en",
+            )
+        )
+    finally:
+        wai._generate_strength_workout_plan_with_ai = original
+
+    names = [exercise["name"].lower() for day in plan["days"] for exercise in day["exercises"]]
+    assert "bench press" not in names
+    assert "imaginary chest blaster" not in names
+    assert len(plan["days"]) == 3
 
 
 def test_serialization_strength_workout_plan_record():
