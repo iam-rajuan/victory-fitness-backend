@@ -9481,6 +9481,7 @@ async def _serialize_me_record(record: dict) -> dict:
         "country": str(record.get("country") or ""),
 
         "country_code": (str(record.get("country_code") or "").upper() or None),
+        "contact_number": str(record.get("contact_number") or "").strip() or None,
         "motivation_statement": str(record.get("motivation_statement") or "").strip() or None,
         "identity_statement": str(record.get("identity_statement") or "").strip() or None,
         "workout_unlock_label": str(record.get("workout_unlock_label") or "").strip() or None,

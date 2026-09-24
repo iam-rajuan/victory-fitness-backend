@@ -141,6 +141,7 @@ class MeResponse(BaseModel):
     role: str = "user"
     is_admin: bool = False
     country: str = ""
+    contact_number: str | None = None
     profileImage: str = ""
     points: int = 0
     workouts_completed: int = 0
@@ -183,6 +184,7 @@ class UpdateMeRequest(BaseModel):
     email: EmailStr | None = None
     country: str | None = Field(default=None, max_length=120)
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    contact_number: str | None = Field(default=None, max_length=30)
     preferred_language: str | None = Field(default=None, max_length=10)
     profileImage: str | None = Field(default=None, max_length=500)
     onboarding_completed: bool | None = None

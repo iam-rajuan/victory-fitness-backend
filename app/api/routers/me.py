@@ -164,6 +164,16 @@ async def update_me(
 
         update_doc["country_code"] = normalized_country_code or None
 
+    if payload.contact_number is not None:
+
+        normalized_contact_number = re.sub(r"[\s()-]+", "", payload.contact_number.strip())
+
+        if normalized_contact_number and not re.fullmatch(r"^\+[1-9]\d{7,14}$", normalized_contact_number):
+
+            raise HTTPException(status_code=400, detail="Invalid contact number")
+
+        update_doc["contact_number"] = normalized_contact_number or None
+
     if payload.preferred_language is not None:
 
         preferred_language = payload.preferred_language.strip().lower()
