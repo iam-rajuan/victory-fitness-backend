@@ -10,7 +10,7 @@ async def create_coaching_application(
 
     payload: CoachingApplicationCreateRequest,
 
-    user: dict = Depends(_require_application_access_user),
+    user: dict = Depends(_require_access_user),
 
 ) -> CoachingApplicationResponse:
 
