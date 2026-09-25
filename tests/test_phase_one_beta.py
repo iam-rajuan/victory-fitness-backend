@@ -278,8 +278,8 @@ class PhaseOneBetaActivationRouteTests(unittest.TestCase):
             "name": "Beta User",
             "email": "beta@example.com",
             "is_verified": True,
-            "subscription_tier": "GOLD",
-            "subscription_role": "GOLD",
+            "subscription_tier": "GOLD_BETA",
+            "subscription_role": "GOLD_BETA",
             "subscription_status": "ACTIVE",
             "subscription_billing_cycle": "yearly",
             "subscription_is_purchased": False,
@@ -294,8 +294,8 @@ class PhaseOneBetaActivationRouteTests(unittest.TestCase):
             "country": "Germany",
             "beta_phase_one": {"is_beta_tester": True},
             "subscription": {
-                "tier": "GOLD",
-                "role": "GOLD",
+                "tier": "GOLD_BETA",
+                "role": "GOLD_BETA",
                 "status": "ACTIVE",
                 "billing_cycle": "yearly",
                 "is_purchased": False,
@@ -311,16 +311,28 @@ class PhaseOneBetaActivationRouteTests(unittest.TestCase):
             },
         }
 
+        mock_payload = {
+            "id": updated_user["_id"],
+            "name": updated_user["name"],
+            "email": updated_user["email"],
+            "is_verified": updated_user["is_verified"],
+            "subscription_tier": updated_user["subscription_tier"],
+            "subscription_role": updated_user["subscription_role"],
+            "subscription_status": updated_user["subscription_status"],
+            "subscription_purchase_source": updated_user["subscription_purchase_source"],
+            "subscription_is_purchased": updated_user["subscription_is_purchased"],
+            "subscription_access": feature_access,
+            "subscription": updated_user["subscription"],
+        }
+
         with patch.object(trial_router_module, "_is_phase_one_beta_enabled", return_value=True), patch.object(
             trial_router_module, "_is_phase_one_beta_user", return_value=False
-        ), patch.object(
-            trial_router_module, "_normalize_subscription_tier", return_value="NONE"
         ), patch.object(
             trial_router_module, "_claim_phase_one_beta_slot", AsyncMock(return_value={"slot_number": 1})
         ), patch.object(
             trial_router_module, "_activate_phase_one_beta_subscription", AsyncMock(return_value=updated_user)
         ), patch.object(
-            trial_router_module, "_serialize_me_record", AsyncMock(return_value=backend_module._serialize_me_record(updated_user))
+            trial_router_module, "_serialize_me_record", AsyncMock(return_value=mock_payload)
         ), patch.object(
             trial_router_module, "notify_user", AsyncMock()
         ) as notify_mock, patch.object(
@@ -330,7 +342,94 @@ class PhaseOneBetaActivationRouteTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(payload["subscription_tier"], "GOLD")
+        self.assertEqual(payload["subscription_tier"], "GOLD_BETA")
+        self.assertEqual(payload["subscription_purchase_source"], "beta_trial")
+        self.assertFalse(payload["subscription_is_purchased"])
+        notify_mock.assert_awaited()
+        analytics_mock.assert_awaited()
+
+    def test_phase_one_beta_start_allows_user_with_existing_subscription_tier(self) -> None:
+        now = _utc_now()
+        feature_access = backend_module._resolve_subscription_access("GOLD")
+        updated_user = {
+            "_id": "beta-user-tier",
+            "name": "Existing Tier User",
+            "email": "tier_user@example.com",
+            "is_verified": True,
+            "subscription_tier": "GOLD_BETA",
+            "subscription_role": "GOLD_BETA",
+            "subscription_status": "ACTIVE",
+            "subscription_billing_cycle": "yearly",
+            "subscription_is_purchased": False,
+            "subscription_purchase_source": "beta_trial",
+            "subscription_access": feature_access,
+            "subscription_started_at": now,
+            "subscription_confirmed_at": now,
+            "trial_tier_granted": "gold",
+            "trial_start_at": now,
+            "trial_end_at": now + timedelta(days=21),
+            "country_code": "US",
+            "country": "United States",
+            "beta_phase_one": {"is_beta_tester": True},
+            "subscription": {
+                "tier": "GOLD_BETA",
+                "role": "GOLD_BETA",
+                "status": "ACTIVE",
+                "billing_cycle": "yearly",
+                "is_purchased": False,
+                "purchase_source": "beta_trial",
+                "access": feature_access,
+                "started_at": now,
+                "confirmed_at": now,
+                "trial_type": "beta_trial",
+                "payment_required": False,
+                "price": 0,
+                "currency": "EUR",
+                "expires_at": now + timedelta(days=21),
+            },
+        }
+        mock_payload = {
+            "id": updated_user["_id"],
+            "name": updated_user["name"],
+            "email": updated_user["email"],
+            "is_verified": updated_user["is_verified"],
+            "subscription_tier": updated_user["subscription_tier"],
+            "subscription_role": updated_user["subscription_role"],
+            "subscription_status": updated_user["subscription_status"],
+            "subscription_purchase_source": updated_user["subscription_purchase_source"],
+            "subscription_is_purchased": updated_user["subscription_is_purchased"],
+            "subscription_access": feature_access,
+            "subscription": updated_user["subscription"],
+        }
+
+        # Override user dependency with a user that already has a SILVER tier
+        self.client.app.dependency_overrides[trial_router_module._require_access_user] = lambda: {
+            "_id": "beta-user-tier",
+            "name": "Existing Tier User",
+            "email": "tier_user@example.com",
+            "subscription_tier": "SILVER",
+            "country_code": "US",
+            "is_verified": True,
+        }
+
+        with patch.object(trial_router_module, "_is_phase_one_beta_enabled", return_value=True), patch.object(
+            trial_router_module, "_is_phase_one_beta_user", return_value=False
+        ), patch.object(
+            trial_router_module, "_claim_phase_one_beta_slot", AsyncMock(return_value={"slot_number": 2})
+        ), patch.object(
+            trial_router_module, "_activate_phase_one_beta_subscription", AsyncMock(return_value=updated_user)
+        ), patch.object(
+            trial_router_module, "_serialize_me_record", AsyncMock(return_value=mock_payload)
+        ), patch.object(
+            trial_router_module, "notify_user", AsyncMock()
+        ) as notify_mock, patch.object(
+            trial_router_module, "_record_analytics_event", AsyncMock()
+        ) as analytics_mock:
+            response = self.client.post("/me/trial/phase-one-beta/start")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["subscription_tier"], "GOLD_BETA")
         self.assertEqual(payload["subscription_purchase_source"], "beta_trial")
         self.assertFalse(payload["subscription_is_purchased"])
         notify_mock.assert_awaited()

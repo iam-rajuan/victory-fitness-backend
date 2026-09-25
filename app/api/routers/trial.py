@@ -66,13 +66,6 @@ async def start_me_phase_one_beta(user: dict = Depends(_require_access_user)) ->
     if _is_phase_one_beta_user(user):
         return MeResponse(**(await _resolve_me_payload(user)))
 
-    current_tier = _normalize_subscription_tier(user.get("subscription_tier"))
-    if current_tier != "NONE":
-        raise HTTPException(
-            status_code=409,
-            detail="Users who already selected a subscription tier are not eligible for Phase 1 beta activation",
-        )
-
     await _claim_phase_one_beta_slot(str(user["_id"]))
     updated_user = await _activate_phase_one_beta_subscription(user)
     if not updated_user:
