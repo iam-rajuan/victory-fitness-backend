@@ -662,6 +662,13 @@ async def _record_analytics_event(event_type: str, user_id: str | None = None, m
 _CLIENT_ANALYTICS_EVENTS = {
     "workout_library_visited",
     "workout_library_item_viewed",
+    "workout_completed",
+    "workout_started",
+    "workout_abandoned",
+    "workout_shared_whatsapp",
+    "post_workout_feedback_submitted",
+    "upgrade_screen_viewed",
+    "plan_built",
 }
 
 class _AnalyticsEventRequest(BaseModel):
