@@ -3431,6 +3431,9 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
     personal_profile = dict(state.get("personalProfile") or {})
     anamnese = dict(state.get("anamnese") or {})
     suggestion = state.get("suggestion")
+    preferences = dict(state.get("preferences") or {})
+    calculations = dict(state.get("calculations") or {})
+    plan_preview = dict(state.get("planPreview") or {})
     metrics = dict(record.get("body_metrics") or {})
 
     normalized_suggestion: dict[str, Any] | None = None
@@ -3477,6 +3480,41 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
             "equipmentAccess": str(anamnese.get("equipmentAccess") or "").strip(),
         },
         "suggestion": normalized_suggestion,
+        "preferences": {
+            "billingCycle": str(preferences.get("billingCycle") or "year").strip(),
+            "region": str(preferences.get("region") or "").strip(),
+            "paymentMethodIndex": int(preferences.get("paymentMethodIndex") or 0),
+            "paymentMethodName": str(preferences.get("paymentMethodName") or "").strip(),
+            "nudgeChannels": [
+                str(item).strip()
+                for item in preferences.get("nudgeChannels", [])
+                if str(item).strip()
+            ],
+            "dialCode": str(preferences.get("dialCode") or "").strip(),
+            "dialNumber": str(preferences.get("dialNumber") or "").strip(),
+            "contactNumber": str(preferences.get("contactNumber") or record.get("contact_number") or "").strip(),
+            "selectedKit": [
+                str(item).strip()
+                for item in preferences.get("selectedKit", [])
+                if str(item).strip()
+            ],
+        },
+        "calculations": {
+            "proteinGrams": int(calculations.get("proteinGrams") or 0),
+            "caloriesKcal": int(calculations.get("caloriesKcal") or 0),
+            "carbsGrams": int(calculations.get("carbsGrams") or 0),
+            "waterLiters": float(calculations.get("waterLiters") or 0),
+            "workoutsMatched": int(calculations.get("workoutsMatched") or 0),
+            "weeklyMinutes": int(calculations.get("weeklyMinutes") or 0),
+            "proteinFormula": str(calculations.get("proteinFormula") or "").strip(),
+        },
+        "planPreview": {
+            "planName": str(plan_preview.get("planName") or "").strip(),
+            "firstSession": str(plan_preview.get("firstSession") or "").strip(),
+            "kitShort": str(plan_preview.get("kitShort") or "").strip(),
+            "weekNote": str(plan_preview.get("weekNote") or "").strip(),
+            "victorLine": str(plan_preview.get("victorLine") or "").strip(),
+        },
         "updatedAt": updated_at,
         "completed": bool(record.get("onboarding_completed", False)),
     }

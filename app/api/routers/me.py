@@ -311,6 +311,25 @@ async def update_me_onboarding(
     if payload.suggestion is not None:
         next_state["suggestion"] = payload.suggestion.model_dump()
 
+    if payload.preferences is not None:
+        preferences_update = payload.preferences.model_dump()
+        next_state["preferences"] = {
+            **dict(next_state.get("preferences") or {}),
+            **preferences_update,
+        }
+        contact_number = str(preferences_update.get("contactNumber") or "").strip()
+        if contact_number:
+            normalized_contact_number = re.sub(r"[\s()-]+", "", contact_number)
+            if not re.fullmatch(r"^\+[1-9]\d{7,14}$", normalized_contact_number):
+                raise HTTPException(status_code=400, detail="Invalid contact number")
+            update_doc["contact_number"] = normalized_contact_number
+
+    if payload.calculations is not None:
+        next_state["calculations"] = payload.calculations.model_dump()
+
+    if payload.planPreview is not None:
+        next_state["planPreview"] = payload.planPreview.model_dump()
+
     if payload.completed is not None:
         update_doc["onboarding_completed"] = payload.completed
         next_state["completed"] = payload.completed
@@ -327,6 +346,9 @@ async def update_me_onboarding(
         "personalProfile": next_state["personalProfile"],
         "anamnese": next_state["anamnese"],
         "suggestion": next_state["suggestion"],
+        "preferences": next_state.get("preferences") or {},
+        "calculations": next_state.get("calculations") or {},
+        "planPreview": next_state.get("planPreview") or {},
         "updatedAt": next_state["updatedAt"],
     }
     update_doc["body_metrics"] = next_metrics

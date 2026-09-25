@@ -260,6 +260,36 @@ class OnboardingSuggestionResponse(BaseModel):
     note: str | None = None
 
 
+class OnboardingPreferencesResponse(BaseModel):
+    billingCycle: str = "year"
+    region: str = ""
+    paymentMethodIndex: int = 0
+    paymentMethodName: str = ""
+    nudgeChannels: list[str] = Field(default_factory=list)
+    dialCode: str = ""
+    dialNumber: str = ""
+    contactNumber: str = ""
+    selectedKit: list[str] = Field(default_factory=list)
+
+
+class OnboardingCalculationsResponse(BaseModel):
+    proteinGrams: int = 0
+    caloriesKcal: int = 0
+    carbsGrams: int = 0
+    waterLiters: float = 0
+    workoutsMatched: int = 0
+    weeklyMinutes: int = 0
+    proteinFormula: str = ""
+
+
+class OnboardingPlanPreviewResponse(BaseModel):
+    planName: str = ""
+    firstSession: str = ""
+    kitShort: str = ""
+    weekNote: str = ""
+    victorLine: str = ""
+
+
 class OnboardingStateResponse(BaseModel):
     userId: str
     currentStep: int = 0
@@ -271,6 +301,9 @@ class OnboardingStateResponse(BaseModel):
     personalProfile: OnboardingPersonalProfileResponse = Field(default_factory=OnboardingPersonalProfileResponse)
     anamnese: OnboardingAnamneseResponse = Field(default_factory=OnboardingAnamneseResponse)
     suggestion: OnboardingSuggestionResponse | None = None
+    preferences: OnboardingPreferencesResponse = Field(default_factory=OnboardingPreferencesResponse)
+    calculations: OnboardingCalculationsResponse = Field(default_factory=OnboardingCalculationsResponse)
+    planPreview: OnboardingPlanPreviewResponse = Field(default_factory=OnboardingPlanPreviewResponse)
     updatedAt: datetime | None = None
     completed: bool = False
 
@@ -285,6 +318,9 @@ class UpdateOnboardingStateRequest(BaseModel):
     personalProfile: OnboardingPersonalProfileResponse | None = None
     anamnese: OnboardingAnamneseResponse | None = None
     suggestion: OnboardingSuggestionResponse | None = None
+    preferences: OnboardingPreferencesResponse | None = None
+    calculations: OnboardingCalculationsResponse | None = None
+    planPreview: OnboardingPlanPreviewResponse | None = None
     completed: bool | None = None
 
 
