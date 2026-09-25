@@ -45,6 +45,17 @@ async def create_coaching_application(
         "injury": payload.injury.strip(),
 
         "additional_notes": str(payload.additional_notes or "").strip(),
+        "question_answers": [
+            {
+                "id": str(item.id or "").strip(),
+                "order": item.order,
+                "question": item.question.strip(),
+                "hint": item.hint.strip(),
+                "answer": item.answer.strip(),
+            }
+            for item in payload.question_answers
+            if item.question.strip() and item.answer.strip()
+        ],
 
         "agreement_accepted": True,
 

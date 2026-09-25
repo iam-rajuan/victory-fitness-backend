@@ -109,6 +109,18 @@ async def admin_update_coaching_application(
 
         update_doc["admin_notes"] = payload.admin_notes.strip()
 
+    if payload.admin_reply is not None:
+        update_doc["admin_reply"] = payload.admin_reply.strip()
+
+    if payload.admin_verdict is not None:
+        update_doc["admin_verdict"] = payload.admin_verdict.strip()
+
+    if payload.call_slot is not None:
+        update_doc["call_slot"] = payload.call_slot.strip()
+
+    if payload.notify_applicant:
+        update_doc["applicant_notified_at"] = update_doc["updated_at"]
+
     await coaching_applications_collection.update_one({"_id": object_id}, {"$set": update_doc})
 
     record = await coaching_applications_collection.find_one({"_id": object_id})

@@ -187,6 +187,10 @@ from ..models import (
     CoachingApplicationListResponse,
 
     CoachingApplicationResponse,
+    InnerCircleApplicationAnswer,
+    InnerCircleApplicationQuestion,
+    InnerCircleApplicationQuestionsResponse,
+    UpdateInnerCircleApplicationQuestionsRequest,
 
     CommunityCommentCreateRequest,
 
@@ -7742,6 +7746,108 @@ def _serialize_about_us_record(record: dict) -> AboutUsResponse:
 
     )
 
+INNER_CIRCLE_APPLICATION_QUESTIONS_KEY = "inner_circle_application_questions"
+
+DEFAULT_INNER_CIRCLE_APPLICATION_QUESTIONS = [
+    {
+        "id": "training_for",
+        "order": 1,
+        "question": "What are you training for in the next twelve months?",
+        "hint": "Something specific. A number, a date, or a moment you want to be ready for.",
+        "active": True,
+    },
+    {
+        "id": "tried_before",
+        "order": 2,
+        "question": "What have you already tried, and where did it stop working?",
+        "hint": "Be honest here. It tells Victor more than your goal does.",
+        "active": True,
+    },
+    {
+        "id": "weekly_commitment",
+        "order": 3,
+        "question": "How many hours a week can you genuinely commit?",
+        "hint": "Not the hours you wish you had. The ones you actually have.",
+        "active": True,
+    },
+    {
+        "id": "coach_value",
+        "order": 4,
+        "question": "What needs to change first for a coach to be worth it to you?",
+        "hint": "One thing. The one that has held everything else up.",
+        "active": True,
+    },
+    {
+        "id": "why_now",
+        "order": 5,
+        "question": "Why now?",
+        "hint": "Inner Circle is small. This is the question Victor reads first.",
+        "active": True,
+    },
+]
+
+DEFAULT_INNER_CIRCLE_APPLICATION_TITLE = "Victor reads every one of these himself"
+DEFAULT_INNER_CIRCLE_APPLICATION_SUBTITLE = (
+    "There is no checkout for Inner Circle. Answer these, and if it looks like a fit he'll call you to talk it through."
+)
+
+
+def _normalize_inner_circle_questions(raw_questions: list[dict] | None) -> list[dict]:
+    questions: list[dict] = []
+    for idx, item in enumerate(raw_questions or []):
+        if not isinstance(item, dict):
+            continue
+        question = str(item.get("question") or "").strip()
+        if not question:
+            continue
+        order = int(item.get("order") or idx + 1)
+        questions.append(
+            {
+                "id": str(item.get("id") or f"q{order}").strip()[:80],
+                "order": max(1, min(order, 10)),
+                "question": question[:240],
+                "hint": str(item.get("hint") or "").strip()[:280],
+                "active": bool(item.get("active", True)),
+            }
+        )
+    return sorted(questions, key=lambda item: item["order"]) or list(DEFAULT_INNER_CIRCLE_APPLICATION_QUESTIONS)
+
+
+async def _get_inner_circle_application_questions_record() -> dict:
+    now = datetime.now(timezone.utc)
+    record = await app_content_collection.find_one({"key": INNER_CIRCLE_APPLICATION_QUESTIONS_KEY})
+    if record:
+        return record
+
+    default_record = {
+        "key": INNER_CIRCLE_APPLICATION_QUESTIONS_KEY,
+        "title": DEFAULT_INNER_CIRCLE_APPLICATION_TITLE,
+        "subtitle": DEFAULT_INNER_CIRCLE_APPLICATION_SUBTITLE,
+        "questions": list(DEFAULT_INNER_CIRCLE_APPLICATION_QUESTIONS),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await app_content_collection.update_one(
+        {"key": INNER_CIRCLE_APPLICATION_QUESTIONS_KEY},
+        {"$setOnInsert": default_record},
+        upsert=True,
+    )
+    return await app_content_collection.find_one({"key": INNER_CIRCLE_APPLICATION_QUESTIONS_KEY}) or default_record
+
+
+def _serialize_inner_circle_application_questions(record: dict) -> InnerCircleApplicationQuestionsResponse:
+    return InnerCircleApplicationQuestionsResponse(
+        title=str(record.get("title") or DEFAULT_INNER_CIRCLE_APPLICATION_TITLE).strip(),
+        subtitle=str(record.get("subtitle") or DEFAULT_INNER_CIRCLE_APPLICATION_SUBTITLE).strip(),
+        questions=[
+            InnerCircleApplicationQuestion(**item)
+            for item in _normalize_inner_circle_questions(record.get("questions") or DEFAULT_INNER_CIRCLE_APPLICATION_QUESTIONS)
+            if item.get("active", True)
+        ],
+        updated_at=_as_utc(record.get("updated_at")) if record.get("updated_at") else None,
+    )
+
+
 def _serialize_coaching_application_record(record: dict) -> CoachingApplicationResponse:
 
     first_name = str(record.get("first_name") or "").strip()
@@ -7775,12 +7881,31 @@ def _serialize_coaching_application_record(record: dict) -> CoachingApplicationR
         injury=str(record.get("injury") or ""),
 
         additional_notes=str(record.get("additional_notes") or ""),
+        question_answers=[
+            InnerCircleApplicationAnswer(
+                id=str(item.get("id") or ""),
+                order=int(item.get("order") or idx + 1),
+                question=str(item.get("question") or ""),
+                hint=str(item.get("hint") or ""),
+                answer=str(item.get("answer") or ""),
+            )
+            for idx, item in enumerate(record.get("question_answers") or [])
+            if isinstance(item, dict)
+        ],
 
         agreement_accepted=bool(record.get("agreement_accepted", True)),
 
         status=str(record.get("status") or "NEW"),
 
         admin_notes=str(record.get("admin_notes") or ""),
+        admin_reply=str(record.get("admin_reply") or ""),
+        admin_verdict=str(record.get("admin_verdict") or ""),
+        call_slot=str(record.get("call_slot") or ""),
+        applicant_notified_at=(
+            _as_utc(record.get("applicant_notified_at"))
+            if record.get("applicant_notified_at")
+            else None
+        ),
 
         created_at=_as_utc(record.get("created_at") or datetime.now(timezone.utc)),
 

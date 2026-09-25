@@ -73,6 +73,12 @@ async def get_onboarding_content() -> OnboardingContentResponse:
 
     return OnboardingContentResponse(slides=slides)
 
+
+@router.get("/content/inner-circle/application-questions", response_model=InnerCircleApplicationQuestionsResponse)
+async def get_inner_circle_application_questions() -> InnerCircleApplicationQuestionsResponse:
+    record = await _get_inner_circle_application_questions_record()
+    return _serialize_inner_circle_application_questions(record)
+
 @router.get("/content/homepage/quote", response_model=HomepageQuote | None)
 async def get_homepage_quote(
     app_version: str | None = None,

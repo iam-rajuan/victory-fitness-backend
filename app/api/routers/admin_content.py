@@ -105,3 +105,42 @@ async def admin_update_about_us(
         raise HTTPException(status_code=500, detail="About Us could not be saved")
 
     return _serialize_about_us_record(record)
+
+
+@router.get("/admin/content/inner-circle/application-questions", response_model=InnerCircleApplicationQuestionsResponse)
+async def admin_get_inner_circle_application_questions(
+    _: dict = Depends(_require_admin_user),
+) -> InnerCircleApplicationQuestionsResponse:
+    record = await _get_inner_circle_application_questions_record()
+    return _serialize_inner_circle_application_questions(record)
+
+
+@router.put("/admin/content/inner-circle/application-questions", response_model=InnerCircleApplicationQuestionsResponse)
+async def admin_update_inner_circle_application_questions(
+    payload: UpdateInnerCircleApplicationQuestionsRequest,
+    _: dict = Depends(_require_admin_user),
+) -> InnerCircleApplicationQuestionsResponse:
+    now = datetime.now(timezone.utc)
+    questions = [
+        item.model_dump()
+        for item in sorted(payload.questions, key=lambda question: question.order)
+        if item.active and item.question.strip()
+    ]
+    if not questions:
+        raise HTTPException(status_code=400, detail="At least one active question is required")
+
+    await app_content_collection.update_one(
+        {"key": INNER_CIRCLE_APPLICATION_QUESTIONS_KEY},
+        {
+            "$set": {
+                "title": payload.title.strip() or DEFAULT_INNER_CIRCLE_APPLICATION_TITLE,
+                "subtitle": payload.subtitle.strip() or DEFAULT_INNER_CIRCLE_APPLICATION_SUBTITLE,
+                "questions": questions,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now, "key": INNER_CIRCLE_APPLICATION_QUESTIONS_KEY},
+        },
+        upsert=True,
+    )
+    record = await app_content_collection.find_one({"key": INNER_CIRCLE_APPLICATION_QUESTIONS_KEY})
+    return _serialize_inner_circle_application_questions(record or {})

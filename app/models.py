@@ -627,6 +627,7 @@ class CoachingApplicationCreateRequest(BaseModel):
     commitment: str = Field(min_length=1, max_length=200)
     injury: str = Field(min_length=1, max_length=80)
     additional_notes: str | None = Field(default=None, max_length=4000)
+    question_answers: list["InnerCircleApplicationAnswer"] = Field(default_factory=list, max_length=10)
     agreement_accepted: bool = True
 
     @field_validator("phone_number")
@@ -656,9 +657,14 @@ class CoachingApplicationResponse(BaseModel):
     commitment: str
     injury: str
     additional_notes: str = ""
+    question_answers: list["InnerCircleApplicationAnswer"] = Field(default_factory=list)
     agreement_accepted: bool = True
     status: str = "NEW"
     admin_notes: str = ""
+    admin_reply: str = ""
+    admin_verdict: str = ""
+    call_slot: str = ""
+    applicant_notified_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -684,6 +690,42 @@ class CoachingApplicationListResponse(BaseModel):
 class AdminCoachingApplicationUpdateRequest(BaseModel):
     status: str | None = Field(default=None, max_length=40)
     admin_notes: str | None = Field(default=None, max_length=2000)
+    admin_reply: str | None = Field(default=None, max_length=2000)
+    admin_verdict: str | None = Field(default=None, max_length=120)
+    call_slot: str | None = Field(default=None, max_length=120)
+    notify_applicant: bool = False
+
+
+class InnerCircleApplicationQuestion(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    order: int = Field(ge=1, le=10)
+    question: str = Field(min_length=1, max_length=240)
+    hint: str = Field(default="", max_length=280)
+    active: bool = True
+
+
+class InnerCircleApplicationAnswer(BaseModel):
+    id: str = Field(default="", max_length=80)
+    order: int = Field(default=1, ge=1, le=10)
+    question: str = Field(default="", max_length=240)
+    hint: str = Field(default="", max_length=280)
+    answer: str = Field(default="", max_length=2000)
+
+
+class InnerCircleApplicationQuestionsResponse(BaseModel):
+    title: str = "Victor reads every one of these himself"
+    subtitle: str = "There is no checkout for Inner Circle. Answer these, and if it looks like a fit he'll call you to talk it through."
+    questions: list[InnerCircleApplicationQuestion] = Field(default_factory=list)
+    updated_at: datetime | None = None
+
+
+class UpdateInnerCircleApplicationQuestionsRequest(BaseModel):
+    title: str = Field(default="Victor reads every one of these himself", max_length=140)
+    subtitle: str = Field(
+        default="There is no checkout for Inner Circle. Answer these, and if it looks like a fit he'll call you to talk it through.",
+        max_length=320,
+    )
+    questions: list[InnerCircleApplicationQuestion] = Field(min_length=1, max_length=10)
 
 
 class SupportMessageCreateRequest(BaseModel):
