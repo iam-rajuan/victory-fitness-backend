@@ -439,6 +439,8 @@ async def get_challenge_detail(
 
         thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
 
+        featured=bool(challenge.get("featured")),
+
         participant_count=participant_count,
 
         participants=participants,
@@ -606,6 +608,8 @@ async def get_challenge_chat_thread(
         status=str(challenge.get("status") or "ACTIVE"),
 
         thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+
+        featured=bool(challenge.get("featured")),
 
         participant_count=participant_count,
 

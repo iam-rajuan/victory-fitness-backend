@@ -962,6 +962,7 @@ class UserActiveChallengeResponse(BaseModel):
     points: int = 0
     participants: int = 0
     thumbnail: str = ""
+    featured: bool = False
     color: str = "#4F8EF7"
     created_at: datetime | None = None
 
@@ -977,6 +978,7 @@ class UserCompletedChallengeResponse(BaseModel):
     earned_points: int = 0
     participants: int = 0
     thumbnail: str = ""
+    featured: bool = False
     completed_at: datetime
     color: str = "#22C55E"
     created_at: datetime | None = None
@@ -997,6 +999,7 @@ class UserReadyChallengeResponse(BaseModel):
     status: str
     can_start: bool = False
     thumbnail: str = ""
+    featured: bool = False
     created_at: datetime | None = None
 
 
@@ -1025,6 +1028,7 @@ class ChallengeDetailResponse(BaseModel):
     difficulty: str
     status: str
     thumbnail: str = ""
+    featured: bool = False
     participant_count: int = 0
     participants: list[ChallengeParticipantResponse] = Field(default_factory=list)
     viewer_membership_status: str = "NOT_JOINED"
@@ -1078,6 +1082,7 @@ class ChallengeChatThreadResponse(BaseModel):
     difficulty: str
     status: str
     thumbnail: str = ""
+    featured: bool = False
     participant_count: int = 0
     participants: list[ChallengeParticipantResponse] = Field(default_factory=list)
     viewer_membership_status: str
@@ -1134,6 +1139,7 @@ class AdminChallengeItem(BaseModel):
     difficulty: str
     status: str
     thumbnail: str = ""
+    featured: bool = False
     participantCount: int = 0
     completionCount: int = 0
     createdAt: datetime
@@ -1157,6 +1163,7 @@ class AdminChallengeRequest(BaseModel):
     difficulty: str = Field(pattern=r"^(BEGINNER|INTERMEDIATE|ADVANCED)$")
     status: str = Field(pattern=r"^(ACTIVE|UPCOMING|DRAFT|ARCHIVED)$")
     thumbnail: str | None = Field(default=None, max_length=20000000)
+    featured: bool = False
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)

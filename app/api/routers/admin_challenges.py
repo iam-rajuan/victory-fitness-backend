@@ -234,6 +234,8 @@ async def admin_create_challenge(
 
         "thumbnail": thumbnail,
 
+        "featured": bool(payload.featured),
+
         "created_at": now,
 
         "updated_at": now,
@@ -346,6 +348,8 @@ async def admin_update_challenge(
 
         "thumbnail": thumbnail,
 
+        "featured": bool(payload.featured),
+
         "updated_at": datetime.now(timezone.utc),
 
     }
@@ -452,6 +456,8 @@ async def admin_get_challenge_chat_thread(
         status=str(challenge.get("status") or "ACTIVE"),
 
         thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+
+        featured=bool(challenge.get("featured")),
 
         participant_count=participant_count,
 

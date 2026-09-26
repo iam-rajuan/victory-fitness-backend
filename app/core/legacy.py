@@ -7625,6 +7625,7 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 points=max(int(challenge.get("points") or 0), 0),
                 participants=int((stats_map.get(challenge_id) or {}).get("participantCount") or 0),
                 thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+                featured=bool(challenge.get("featured")),
                 color="#4F8EF7",
                 created_at=challenge.get("created_at"),
             )
@@ -7650,6 +7651,7 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 earned_points=challenge_points,
                 participants=int((stats_map.get(challenge_id) or {}).get("participantCount") or 0),
                 thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+                featured=bool(challenge.get("featured")),
                 completed_at=completed_at,
                 color="#22C55E",
                 created_at=challenge.get("created_at"),
@@ -7680,6 +7682,7 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 status=str(challenge.get("status") or "ACTIVE"),
                 can_start=can_start,
                 thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
+                featured=bool(challenge.get("featured")),
                 created_at=challenge.get("created_at"),
             )
         )
@@ -7717,6 +7720,7 @@ def _serialize_admin_challenge_record(record: dict, stats: dict[str, dict[str, i
         "difficulty": str(record.get("difficulty") or "BEGINNER").strip().upper(),
         "status": str(record.get("status") or "DRAFT").strip().upper(),
         "thumbnail": str(record.get("thumbnail") or "").strip(),
+        "featured": bool(record.get("featured")),
         "participantCount": int(challenge_stats.get("participantCount") or 0),
         "completionCount": int(challenge_stats.get("completionCount") or 0),
         "createdAt": created_at,
