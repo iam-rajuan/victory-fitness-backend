@@ -7311,6 +7311,7 @@ def _serialize_admin_workout_record(record: dict) -> dict:
         "equipment": str(record.get("equipment") or "").strip(),
         "level": str(record.get("level") or "").strip(),
         "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
+        "durationSeconds": int(record.get("duration_seconds") or record.get("durationSeconds") or 0),
         "starts": int(record.get("starts_count") or record.get("starts") or 0),
         "visibility": str(record.get("visibility") or "Published").strip(),
         "providerVisibility": str(

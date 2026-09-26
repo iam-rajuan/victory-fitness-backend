@@ -163,6 +163,8 @@ async def admin_create_workout(
 
         "duration_minutes": int(payload.durationMinutes or 0),
 
+        "duration_seconds": int(payload.durationSeconds or 0),
+
         "visibility": payload.visibility,
 
         "thumbnail": thumbnail,
@@ -280,6 +282,8 @@ async def admin_update_workout(
         "level": payload.level.strip(),
 
         "duration_minutes": int(payload.durationMinutes or 0),
+
+        "duration_seconds": int(payload.durationSeconds or 0),
 
         "visibility": payload.visibility,
 

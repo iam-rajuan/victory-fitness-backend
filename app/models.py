@@ -1981,6 +1981,7 @@ class AdminWorkoutItem(BaseModel):
     equipment: str = ""
     level: str = ""
     durationMinutes: int = 0
+    durationSeconds: int = 0
     starts: int = 0
     visibility: str
     providerVisibility: str = "Published"
@@ -2004,6 +2005,7 @@ class AdminWorkoutRequest(BaseModel):
     equipment: str = Field(default="", max_length=80)
     level: str = Field(default="", max_length=80)
     durationMinutes: int = Field(default=0, ge=0, le=600)
+    durationSeconds: int = Field(default=0, ge=0, le=86400)
     visibility: str = Field(pattern=r"^(Published|Draft)$")
     thumbnail: str | None = Field(default=None, max_length=500)
     video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
@@ -2043,6 +2045,7 @@ class AdminWorkoutSyncVideoResponse(BaseModel):
     equipment: str = ""
     level: str = ""
     durationMinutes: int = 0
+    durationSeconds: int = 0
     visibility: str = "Draft"
     providerVisibility: str = "Draft"
     alreadyInLibrary: bool = False
@@ -2077,6 +2080,7 @@ class AdminWorkoutSyncDebugItem(BaseModel):
     equipment: str = ""
     level: str = ""
     durationMinutes: int = 0
+    durationSeconds: int = 0
     visibility: str = "Draft"
     providerVisibility: str = "Draft"
     videoSource: str = "VIMEO"
@@ -2101,6 +2105,7 @@ class WorkoutLibraryItem(BaseModel):
     equipment: str = ""
     level: str = ""
     durationMinutes: int = 0
+    durationSeconds: int = 0
     thumbnail: str
     movements: list[WorkoutMovementItem] = Field(default_factory=list)
     dateAdded: datetime

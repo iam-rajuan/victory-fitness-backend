@@ -208,6 +208,16 @@ def _resolve_duration_minutes(video: dict[str, Any], use_vimeo_duration: bool) -
     return max(1, round(seconds / 60))
 
 
+def _resolve_duration_seconds(video: dict[str, Any], use_vimeo_duration: bool) -> int:
+    if not use_vimeo_duration:
+        return 0
+    try:
+        seconds = int(video.get("duration") or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    return max(0, min(seconds, 86400))
+
+
 def _resolve_workout_visibility(video: dict[str, Any]) -> str:
     status = str(video.get("status") or "").strip().lower()
     privacy = video.get("privacy")
@@ -251,6 +261,7 @@ def _build_workout_document(
         "equipment": _normalize_import_label(options.equipment, ""),
         "level": _normalize_import_label(options.level, ""),
         "duration_minutes": _resolve_duration_minutes(video, options.use_vimeo_duration),
+        "duration_seconds": _resolve_duration_seconds(video, options.use_vimeo_duration),
         "visibility": _resolve_import_visibility(options, video),
         "thumbnail": _pick_vimeo_thumbnail(video),
         "description": str(video.get("description") or "").strip(),
@@ -377,6 +388,7 @@ async def sync_vimeo_workouts(options: VimeoWorkoutImportOptions | None = None) 
                 "equipment": str(document.get("equipment") or "").strip(),
                 "level": str(document.get("level") or "").strip(),
                 "durationMinutes": int(document.get("duration_minutes") or 0),
+                "durationSeconds": int(document.get("duration_seconds") or 0),
                 "visibility": str(document.get("visibility") or "Draft").strip() or "Draft",
                 "providerVisibility": str(document.get("vimeo_provider_visibility") or "Draft").strip() or "Draft",
                 "alreadyInLibrary": existing_workout is not None,
