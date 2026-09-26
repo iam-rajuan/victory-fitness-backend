@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 _notification_event_listeners = set()
 
 
+def _has_firebase_web_push_credentials() -> bool:
+    return bool(
+        str(settings.firebase_project_id or "").strip()
+        and str(settings.firebase_client_email or "").strip()
+        and str(settings.firebase_private_key or "").strip()
+    )
+
+
 def subscribe_notification_events(listener):
     _notification_event_listeners.add(listener)
 
@@ -76,9 +84,11 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
     if expo_tokens:
         providers.append("expo")
         tasks.append(asyncio.to_thread(_send_expo_push, list(dict.fromkeys(expo_tokens)), resolved_title, resolved_message, notification_data))
-    if web_tokens:
+    if web_tokens and _has_firebase_web_push_credentials():
         providers.append("firebase")
         tasks.append(asyncio.to_thread(_send_firebase_web_push, list(dict.fromkeys(web_tokens)), resolved_title, resolved_message, notification_data))
+    elif web_tokens:
+        logger.info("Skipping Firebase web push delivery because service-account credentials are not configured")
     delivery_status = "inbox_only" if not tasks else "sent"
     failed_providers = []
     if tasks:

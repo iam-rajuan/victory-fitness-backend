@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 
 from ...core.legacy import *
 
@@ -164,6 +164,8 @@ async def admin_create_challenge(
 
     payload: AdminChallengeRequest,
 
+    background_tasks: BackgroundTasks,
+
     admin_user: dict = Depends(_require_admin_user),
 
 ) -> AdminChallengeItem:
@@ -244,7 +246,7 @@ async def admin_create_challenge(
 
     await _sync_workout_library_from_challenge_plan(plan_days, payload.category)
     if str(payload.status or "").upper() in {"ACTIVE", "UPCOMING"}:
-        await _notify_users_of_new_challenge(document)
+        background_tasks.add_task(_notify_users_of_new_challenge, document)
 
     return AdminChallengeItem(**_serialize_admin_challenge_record(document))
 
@@ -255,6 +257,8 @@ async def admin_update_challenge(
     challenge_id: str,
 
     payload: AdminChallengeRequest,
+
+    background_tasks: BackgroundTasks,
 
     admin_user: dict = Depends(_require_admin_user),
 
@@ -359,7 +363,7 @@ async def admin_update_challenge(
     was_available = str(existing.get("status") or "").upper() in {"ACTIVE", "UPCOMING"}
     is_available = str(updated.get("status") or "").upper() in {"ACTIVE", "UPCOMING"}
     if is_available and not was_available:
-        await _notify_users_of_new_challenge(updated)
+        background_tasks.add_task(_notify_users_of_new_challenge, updated)
 
     stats = await _load_challenge_stats_map([challenge_id])
 
