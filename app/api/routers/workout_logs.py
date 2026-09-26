@@ -28,6 +28,9 @@ class WorkoutLogCreateRequest(BaseModel):
     workout_id: str = Field(min_length=1, max_length=120)
     title: Optional[str] = Field(default=None, max_length=200)
     duration_seconds: int = 0
+    sets_logged: int = Field(default=0, ge=0, le=500)
+    volume_kg: float = Field(default=0, ge=0)
+    movements: list[dict[str, Any]] = Field(default_factory=list)
     status: str = Field(default="started", pattern=r"^(started|completed|abandoned)$")
     market: Optional[str] = Field(default=None, min_length=2, max_length=2)
 
@@ -56,6 +59,9 @@ def _serialize_workout_log(doc: dict[str, Any]) -> dict[str, Any]:
         "workout_id": workout_id,
         "title": _format_workout_title(raw_title, workout_id),
         "duration_seconds": int(doc.get("duration_seconds") or 0),
+        "sets_logged": int(doc.get("sets_logged") or 0),
+        "volume_kg": float(doc.get("volume_kg") or 0),
+        "movements": doc.get("movements") if isinstance(doc.get("movements"), list) else [],
         "status": str(doc.get("status") or "completed"),
         "market": doc.get("market"),
         "started_at": started_at.isoformat() if isinstance(started_at, datetime) else str(started_at or ""),
@@ -208,6 +214,9 @@ async def create_workout_log(
         "workout_id": payload.workout_id,
         "title": resolved_title,
         "duration_seconds": payload.duration_seconds,
+        "sets_logged": payload.sets_logged,
+        "volume_kg": payload.volume_kg,
+        "movements": payload.movements[:80],
         "status": payload.status,
         "market": (payload.market or "").upper() or None,
         "started_at": now,
