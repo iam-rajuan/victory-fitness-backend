@@ -959,6 +959,10 @@ class UserActiveChallengeResponse(BaseModel):
     days_left: int = 0
     total_days: int = 0
     progress: float = 0
+    current_day_number: int | None = None
+    completed_today: bool = False
+    completed_today_at: datetime | None = None
+    can_complete_today: bool = False
     points: int = 0
     participants: int = 0
     thumbnail: str = ""

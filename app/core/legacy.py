@@ -1939,6 +1939,32 @@ def _has_completed_challenge_day_today(membership: dict) -> bool:
 
     return False
 
+def _get_completed_challenge_day_today_at(membership: dict) -> datetime | None:
+
+    plan_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
+
+    today = datetime.now(timezone.utc).date()
+
+    latest_completed_at: datetime | None = None
+
+    for raw_day in plan_progress.values():
+
+        if not isinstance(raw_day, dict) or not raw_day.get("completed"):
+
+            continue
+
+        updated_at = _coerce_utc_datetime(raw_day.get("updated_at"))
+
+        if not updated_at or updated_at.date() != today:
+
+            continue
+
+        if latest_completed_at is None or updated_at > latest_completed_at:
+
+            latest_completed_at = updated_at
+
+    return latest_completed_at
+
 async def _load_challenge_participants(challenge_id: str) -> list[ChallengeParticipantResponse]:
 
     memberships = await challenge_memberships_collection.find(
@@ -4129,27 +4155,7 @@ async def _complete_current_challenge_day(
 
     if plan_day:
 
-        existing_day_progress = _get_membership_day_progress(membership, day_number)
-
         valid_section_ids, valid_exercise_ids = _get_plan_day_ids(plan_day)
-
-        completed_section_ids, completed_exercise_ids = _normalize_completed_progress_ids(
-
-            existing_day_progress,
-
-            valid_section_ids,
-
-            valid_exercise_ids,
-
-        )
-
-        if valid_exercise_ids and len(completed_exercise_ids) < len(valid_exercise_ids):
-
-            raise HTTPException(status_code=400, detail="Complete every exercise before marking the day done")
-
-        if not valid_exercise_ids and valid_section_ids and len(completed_section_ids) < len(valid_section_ids):
-
-            raise HTTPException(status_code=400, detail="Complete every section before marking the day done")
 
         return await _store_membership_plan_progress(
 
@@ -4161,9 +4167,9 @@ async def _complete_current_challenge_day(
 
             day_number=day_number,
 
-            completed_section_ids=completed_section_ids,
+            completed_section_ids=valid_section_ids,
 
-            completed_exercise_ids=completed_exercise_ids,
+            completed_exercise_ids=valid_exercise_ids,
 
             completed=True,
 
@@ -7607,6 +7613,13 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
             continue
         duration_days = max(int(challenge.get("duration_days") or 0), 1)
         completed_days = max(int(membership.get("progress_days_completed") or 0), 0)
+        normalized_plan_days = _normalize_challenge_plan_days(
+            challenge.get("plan_days") if isinstance(challenge.get("plan_days"), list) else [],
+            duration_days=duration_days,
+        )
+        current_day_number = _get_current_challenge_day_number(membership, normalized_plan_days, duration_days)
+        completed_today = _has_completed_challenge_day_today(membership)
+        completed_today_at = _get_completed_challenge_day_today_at(membership)
         progress = min(completed_days / duration_days, 1.0)
         days_left = max(duration_days - completed_days, 0)
         active_challenges.append(
@@ -7622,6 +7635,10 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 days_left=days_left,
                 total_days=duration_days,
                 progress=progress,
+                current_day_number=current_day_number,
+                completed_today=completed_today,
+                completed_today_at=completed_today_at,
+                can_complete_today=bool(current_day_number and not completed_today),
                 points=max(int(challenge.get("points") or 0), 0),
                 participants=int((stats_map.get(challenge_id) or {}).get("participantCount") or 0),
                 thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
