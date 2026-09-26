@@ -5,6 +5,17 @@ from ...core.legacy import *
 router = APIRouter()
 
 
+async def _ensure_single_featured_challenge(featured_challenge_id: ObjectId) -> None:
+
+    await challenges_collection.update_many(
+
+        {"_id": {"$ne": featured_challenge_id}, "featured": True},
+
+        {"$set": {"featured": False, "updated_at": datetime.now(timezone.utc)}},
+
+    )
+
+
 def _validate_admin_challenge_plan_for_publish(
     *,
     status_value: str,
@@ -246,6 +257,10 @@ async def admin_create_challenge(
 
     document["_id"] = insert_result.inserted_id
 
+    if bool(payload.featured):
+
+        await _ensure_single_featured_challenge(insert_result.inserted_id)
+
     await _sync_workout_library_from_challenge_plan(plan_days, payload.category)
     if str(payload.status or "").upper() in {"ACTIVE", "UPCOMING"}:
         background_tasks.add_task(_notify_users_of_new_challenge, document)
@@ -355,6 +370,10 @@ async def admin_update_challenge(
     }
 
     await challenges_collection.update_one({"_id": object_id}, {"$set": update_doc})
+
+    if bool(payload.featured):
+
+        await _ensure_single_featured_challenge(object_id)
 
     await _sync_workout_library_from_challenge_plan(plan_days, payload.category)
 
