@@ -7319,9 +7319,63 @@ def _serialize_admin_workout_record(record: dict) -> dict:
             or "Published"
         ).strip(),
         "thumbnail": str(record.get("thumbnail") or record.get("thumbnail_url") or "").strip(),
+        "movements": _serialize_workout_movements(record.get("movements") or []),
         "dateAdded": created_at,
         "updatedAt": updated_at,
     }
+
+def _serialize_workout_movements(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    movements: list[dict[str, Any]] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            rest_seconds = int(item.get("restSeconds") or item.get("rest_seconds") or 0)
+        except (TypeError, ValueError):
+            rest_seconds = 0
+        try:
+            order = int(item.get("order") if item.get("order") is not None else idx)
+        except (TypeError, ValueError):
+            order = idx
+        movements.append(
+            {
+                "id": str(item.get("id") or f"movement-{idx + 1}"),
+                "name": name[:120],
+                "sets": str(item.get("sets") or "").strip()[:40],
+                "reps": str(item.get("reps") or "").strip()[:40],
+                "load": str(item.get("load") or "").strip()[:80],
+                "equipment": str(item.get("equipment") or "").strip()[:80],
+                "restSeconds": max(0, min(rest_seconds, 3600)),
+                "notes": str(item.get("notes") or "").strip()[:500],
+                "order": max(0, min(order, 500)),
+            }
+        )
+    return sorted(movements, key=lambda item: (int(item.get("order") or 0), str(item.get("name") or "")))
+
+def _normalize_workout_movements_for_storage(value: object) -> list[dict[str, Any]]:
+    normalized = _serialize_workout_movements(
+        [
+            {
+                **(item.model_dump() if hasattr(item, "model_dump") else item)
+            }
+            for item in value
+        ]
+        if isinstance(value, list)
+        else []
+    )
+    return [
+        {
+            **item,
+            "id": item.get("id") or f"movement-{idx + 1}",
+            "order": idx,
+        }
+        for idx, item in enumerate(normalized)
+    ]
 
 async def _load_challenge_stats_map(challenge_ids: list[str]) -> dict[str, dict[str, int]]:
     stats = {challenge_id: {"participantCount": 0, "completionCount": 0} for challenge_id in challenge_ids}

@@ -1948,6 +1948,29 @@ class AdminUserUpdateRequest(BaseModel):
     profileImage: str | None = Field(default=None, max_length=500)
 
 
+class WorkoutMovementInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    sets: str = Field(default="", max_length=40)
+    reps: str = Field(default="", max_length=40)
+    load: str = Field(default="", max_length=80)
+    equipment: str = Field(default="", max_length=80)
+    restSeconds: int = Field(default=0, ge=0, le=3600)
+    notes: str = Field(default="", max_length=500)
+    order: int = Field(default=0, ge=0, le=500)
+
+
+class WorkoutMovementItem(BaseModel):
+    id: str = ""
+    name: str
+    sets: str = ""
+    reps: str = ""
+    load: str = ""
+    equipment: str = ""
+    restSeconds: int = 0
+    notes: str = ""
+    order: int = 0
+
+
 class AdminWorkoutItem(BaseModel):
     id: str
     title: str
@@ -1961,6 +1984,7 @@ class AdminWorkoutItem(BaseModel):
     visibility: str
     providerVisibility: str = "Published"
     thumbnail: str
+    movements: list[WorkoutMovementItem] = Field(default_factory=list)
     dateAdded: datetime
     updatedAt: datetime
 
@@ -1987,6 +2011,7 @@ class AdminWorkoutRequest(BaseModel):
     mime_type: str = Field(default="image/jpeg", max_length=120)
     video_file_name: str | None = Field(default=None, max_length=255)
     file_name: str | None = Field(default=None, max_length=255)
+    movements: list[WorkoutMovementInput] = Field(default_factory=list)
 
 
 class AdminDirectUploadRequest(BaseModel):
@@ -2076,6 +2101,7 @@ class WorkoutLibraryItem(BaseModel):
     level: str = ""
     durationMinutes: int = 0
     thumbnail: str
+    movements: list[WorkoutMovementItem] = Field(default_factory=list)
     dateAdded: datetime
 
 

@@ -152,6 +152,8 @@ async def admin_create_workout(
 
         "thumbnail": thumbnail,
 
+        "movements": _normalize_workout_movements_for_storage(payload.movements),
+
         "created_at": now,
 
         "updated_at": now,
@@ -267,6 +269,8 @@ async def admin_update_workout(
         "visibility": payload.visibility,
 
         "thumbnail": thumbnail,
+
+        "movements": _normalize_workout_movements_for_storage(payload.movements),
 
         "updated_at": datetime.now(timezone.utc),
 
