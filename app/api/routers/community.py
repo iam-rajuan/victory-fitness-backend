@@ -7,6 +7,59 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+COMMUNITY_IMAGE_MIME_TYPES = {
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+    "image/heic",
+    "image/heif",
+}
+
+
+def _normalize_community_image_mime_type(mime_type: str, file_name: str | None) -> str:
+    normalized = str(mime_type or "").strip().lower().split(";", 1)[0].strip()
+    aliases = {
+        "image/pjpeg": "image/jpeg",
+        "image/x-png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+        "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized in COMMUNITY_IMAGE_MIME_TYPES:
+        return normalized
+
+    guessed = ""
+    if file_name:
+        guessed_mime, _ = mimetypes.guess_type(file_name)
+        guessed = str(guessed_mime or "").strip().lower().split(";", 1)[0].strip()
+        guessed = aliases.get(guessed, guessed)
+        if guessed in COMMUNITY_IMAGE_MIME_TYPES:
+            return guessed
+
+    lower_name = str(file_name or "").lower()
+    if lower_name.endswith(".png"):
+        return "image/png"
+    if lower_name.endswith(".webp"):
+        return "image/webp"
+    if lower_name.endswith(".gif"):
+        return "image/gif"
+    if lower_name.endswith(".heic"):
+        return "image/heic"
+    if lower_name.endswith(".heif"):
+        return "image/heif"
+
+    if normalized in {"", "image", "image/*", "application/octet-stream", "binary/octet-stream"}:
+        return "image/jpeg"
+
+    return normalized
+
 @router.get("/community/posts", response_model=CommunityPostListResponse)
 async def get_community_posts(
     page: int = Query(default=1, ge=1),
@@ -293,6 +346,7 @@ async def create_community_post(
     if image_base64 and not image_url:
 
         try:
+            mime_type = _normalize_community_image_mime_type(mime_type, file_name)
 
             image_url = await asyncio.to_thread(
                 _upload_community_image_to_s3,

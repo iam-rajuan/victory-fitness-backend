@@ -5424,6 +5424,35 @@ def _upload_community_image_to_s3(
     max_size_bytes: int = COMMUNITY_IMAGE_MAX_SIZE_BYTES,
 
 ) -> str:
+    normalized_mime = str(mime_type or "").strip().lower().split(";", 1)[0].strip()
+    mime_aliases = {
+        "image/pjpeg": "image/jpeg",
+        "image/x-png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+        "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
+    }
+    normalized_mime = mime_aliases.get(normalized_mime, normalized_mime)
+    suffix = Path(str(file_name or "").lower()).suffix
+    if normalized_mime not in {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif", "image/heic", "image/heif"}:
+        if suffix in {".jpg", ".jpeg"}:
+            normalized_mime = "image/jpeg"
+        elif suffix == ".png":
+            normalized_mime = "image/png"
+        elif suffix == ".webp":
+            normalized_mime = "image/webp"
+        elif suffix == ".gif":
+            normalized_mime = "image/gif"
+        elif suffix == ".heic":
+            normalized_mime = "image/heic"
+        elif suffix == ".heif":
+            normalized_mime = "image/heif"
+        elif normalized_mime in {"", "image", "image/*", "application/octet-stream", "binary/octet-stream"}:
+            normalized_mime = "image/jpeg"
 
     return _upload_binary_to_s3(
 
@@ -5433,7 +5462,7 @@ def _upload_community_image_to_s3(
 
         image_base64,
 
-        mime_type,
+        normalized_mime,
 
         file_name,
 
@@ -5779,7 +5808,42 @@ def _upload_binary_to_s3(
 
 ) -> str:
 
-    normalized_mime = str(mime_type or "").strip().lower()
+    payload_base64 = str(payload_base64 or "").strip()
+
+    data_url_mime = ""
+    if payload_base64.lower().startswith("data:") and "," in payload_base64:
+        header, payload_base64 = payload_base64.split(",", 1)
+        data_url_mime = header[5:].split(";", 1)[0].strip().lower()
+
+    normalized_mime = str(data_url_mime or mime_type or "").strip().lower().split(";", 1)[0].strip()
+    mime_aliases = {
+        "image/pjpeg": "image/jpeg",
+        "image/x-png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "webp": "image/webp",
+        "gif": "image/gif",
+        "heic": "image/heic",
+        "heif": "image/heif",
+    }
+    normalized_mime = mime_aliases.get(normalized_mime, normalized_mime)
+    if normalized_mime not in allowed_types and upload_log_label == "image":
+        suffix = Path(str(file_name or "").lower()).suffix
+        if suffix in {".jpg", ".jpeg"}:
+            normalized_mime = "image/jpeg"
+        elif suffix == ".png":
+            normalized_mime = "image/png"
+        elif suffix == ".webp":
+            normalized_mime = "image/webp"
+        elif suffix == ".gif":
+            normalized_mime = "image/gif"
+        elif suffix == ".heic":
+            normalized_mime = "image/heic"
+        elif suffix == ".heif":
+            normalized_mime = "image/heif"
+        elif normalized_mime in {"", "image", "image/*", "application/octet-stream", "binary/octet-stream"}:
+            normalized_mime = "image/jpeg"
 
     extension = allowed_types.get(normalized_mime)
 
