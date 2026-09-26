@@ -702,6 +702,8 @@ class _InviteRequest(BaseModel):
     recipient_email: EmailStr | None = None
     recipient_phone: str | None = Field(default=None, max_length=40)
     copy_variant: str | None = Field(default=None, pattern=r"^[a-z]$")
+    challenge_id: str | None = Field(default=None, max_length=120)
+    source: str = Field(default="general_invite", max_length=120)
 
 class _PaymentEventRequest(BaseModel):
     amount: str | float = Field(...)
@@ -3760,6 +3762,8 @@ async def _store_membership_plan_progress(
 
     emit_progress_message: bool,
 
+    emit_milestone_notification: bool = True,
+
 ) -> ChallengePlanProgressResponse:
 
     plan_days = _get_normalized_plan_days(challenge)
@@ -3912,22 +3916,24 @@ async def _store_membership_plan_progress(
 
         await _broadcast_challenge_chat_event("message_created", str(challenge["_id"]), message_document)
 
-        milestone_message = await asyncio.to_thread(
-            generate_challenge_milestone_message,
-            str(user.get("name") or "there"),
-            str(challenge.get("title") or "your challenge"),
-            day_number,
-            duration_days,
-            next_status,
-        )
-        await notify_user(
-            users_collection,
-            user,
-            "Challenge milestone reached",
-            milestone_message,
-            "challenge_milestone",
-            {"type": "challenge", "challengeId": str(challenge["_id"]), "day": day_number, "totalDays": duration_days, "milestone": True, "route": f"/challenges/progress/{challenge['_id']}"},
-        )
+        if emit_milestone_notification:
+
+            milestone_message = await asyncio.to_thread(
+                generate_challenge_milestone_message,
+                str(user.get("name") or "there"),
+                str(challenge.get("title") or "your challenge"),
+                day_number,
+                duration_days,
+                next_status,
+            )
+            await notify_user(
+                users_collection,
+                user,
+                "Challenge milestone reached",
+                milestone_message,
+                "challenge_milestone",
+                {"type": "challenge", "challengeId": str(challenge["_id"]), "day": day_number, "totalDays": duration_days, "milestone": True, "route": f"/challenges/progress/{challenge['_id']}"},
+            )
 
     updated_membership = await challenge_memberships_collection.find_one({"_id": membership["_id"]})
 
@@ -4174,6 +4180,8 @@ async def _complete_current_challenge_day(
             completed=True,
 
             emit_progress_message=True,
+
+            emit_milestone_notification=False,
 
         )
 

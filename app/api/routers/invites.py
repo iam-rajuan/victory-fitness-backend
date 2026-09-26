@@ -18,6 +18,9 @@ async def create_invite(
     copy_variant = str(payload.copy_variant or assign_invite_variant(user_id)).strip().lower() or "a"
     doc = {
         "user_id": user_id or None,
+        "inviter_id": user_id or None,
+        "challenge_id": str(payload.challenge_id or "").strip() or None,
+        "source": str(payload.source or "general_invite").strip() or "general_invite",
         "recipient_email": str(payload.recipient_email) if payload.recipient_email else None,
         "recipient_phone": payload.recipient_phone or None,
         "copy_variant": copy_variant,
@@ -28,8 +31,24 @@ async def create_invite(
         result = await invites_collection.insert_one(doc)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"invites insert failed: {exc}")
-    await _record_analytics_event("invite_sent", user_id=user_id or None, details={"variant": copy_variant})
-    return {"id": str(result.inserted_id), "copyVariant": copy_variant}
+    invite_id = str(result.inserted_id)
+    await _record_analytics_event(
+        "invite_sent",
+        user_id=user_id or None,
+        details={
+            "variant": copy_variant,
+            "challenge_id": doc["challenge_id"],
+            "source": doc["source"],
+            "invite_id": invite_id,
+        },
+    )
+    return {
+        "id": invite_id,
+        "invite_id": invite_id,
+        "inviter_id": user_id or None,
+        "challenge_id": doc["challenge_id"],
+        "copyVariant": copy_variant,
+    }
 
 
 @router.patch("/invites/{invite_id}/accept")
