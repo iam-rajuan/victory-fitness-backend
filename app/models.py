@@ -1981,6 +1981,7 @@ class AdminWorkoutItem(BaseModel):
     equipment: str = ""
     level: str = ""
     durationMinutes: int = 0
+    starts: int = 0
     visibility: str
     providerVisibility: str = "Published"
     thumbnail: str

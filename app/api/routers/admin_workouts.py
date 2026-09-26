@@ -62,6 +62,21 @@ async def admin_list_workouts(
 
     ).to_list(length=None)
 
+    workout_ids = [str(record.get("_id") or "") for record in records if record.get("_id")]
+    if workout_ids:
+        start_rows = await workout_logs_collection.aggregate(
+            [
+                {"$match": {"workout_id": {"$in": workout_ids}}},
+                {"$group": {"_id": "$workout_id", "starts": {"$sum": 1}}},
+            ]
+        ).to_list(length=None)
+        starts_by_workout_id = {
+            str(row.get("_id") or ""): int(row.get("starts") or 0)
+            for row in start_rows
+        }
+        for record in records:
+            record["starts_count"] = starts_by_workout_id.get(str(record.get("_id") or ""), 0)
+
     return AdminWorkoutListResponse(
 
         total=len(records),
