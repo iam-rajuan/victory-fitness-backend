@@ -1955,6 +1955,9 @@ class AdminWorkoutItem(BaseModel):
     videoUrl: str = ""
     videoSource: str = "VIMEO"
     tag: str
+    equipment: str = ""
+    level: str = ""
+    durationMinutes: int = 0
     visibility: str
     providerVisibility: str = "Published"
     thumbnail: str
@@ -1973,6 +1976,9 @@ class AdminWorkoutRequest(BaseModel):
     videoUrl: str = Field(default="", max_length=2000)
     videoSource: str = Field(default="VIMEO", pattern=r"^(VIMEO|YOUTUBE|UPLOAD)$")
     tag: str = Field(min_length=1, max_length=80)
+    equipment: str = Field(default="", max_length=80)
+    level: str = Field(default="", max_length=80)
+    durationMinutes: int = Field(default=0, ge=0, le=600)
     visibility: str = Field(pattern=r"^(Published|Draft)$")
     thumbnail: str | None = Field(default=None, max_length=500)
     video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
@@ -1994,11 +2000,23 @@ class AdminDirectUploadResponse(BaseModel):
     fileUrl: str
     headers: dict[str, str] = Field(default_factory=dict)
 
+class AdminWorkoutSyncRequest(BaseModel):
+    folderName: str = Field(default="", max_length=160)
+    tag: str = Field(default="Strength", max_length=80)
+    equipment: str = Field(default="Dumbbells", max_length=80)
+    level: str = Field(default="Intermediate", max_length=80)
+    useVimeoDuration: bool = True
+    visibility: str = Field(default="Draft", pattern=r"^(Published|Draft)$")
+    importLimit: int = Field(default=12, ge=1, le=100)
+
 
 class AdminWorkoutSyncVideoResponse(BaseModel):
     title: str
     vimeoId: str = ""
     tag: str = ""
+    equipment: str = ""
+    level: str = ""
+    durationMinutes: int = 0
     visibility: str = "Draft"
     providerVisibility: str = "Draft"
     alreadyInLibrary: bool = False
@@ -2010,7 +2028,19 @@ class AdminWorkoutSyncResponse(BaseModel):
     syncedCount: int = 0
     modulesSynced: int = 0
     videosDiscovered: int = 0
+    alreadyImportedCount: int = 0
+    remainingToImport: int = 0
     syncedVideos: list[AdminWorkoutSyncVideoResponse] = Field(default_factory=list)
+
+
+class AdminWorkoutSyncPreviewResponse(BaseModel):
+    status: str = "success"
+    modulesSynced: int = 0
+    videosAvailable: int = 0
+    alreadyImportedCount: int = 0
+    remainingToImport: int = 0
+    libraryTotal: int = 0
+    untaggedCount: int = 0
 
 
 class AdminWorkoutSyncDebugItem(BaseModel):
@@ -2018,6 +2048,9 @@ class AdminWorkoutSyncDebugItem(BaseModel):
     title: str
     vimeoId: str = ""
     tag: str = ""
+    equipment: str = ""
+    level: str = ""
+    durationMinutes: int = 0
     visibility: str = "Draft"
     providerVisibility: str = "Draft"
     videoSource: str = "VIMEO"
@@ -2039,6 +2072,9 @@ class WorkoutLibraryItem(BaseModel):
     videoUrl: str = ""
     videoSource: str = "VIMEO"
     tag: str
+    equipment: str = ""
+    level: str = ""
+    durationMinutes: int = 0
     thumbnail: str
     dateAdded: datetime
 

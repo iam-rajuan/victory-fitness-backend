@@ -305,7 +305,11 @@ from ..models import (
 
     AdminWorkoutRequest,
 
+    AdminWorkoutSyncRequest,
+
     AdminWorkoutSyncDebugResponse,
+
+    AdminWorkoutSyncPreviewResponse,
 
     AdminWorkoutSyncResponse,
 
@@ -576,7 +580,7 @@ from ..workout_plan_ai import (
     generate_video_workout_plan,
 
 )
-from ..vimeo_sync import VimeoSyncError, get_vimeo_status, sync_vimeo_workouts
+from ..vimeo_sync import VimeoSyncError, VimeoWorkoutImportOptions, get_vimeo_status, preview_vimeo_workout_import, sync_vimeo_workouts
 
 from ..security import (
 
@@ -7304,6 +7308,9 @@ def _serialize_admin_workout_record(record: dict) -> dict:
         "videoUrl": str(record.get("video_url") or "").strip(),
         "videoSource": video_source,
         "tag": str(record.get("tag") or "").strip(),
+        "equipment": str(record.get("equipment") or "").strip(),
+        "level": str(record.get("level") or "").strip(),
+        "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
         "visibility": str(record.get("visibility") or "Published").strip(),
         "providerVisibility": str(
             record.get("vimeo_provider_visibility")

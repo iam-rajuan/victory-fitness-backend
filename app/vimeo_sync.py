@@ -23,6 +23,7 @@ VIMEO_VIDEO_FIELDS = ",".join(
         "description",
         "link",
         "embed.html",
+        "duration",
         "status",
         "privacy.view",
         "pictures.sizes",
@@ -42,7 +43,28 @@ class VimeoSyncSummary:
     synced_count: int = 0
     modules_synced: int = 0
     videos_discovered: int = 0
+    already_imported_count: int = 0
+    remaining_to_import: int = 0
     synced_videos: list[dict[str, Any]] | None = None
+
+
+@dataclass
+class VimeoWorkoutImportOptions:
+    folder_name: str = ""
+    tag: str = "Strength"
+    equipment: str = "Dumbbells"
+    level: str = "Intermediate"
+    use_vimeo_duration: bool = True
+    visibility: str = "Draft"
+    import_limit: int | None = 12
+
+
+@dataclass
+class VimeoWorkoutPreview:
+    modules_synced: int = 0
+    videos_available: int = 0
+    already_imported_count: int = 0
+    remaining_to_import: int = 0
 
 
 def get_vimeo_status() -> str:
@@ -155,6 +177,37 @@ def _normalize_vimeo_module_name(name: str, fallback: str) -> str:
     return cleaned[:80]
 
 
+def _normalize_import_label(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    return (cleaned or fallback)[:80]
+
+
+def _folder_matches(container_name: str, requested_folder: str) -> bool:
+    requested = re.sub(r"\s+", " ", str(requested_folder or "").strip()).lower()
+    if not requested:
+        return True
+
+    candidate = re.sub(r"\s+", " ", str(container_name or "").strip()).lower()
+    if not candidate:
+        return False
+
+    requested_parts = [part.strip() for part in requested.split("/") if part.strip()]
+    requested_names = [requested, *(requested_parts[-1:] or [])]
+    return any(name == candidate or name in candidate or candidate in name for name in requested_names)
+
+
+def _resolve_duration_minutes(video: dict[str, Any], use_vimeo_duration: bool) -> int:
+    if not use_vimeo_duration:
+        return 0
+    try:
+        seconds = int(video.get("duration") or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds <= 0:
+        return 0
+    return max(1, round(seconds / 60))
+
+
 def _resolve_workout_visibility(video: dict[str, Any]) -> str:
     status = str(video.get("status") or "").strip().lower()
     privacy = video.get("privacy")
@@ -166,11 +219,11 @@ def _resolve_workout_visibility(video: dict[str, Any]) -> str:
     return "Published"
 
 
-def _resolve_synced_visibility(existing_workout: dict[str, Any] | None, video: dict[str, Any]) -> str:
-    if existing_workout:
-        current_visibility = str(existing_workout.get("visibility") or "").strip()
-        if current_visibility in {"Published", "Draft"}:
-            return current_visibility
+def _resolve_import_visibility(options: VimeoWorkoutImportOptions, video: dict[str, Any]) -> str:
+    requested_visibility = "Published" if options.visibility == "Published" else "Draft"
+    provider_visibility = _resolve_workout_visibility(video)
+    if requested_visibility == "Published" and provider_visibility == "Published":
+        return "Published"
     return "Draft"
 
 
@@ -181,6 +234,7 @@ def _build_workout_document(
     source_type: str,
     source_uri: str,
     existing_workout: dict[str, Any] | None,
+    options: VimeoWorkoutImportOptions,
     now: datetime,
 ) -> dict[str, Any] | None:
     video_id = _extract_vimeo_video_id(video)
@@ -193,8 +247,11 @@ def _build_workout_document(
         "vimeo_id": video_id,
         "video_url": _build_vimeo_embed_url(video_id),
         "video_source": "VIMEO",
-        "tag": _normalize_vimeo_module_name(module_name, "Vimeo"),
-        "visibility": _resolve_synced_visibility(existing_workout, video),
+        "tag": _normalize_import_label(options.tag, _normalize_vimeo_module_name(module_name, "Vimeo")),
+        "equipment": _normalize_import_label(options.equipment, ""),
+        "level": _normalize_import_label(options.level, ""),
+        "duration_minutes": _resolve_duration_minutes(video, options.use_vimeo_duration),
+        "visibility": _resolve_import_visibility(options, video),
         "thumbnail": _pick_vimeo_thumbnail(video),
         "description": str(video.get("description") or "").strip(),
         "vimeo_provider_visibility": _resolve_workout_visibility(video),
@@ -206,15 +263,11 @@ def _build_workout_document(
     }
 
 
-async def sync_vimeo_workouts() -> VimeoSyncSummary:
-    if not settings.vimeo_access_token:
-        raise VimeoSyncError("Vimeo access token is not configured")
-    from .database import workouts_collection
-
-    summary = VimeoSyncSummary(synced_videos=[])
-    now = datetime.now(timezone.utc)
+async def _discover_vimeo_workouts(
+    options: VimeoWorkoutImportOptions,
+    now: datetime,
+) -> tuple[dict[str, dict[str, Any]], int]:
     workout_documents_by_video_id: dict[str, dict[str, Any]] = {}
-
     containers: list[tuple[str, str, str]] = []
     for source_type, path in (("PROJECT", "/me/projects"), ("SHOWCASE", "/me/albums")):
         for container in await _fetch_vimeo_collection(path, fields=VIMEO_CONTAINER_FIELDS):
@@ -222,9 +275,9 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
             if not container_uri:
                 continue
             module_name = _normalize_vimeo_module_name(str(container.get("name") or "").strip(), source_type.title())
+            if not _folder_matches(module_name, options.folder_name):
+                continue
             containers.append((source_type, container_uri, module_name))
-
-    summary.modules_synced = len(containers)
 
     for source_type, container_uri, module_name in containers:
         videos = await _fetch_vimeo_collection(f"{container_uri}/videos", fields=VIMEO_VIDEO_FIELDS)
@@ -235,26 +288,62 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
                 source_type=source_type,
                 source_uri=container_uri,
                 existing_workout=None,
+                options=options,
                 now=now,
             )
             if not document:
                 continue
             workout_documents_by_video_id.setdefault(str(document["vimeo_id"]), document)
 
-    standalone_videos = await _fetch_vimeo_collection("/me/videos", fields=VIMEO_VIDEO_FIELDS)
-    for video in standalone_videos:
-        document = _build_workout_document(
-            video=video,
-            module_name="Vimeo",
-            source_type="VIDEO",
-            source_uri="/me/videos",
-            existing_workout=None,
-            now=now,
-        )
-        if not document:
-            continue
-        workout_documents_by_video_id.setdefault(str(document["vimeo_id"]), document)
+    if not options.folder_name:
+        standalone_videos = await _fetch_vimeo_collection("/me/videos", fields=VIMEO_VIDEO_FIELDS)
+        for video in standalone_videos:
+            document = _build_workout_document(
+                video=video,
+                module_name="Vimeo",
+                source_type="VIDEO",
+                source_uri="/me/videos",
+                existing_workout=None,
+                options=options,
+                now=now,
+            )
+            if not document:
+                continue
+            workout_documents_by_video_id.setdefault(str(document["vimeo_id"]), document)
 
+    return workout_documents_by_video_id, len(containers)
+
+
+async def preview_vimeo_workout_import(options: VimeoWorkoutImportOptions | None = None) -> VimeoWorkoutPreview:
+    if not settings.vimeo_access_token:
+        raise VimeoSyncError("Vimeo access token is not configured")
+    from .database import workouts_collection
+
+    options = options or VimeoWorkoutImportOptions()
+    now = datetime.now(timezone.utc)
+    workout_documents_by_video_id, modules_synced = await _discover_vimeo_workouts(options, now)
+    video_ids = list(workout_documents_by_video_id.keys())
+    already_imported_count = 0
+    if video_ids:
+        already_imported_count = await workouts_collection.count_documents({"vimeo_id": {"$in": video_ids}})
+    return VimeoWorkoutPreview(
+        modules_synced=modules_synced,
+        videos_available=len(video_ids),
+        already_imported_count=already_imported_count,
+        remaining_to_import=max(len(video_ids) - already_imported_count, 0),
+    )
+
+
+async def sync_vimeo_workouts(options: VimeoWorkoutImportOptions | None = None) -> VimeoSyncSummary:
+    if not settings.vimeo_access_token:
+        raise VimeoSyncError("Vimeo access token is not configured")
+    from .database import workouts_collection
+
+    options = options or VimeoWorkoutImportOptions()
+    summary = VimeoSyncSummary(synced_videos=[])
+    now = datetime.now(timezone.utc)
+    workout_documents_by_video_id, modules_synced = await _discover_vimeo_workouts(options, now)
+    summary.modules_synced = modules_synced
     summary.videos_discovered = len(workout_documents_by_video_id)
 
     existing_workouts = await workouts_collection.find(
@@ -265,10 +354,15 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
         for record in existing_workouts
         if str(record.get("vimeo_id") or "").strip()
     }
+    summary.already_imported_count = len(existing_workouts_by_video_id)
+    summary.remaining_to_import = max(summary.videos_discovered - summary.already_imported_count, 0)
 
     for video_id, document in list(workout_documents_by_video_id.items()):
         existing_workout = existing_workouts_by_video_id.get(video_id)
-        document["visibility"] = _resolve_synced_visibility(existing_workout, document)
+        if existing_workout:
+            continue
+        if options.import_limit and summary.synced_count >= options.import_limit:
+            break
         await workouts_collection.update_one(
             {"vimeo_id": video_id},
             {"$set": document, "$setOnInsert": {"created_at": now}},
@@ -280,6 +374,9 @@ async def sync_vimeo_workouts() -> VimeoSyncSummary:
                 "title": str(document.get("title") or "").strip(),
                 "vimeoId": video_id,
                 "tag": str(document.get("tag") or "").strip(),
+                "equipment": str(document.get("equipment") or "").strip(),
+                "level": str(document.get("level") or "").strip(),
+                "durationMinutes": int(document.get("duration_minutes") or 0),
                 "visibility": str(document.get("visibility") or "Draft").strip() or "Draft",
                 "providerVisibility": str(document.get("vimeo_provider_visibility") or "Draft").strip() or "Draft",
                 "alreadyInLibrary": existing_workout is not None,

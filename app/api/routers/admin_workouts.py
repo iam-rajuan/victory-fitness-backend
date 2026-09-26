@@ -4,6 +4,18 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+
+def _build_vimeo_import_options(payload: AdminWorkoutSyncRequest | None) -> VimeoWorkoutImportOptions:
+    return VimeoWorkoutImportOptions(
+        folder_name=str(payload.folderName or "").strip() if payload else "",
+        tag=str(payload.tag or "Strength").strip() if payload else "Strength",
+        equipment=str(payload.equipment or "Dumbbells").strip() if payload else "Dumbbells",
+        level=str(payload.level or "Intermediate").strip() if payload else "Intermediate",
+        use_vimeo_duration=bool(payload.useVimeoDuration) if payload else True,
+        visibility=str(payload.visibility or "Draft").strip() if payload else "Draft",
+        import_limit=int(payload.importLimit or 12) if payload else 12,
+    )
+
 @router.get("/admin/workouts", response_model=AdminWorkoutListResponse)
 
 async def admin_list_workouts(
@@ -27,6 +39,10 @@ async def admin_list_workouts(
             {"title": {"$regex": escaped, "$options": "i"}},
 
             {"tag": {"$regex": escaped, "$options": "i"}},
+
+            {"equipment": {"$regex": escaped, "$options": "i"}},
+
+            {"level": {"$regex": escaped, "$options": "i"}},
 
             {"vimeo_id": {"$regex": escaped, "$options": "i"}},
 
@@ -125,6 +141,12 @@ async def admin_create_workout(
         "video_source": video_source,
 
         "tag": payload.tag.strip(),
+
+        "equipment": payload.equipment.strip(),
+
+        "level": payload.level.strip(),
+
+        "duration_minutes": int(payload.durationMinutes or 0),
 
         "visibility": payload.visibility,
 
@@ -236,6 +258,12 @@ async def admin_update_workout(
 
         "tag": payload.tag.strip(),
 
+        "equipment": payload.equipment.strip(),
+
+        "level": payload.level.strip(),
+
+        "duration_minutes": int(payload.durationMinutes or 0),
+
         "visibility": payload.visibility,
 
         "thumbnail": thumbnail,
@@ -297,13 +325,15 @@ async def admin_delete_workout(
 
 async def admin_sync_workouts(
 
+    payload: AdminWorkoutSyncRequest | None = None,
+
     _: dict = Depends(_require_admin_user),
 
 ) -> AdminWorkoutSyncResponse:
 
     try:
 
-        summary = await sync_vimeo_workouts()
+        summary = await sync_vimeo_workouts(_build_vimeo_import_options(payload))
 
     except VimeoSyncError as exc:
 
@@ -327,8 +357,48 @@ async def admin_sync_workouts(
 
         videosDiscovered=summary.videos_discovered,
 
+        alreadyImportedCount=summary.already_imported_count,
+
+        remainingToImport=max(summary.remaining_to_import - summary.synced_count, 0),
+
         syncedVideos=summary.synced_videos or [],
 
+    )
+
+
+@router.post("/admin/workouts/sync/preview", response_model=AdminWorkoutSyncPreviewResponse)
+async def admin_preview_workout_sync(
+    payload: AdminWorkoutSyncRequest | None = None,
+    _: dict = Depends(_require_admin_user),
+) -> AdminWorkoutSyncPreviewResponse:
+    try:
+        preview = await preview_vimeo_workout_import(_build_vimeo_import_options(payload))
+    except VimeoSyncError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    library_total, untagged_count = await asyncio.gather(
+        workouts_collection.count_documents({}),
+        workouts_collection.count_documents(
+            {
+                "$or": [
+                    {"tag": {"$exists": False}},
+                    {"tag": ""},
+                    {"equipment": {"$exists": False}},
+                    {"equipment": ""},
+                    {"level": {"$exists": False}},
+                    {"level": ""},
+                ]
+            }
+        ),
+    )
+
+    return AdminWorkoutSyncPreviewResponse(
+        modulesSynced=preview.modules_synced,
+        videosAvailable=preview.videos_available,
+        alreadyImportedCount=preview.already_imported_count,
+        remainingToImport=preview.remaining_to_import,
+        libraryTotal=library_total,
+        untaggedCount=untagged_count,
     )
 
 @router.get("/admin/workouts/sync/debug", response_model=AdminWorkoutSyncDebugResponse)
@@ -351,6 +421,9 @@ async def admin_debug_synced_workouts(
             "title": str(record.get("title") or ""),
             "vimeoId": str(record.get("vimeo_id") or ""),
             "tag": str(record.get("tag") or ""),
+            "equipment": str(record.get("equipment") or ""),
+            "level": str(record.get("level") or ""),
+            "durationMinutes": int(record.get("duration_minutes") or 0),
             "visibility": str(record.get("visibility") or "Draft"),
             "providerVisibility": str(record.get("vimeo_provider_visibility") or "Draft"),
             "videoSource": str(record.get("video_source") or "VIMEO"),
