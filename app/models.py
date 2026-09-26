@@ -864,6 +864,7 @@ class CommunityPostCreateRequest(BaseModel):
     external_video_url: str | None = Field(default=None, max_length=2000)
     mime_type: str = Field(default="image/jpeg", max_length=120)
     file_name: str | None = Field(default=None, max_length=255)
+    audience: str | None = Field(default=None, max_length=40)
 
 
 class CommunityCommentCreateRequest(BaseModel):

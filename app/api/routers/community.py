@@ -14,9 +14,13 @@ async def get_community_posts(
     audience: str | None = Query(default=None),
     user: dict = Depends(_require_community_access_user),
 ) -> CommunityPostListResponse:
-    query: dict[str, Any] = {}
-    if audience and str(audience).strip().upper() != "ALL":
-        query["audience"] = str(audience).strip().upper()
+    allowed_audiences = set(_get_allowed_community_audiences(user))
+    query: dict[str, Any] = {"audience": {"$in": sorted(allowed_audiences)}}
+    requested_audience = str(audience or "").strip().upper()
+    if requested_audience and requested_audience != "ALL":
+        if requested_audience not in allowed_audiences:
+            raise HTTPException(status_code=403, detail="You cannot view that community audience")
+        query["audience"] = requested_audience
     total = await community_posts_collection.count_documents(query)
     records = await community_posts_collection.find(
         query,
@@ -58,6 +62,7 @@ async def create_community_post(
     video_url = ""
 
     audio_url = ""
+    requested_audience = ""
 
     content_type = request.headers.get("content-type", "").lower()
 
@@ -71,6 +76,8 @@ async def create_community_post(
         content = str(form.get("content") or "").strip()
 
         external_video_url_raw = str(form.get("external_video_url") or "").strip()
+
+        requested_audience = str(form.get("audience") or "").strip().upper()
 
         mime_type = str(form.get("mime_type") or mime_type).strip() or mime_type
 
@@ -251,6 +258,8 @@ async def create_community_post(
 
         file_name = str(payload.file_name or "").strip() or None
 
+        requested_audience = str(payload.audience or "").strip().upper()
+
     external_video_url = ""
 
     if external_video_url_raw:
@@ -327,11 +336,25 @@ async def create_community_post(
 
     user_tier = _normalize_subscription_tier(user.get("subscription_tier") or user.get("tier"))
     computed_author_tier = "GOLD" if user_tier in {"GOLD", "GOLD_BETA"} else (user_tier if user_tier != "NONE" else "SILVER")
+    allowed_audiences = set(_get_allowed_community_audiences(user))
+    if requested_audience in {"AUTO", "CIRCLE", "MY_CIRCLE"}:
+        selected_audience = _get_community_post_audience_for_user(user)
+    elif requested_audience in {"TIER", "MY_TIER"}:
+        selected_audience = _get_community_post_audience_for_user(user)
+    elif requested_audience == "ALL":
+        selected_audience = "ALL"
+    elif requested_audience:
+        selected_audience = requested_audience
+    else:
+        selected_audience = _get_community_post_audience_for_user(user)
+
+    if selected_audience not in allowed_audiences and selected_audience != "ALL":
+        raise HTTPException(status_code=403, detail="You cannot post to that community audience")
 
     document = {
         "_id": ObjectId(),
         "author_id": str(user["_id"]),
-        "audience": _get_community_post_audience_for_user(user),
+        "audience": selected_audience,
         "author_tier": computed_author_tier,
         "content": content,
         "image_url": image_url,
