@@ -371,6 +371,24 @@ async def sync_vimeo_workouts(options: VimeoWorkoutImportOptions | None = None) 
     for video_id, document in list(workout_documents_by_video_id.items()):
         existing_workout = existing_workouts_by_video_id.get(video_id)
         if existing_workout:
+            metadata_patch: dict[str, Any] = {
+                "vimeo_provider_visibility": document.get("vimeo_provider_visibility"),
+                "vimeo_source_type": document.get("vimeo_source_type"),
+                "vimeo_source_uri": document.get("vimeo_source_uri"),
+                "vimeo_video_uri": document.get("vimeo_video_uri"),
+                "vimeo_synced_at": now,
+                "updated_at": now,
+            }
+            if int(existing_workout.get("duration_seconds") or 0) <= 0 and int(document.get("duration_seconds") or 0) > 0:
+                metadata_patch["duration_seconds"] = int(document.get("duration_seconds") or 0)
+            if int(existing_workout.get("duration_minutes") or 0) <= 0 and int(document.get("duration_minutes") or 0) > 0:
+                metadata_patch["duration_minutes"] = int(document.get("duration_minutes") or 0)
+            if not str(existing_workout.get("thumbnail") or "").strip() and str(document.get("thumbnail") or "").strip():
+                metadata_patch["thumbnail"] = str(document.get("thumbnail") or "").strip()
+            await workouts_collection.update_one(
+                {"_id": existing_workout["_id"]},
+                {"$set": {key: value for key, value in metadata_patch.items() if value is not None}},
+            )
             continue
         if options.import_limit and summary.synced_count >= options.import_limit:
             break
