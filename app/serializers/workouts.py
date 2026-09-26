@@ -49,7 +49,7 @@ def serialize_public_workout_record(record: dict) -> dict:
         "equipment": str(record.get("equipment") or ""),
         "level": str(record.get("level") or ""),
         "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
-        "thumbnail": str(record.get("thumbnail") or ""),
+        "thumbnail": str(record.get("thumbnail") or record.get("thumbnail_url") or ""),
         "movements": _serialize_workout_movements(record.get("movements") or []),
         "dateAdded": created_at,
     }
