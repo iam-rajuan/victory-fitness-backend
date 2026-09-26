@@ -262,7 +262,12 @@ async def create_workout_log(
         market=payload.market,
         details={"workout_id": payload.workout_id},
     )
-    return {"id": str(result.inserted_id), "status": payload.status}
+    return {
+        "id": str(result.inserted_id),
+        "status": payload.status,
+        "workout_id": payload.workout_id,
+        "title": resolved_title,
+    }
 
 
 @router.get("/workout-logs")
