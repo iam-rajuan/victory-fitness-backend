@@ -93,7 +93,7 @@ async def admin_list_challenges(
 
         filter_doc,
 
-        sort=[("duration_days", 1), ("created_at", -1), ("_id", -1)],
+        sort=[("updated_at", -1), ("created_at", -1), ("_id", -1)],
 
     ).to_list(length=None)
 
