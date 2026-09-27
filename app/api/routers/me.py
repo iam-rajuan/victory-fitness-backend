@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
+from pydantic import BaseModel, Field
 
 from ...core.legacy import *
 from ...models import BodyMetricsResponse, ConfirmWeightRequest
@@ -10,6 +11,22 @@ from ...nutrition_ai import calculate_protein_target, _parse_weight_kg
 from ...utils.country import derive_country_code
 
 router = APIRouter()
+
+
+class CoachSessionBookingRequest(BaseModel):
+    day: str = Field(min_length=2, max_length=80)
+    time: str = Field(min_length=2, max_length=80)
+    mode: str = Field(pattern=r"^(Zoom|Phone)$")
+    note: str | None = Field(default=None, max_length=160)
+
+
+class CoachSessionBookingResponse(BaseModel):
+    id: str
+    day: str
+    time: str
+    mode: str
+    status: str = "requested"
+    requested_at: datetime
 
 
 def _can_edit_gold_habit_fields(user: dict) -> bool:
@@ -113,6 +130,37 @@ async def get_my_habit_consistency(user: dict = Depends(_require_access_user)) -
         "current_score": float(latest.get("score") or 0),
         "weeks": weeks,
     }
+
+
+@router.post("/me/coach-session-bookings", response_model=CoachSessionBookingResponse)
+async def create_my_coach_session_booking(
+    payload: CoachSessionBookingRequest,
+    user: dict = Depends(_require_access_user),
+) -> CoachSessionBookingResponse:
+    now = datetime.now(timezone.utc)
+    booking = {
+        "id": str(ObjectId()),
+        "day": payload.day.strip(),
+        "time": payload.time.strip(),
+        "mode": payload.mode,
+        "note": (payload.note or "").strip(),
+        "status": "requested",
+        "requested_at": now,
+    }
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$push": {"coach_session_bookings": booking},
+            "$set": {"updated_at": now},
+        },
+    )
+    await _record_analytics_event(
+        "coach_session_requested",
+        user_id=str(user.get("_id") or ""),
+        details={"booking_id": booking["id"], "mode": booking["mode"]},
+    )
+    return CoachSessionBookingResponse(**booking)
+
 
 @router.get("/me/onboarding", response_model=OnboardingStateResponse)
 async def get_me_onboarding(user: dict = Depends(_require_access_user)) -> OnboardingStateResponse:
