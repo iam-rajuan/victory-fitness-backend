@@ -387,6 +387,12 @@ from ..models import (
 
     NutritionMealCompletionUpdateRequest,
 
+    NutritionMealLogCreateRequest,
+
+    NutritionMealLogListResponse,
+
+    NutritionMealLogResponse,
+
     NutritionPlanJobResponse,
 
     NutritionPlanRequest,
@@ -509,6 +515,7 @@ from ..database import (
     journal_entries_collection,
 
     meal_analysis_entries_collection,
+    nutrition_logs_collection,
 
     nutrition_plans_collection,
 

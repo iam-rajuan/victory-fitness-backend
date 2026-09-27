@@ -1434,6 +1434,34 @@ class NutritionMealCompletionUpdateRequest(BaseModel):
     completed: bool = True
 
 
+class NutritionMealLogCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=140)
+    protein: int = Field(default=0, ge=0, le=300)
+    carbs: int = Field(default=0, ge=0, le=500)
+    fat: int = Field(default=0, ge=0, le=200)
+    calories: int = Field(default=0, ge=0, le=3000)
+    source: str = Field(default="manual", max_length=80)
+    source_analysis_id: str | None = Field(default=None, max_length=80)
+    logged_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+
+class NutritionMealLogResponse(BaseModel):
+    id: str
+    name: str
+    protein: int = 0
+    carbs: int = 0
+    fat: int = 0
+    calories: int = 0
+    source: str = "manual"
+    source_analysis_id: str = ""
+    logged_date: str
+    created_at: datetime
+
+
+class NutritionMealLogListResponse(BaseModel):
+    logs: list[NutritionMealLogResponse] = Field(default_factory=list)
+
+
 class StrengthWorkoutPlanProgressUpdateRequest(BaseModel):
     day: str = Field(min_length=1, max_length=40)
     section_id: str | None = Field(default=None, max_length=120)

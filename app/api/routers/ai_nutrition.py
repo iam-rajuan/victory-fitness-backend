@@ -5,6 +5,79 @@ from ...nutrition_ai import _build_fallback_nutrition_plan, _normalize_nutrition
 
 router = APIRouter()
 
+
+def _today_log_date() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _serialize_nutrition_meal_log(record: dict) -> NutritionMealLogResponse:
+    return NutritionMealLogResponse(
+        id=str(record.get("_id") or ""),
+        name=str(record.get("name") or "Logged meal"),
+        protein=max(0, int(record.get("protein") or 0)),
+        carbs=max(0, int(record.get("carbs") or 0)),
+        fat=max(0, int(record.get("fat") or 0)),
+        calories=max(0, int(record.get("calories") or 0)),
+        source=str(record.get("source") or "manual"),
+        source_analysis_id=str(record.get("source_analysis_id") or ""),
+        logged_date=str(record.get("logged_date") or _today_log_date()),
+        created_at=record.get("created_at") or datetime.now(timezone.utc),
+    )
+
+
+@router.get("/ai/nutrition/meal-logs", response_model=NutritionMealLogListResponse)
+async def list_nutrition_meal_logs(
+    date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    user: dict = Depends(_require_meal_plan_access_user),
+) -> NutritionMealLogListResponse:
+    logged_date = str(date or _today_log_date())
+    records = await nutrition_logs_collection.find(
+        {"user_id": str(user["_id"]), "logged_date": logged_date},
+        sort=[("created_at", 1), ("_id", 1)],
+    ).to_list(length=100)
+    return NutritionMealLogListResponse(logs=[_serialize_nutrition_meal_log(record) for record in records])
+
+
+@router.post("/ai/nutrition/meal-logs", response_model=NutritionMealLogResponse, status_code=status.HTTP_201_CREATED)
+async def create_nutrition_meal_log(
+    payload: NutritionMealLogCreateRequest,
+    user: dict = Depends(_require_meal_plan_access_user),
+) -> NutritionMealLogResponse:
+    now = datetime.now(timezone.utc)
+    document = {
+        "_id": ObjectId(),
+        "user_id": str(user["_id"]),
+        "name": payload.name.strip(),
+        "protein": payload.protein,
+        "carbs": payload.carbs,
+        "fat": payload.fat,
+        "calories": payload.calories,
+        "source": str(payload.source or "manual").strip() or "manual",
+        "source_analysis_id": str(payload.source_analysis_id or "").strip(),
+        "logged_date": payload.logged_date or now.date().isoformat(),
+        "created_at": now,
+        "updated_at": now,
+    }
+    await nutrition_logs_collection.insert_one(document)
+    try:
+        await _record_trial_engagement(user, "meal_logged")
+    except Exception:
+        pass
+    return _serialize_nutrition_meal_log(document)
+
+
+@router.delete("/ai/nutrition/meal-logs/{log_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_nutrition_meal_log(
+    log_id: str,
+    user: dict = Depends(_require_meal_plan_access_user),
+) -> Response:
+    if not ObjectId.is_valid(log_id):
+        raise HTTPException(status_code=404, detail="Meal log not found")
+    result = await nutrition_logs_collection.delete_one({"_id": ObjectId(log_id), "user_id": str(user["_id"])})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Meal log not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 @router.post("/ai/nutrition/plan", response_model=NutritionPlanSaveResponse)
 
 async def nutrition_plan(
