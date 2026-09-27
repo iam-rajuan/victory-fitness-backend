@@ -6212,6 +6212,10 @@ def _get_direct_upload_target(upload_type: str) -> tuple[str, dict[str, str]]:
 
         return "community-videos", allowed_types
 
+    if normalized_type == "MASTERCLASS_VIDEO":
+
+        return "masterclass-videos", allowed_types
+
     raise ValueError("Unsupported upload type")
 
 def _delete_image_from_s3(image_url: str | None) -> None:
@@ -7288,9 +7292,28 @@ def _serialize_app_subscription_plan_item(item: dict, now: datetime | None = Non
 
     }
 
+def _coerce_admin_masterclass_int(value: object, default: int = 0) -> int:
+
+    if isinstance(value, bool):
+
+        return int(value)
+
+    if isinstance(value, (int, float)):
+
+        return int(value)
+
+    match = re.search(r"-?\d+", str(value or ""))
+
+    return int(match.group(0)) if match else default
+
+
 def _serialize_admin_masterclass_item(item: dict) -> dict:
 
     thumbnail_url = str(item.get("thumbnailUrl") or item.get("thumbnail") or "").strip()
+    raw_status = str(item.get("status") or item.get("visibility") or "").strip()
+    status_value = raw_status.upper()
+    if status_value not in {"LIVE", "DRAFT"}:
+        status_value = "LIVE" if str(item.get("videoUrl") or "").strip() else "DRAFT"
 
     return {
 
@@ -7313,6 +7336,24 @@ def _serialize_admin_masterclass_item(item: dict) -> dict:
         "educationalContent": str(item.get("educationalContent") or "").strip(),
 
         "thumbnailUrl": thumbnail_url,
+
+        "status": "Live" if status_value == "LIVE" else "Draft",
+
+        "equipment": str(item.get("equipment") or "").strip(),
+
+        "level": str(item.get("level") or "").strip(),
+
+        "tierAccess": str(item.get("tierAccess") or item.get("tier_access") or "Gold and up").strip(),
+
+        "coachNote": str(item.get("coachNote") or item.get("coach_note") or item.get("description") or "").strip(),
+
+        "movements": _serialize_workout_movements(item.get("movements") or []),
+
+        "watchCount": _coerce_admin_masterclass_int(item.get("watchCount") or item.get("viewsCount") or item.get("watched") or 0),
+
+        "finishRatePct": max(0, min(_coerce_admin_masterclass_int(item.get("finishRatePct") or item.get("finishRate") or 0), 100)),
+
+        "retentionLiftPoints": max(-100, min(_coerce_admin_masterclass_int(item.get("retentionLiftPoints") or item.get("retentionLift") or 0), 100)),
 
     }
 

@@ -29,6 +29,7 @@ async def admin_create_masterclass(
     items = [_serialize_admin_masterclass_item(item) for item in await _get_dashboard_masterclass_items()]
 
     payload_data = payload.model_dump()
+    payload_data["movements"] = _normalize_workout_movements_for_storage(payload.movements)
 
     try:
 
@@ -129,6 +130,7 @@ async def admin_update_masterclass(
     updated_masterclass: dict | None = None
 
     payload_data = payload.model_dump()
+    payload_data["movements"] = _normalize_workout_movements_for_storage(payload.movements)
 
     try:
 

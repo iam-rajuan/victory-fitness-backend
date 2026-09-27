@@ -1662,6 +1662,15 @@ class AdminMasterclassItem(BaseModel):
     audioUrl: str = ""
     educationalContent: str = ""
     thumbnailUrl: str = ""
+    status: str = "Live"
+    equipment: str = ""
+    level: str = ""
+    tierAccess: str = "Gold and up"
+    coachNote: str = ""
+    movements: list[dict[str, Any]] = Field(default_factory=list)
+    watchCount: int = 0
+    finishRatePct: int = 0
+    retentionLiftPoints: int = 0
 
 
 class AdminMasterclassListResponse(BaseModel):
@@ -1685,6 +1694,15 @@ class AdminMasterclassRequest(BaseModel):
     clear_audio: bool = False
     educationalContent: str = Field(default="", max_length=10000)
     thumbnailUrl: str = Field(default="", max_length=20000000)
+    status: str = Field(default="Draft", pattern=r"^(Live|Draft|LIVE|DRAFT)$")
+    equipment: str = Field(default="", max_length=80)
+    level: str = Field(default="", max_length=80)
+    tierAccess: str = Field(default="Gold and up", max_length=80)
+    coachNote: str = Field(default="", max_length=1000)
+    movements: list[dict[str, Any]] = Field(default_factory=list)
+    watchCount: int = Field(default=0, ge=0)
+    finishRatePct: int = Field(default=0, ge=0, le=100)
+    retentionLiftPoints: int = Field(default=0, ge=-100, le=100)
 
 
 class AdminUserListItem(BaseModel):
@@ -2097,7 +2115,7 @@ class AdminWorkoutRequest(BaseModel):
 
 
 class AdminDirectUploadRequest(BaseModel):
-    uploadType: str = Field(pattern=r"^(WORKOUT_VIDEO|COMMUNITY_VIDEO)$")
+    uploadType: str = Field(pattern=r"^(WORKOUT_VIDEO|COMMUNITY_VIDEO|MASTERCLASS_VIDEO)$")
     contentType: str = Field(min_length=1, max_length=120)
     fileName: str | None = Field(default=None, max_length=255)
 
