@@ -29,6 +29,46 @@ class CoachSessionBookingResponse(BaseModel):
     requested_at: datetime
 
 
+class HydrationReminderState(BaseModel):
+    enabled: bool = False
+    mode: str = Field(default="Vibrate", pattern=r"^(Vibrate|Tone)$")
+
+
+class HydrationStateResponse(BaseModel):
+    date: str
+    water_ml: int = Field(default=0, ge=0, le=5000)
+    target_liters: float = Field(default=2.5, ge=0.5, le=8)
+    reminder: HydrationReminderState = Field(default_factory=HydrationReminderState)
+
+
+class HydrationUpdateRequest(BaseModel):
+    water_ml: int | None = Field(default=None, ge=0, le=5000)
+    target_liters: float | None = Field(default=None, ge=0.5, le=8)
+    reminder_enabled: bool | None = None
+    reminder_mode: str | None = Field(default=None, pattern=r"^(Vibrate|Tone)$")
+
+
+def _today_key() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def _serialize_hydration_state(user: dict, date_key: str | None = None) -> HydrationStateResponse:
+    date_key = date_key or _today_key()
+    hydration = dict(user.get("hydration") or {})
+    daily = dict(hydration.get("daily") or {})
+    today_state = dict(daily.get(date_key) or {})
+    reminder = dict(hydration.get("reminder") or {})
+    return HydrationStateResponse(
+        date=date_key,
+        water_ml=int(today_state.get("water_ml") or 0),
+        target_liters=float(today_state.get("target_liters") or 2.5),
+        reminder=HydrationReminderState(
+            enabled=bool(reminder.get("enabled") or False),
+            mode=str(reminder.get("mode") or "Vibrate"),
+        ),
+    )
+
+
 def _can_edit_gold_habit_fields(user: dict) -> bool:
     if not user.get("onboarding_completed", False):
         return True
@@ -57,6 +97,46 @@ def _validate_minimum_supported_age(age_value: str | None) -> None:
 async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
 
     return MeResponse(**(await _serialize_me_record(user)))
+
+
+@router.get("/me/hydration", response_model=HydrationStateResponse)
+async def get_my_hydration(user: dict = Depends(_require_access_user)) -> HydrationStateResponse:
+    return _serialize_hydration_state(user)
+
+
+@router.patch("/me/hydration", response_model=HydrationStateResponse)
+async def update_my_hydration(
+    payload: HydrationUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> HydrationStateResponse:
+    date_key = _today_key()
+    existing = _serialize_hydration_state(user, date_key)
+    next_water_ml = existing.water_ml if payload.water_ml is None else payload.water_ml
+    next_target_liters = existing.target_liters if payload.target_liters is None else payload.target_liters
+    next_reminder_enabled = existing.reminder.enabled if payload.reminder_enabled is None else payload.reminder_enabled
+    next_reminder_mode = existing.reminder.mode if payload.reminder_mode is None else payload.reminder_mode
+    now = datetime.now(timezone.utc)
+
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {
+            "$set": {
+                f"hydration.daily.{date_key}": {
+                    "water_ml": int(next_water_ml),
+                    "target_liters": float(next_target_liters),
+                    "updated_at": now,
+                },
+                "hydration.reminder": {
+                    "enabled": bool(next_reminder_enabled),
+                    "mode": str(next_reminder_mode),
+                    "updated_at": now,
+                },
+                "updated_at": now,
+            }
+        },
+    )
+    updated_user = await users_collection.find_one({"_id": user["_id"]}) or user
+    return _serialize_hydration_state(updated_user, date_key)
 
 
 @router.get("/me/habit-consistency")
