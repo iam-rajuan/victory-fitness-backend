@@ -169,6 +169,10 @@ class MeResponse(BaseModel):
     marketing_consent: bool = False
     onboarding_completed: bool = False
     preferred_language: str = ""
+    notification_push_enabled: bool = True
+    notification_whatsapp_enabled: bool = False
+    notification_email_enabled: bool = False
+    notification_nudge_time: str = "20:30"
     country_code: str | None = None
     motivation_statement: str | None = None
     identity_statement: str | None = None
@@ -186,6 +190,10 @@ class UpdateMeRequest(BaseModel):
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
     contact_number: str | None = Field(default=None, max_length=30)
     preferred_language: str | None = Field(default=None, max_length=10)
+    notification_push_enabled: bool | None = None
+    notification_whatsapp_enabled: bool | None = None
+    notification_email_enabled: bool | None = None
+    notification_nudge_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
     profileImage: str | None = Field(default=None, max_length=500)
     onboarding_completed: bool | None = None
     motivation_statement: str | None = Field(default=None, max_length=240)

@@ -9827,6 +9827,10 @@ async def _serialize_me_record(record: dict) -> dict:
 
         "onboarding_completed": bool(record.get("onboarding_completed", False)),
         "preferred_language": str(record.get("preferred_language") or (record.get("onboarding_state") or {}).get("language") or "").strip(),
+        "notification_push_enabled": bool(record.get("notification_push_enabled", True)),
+        "notification_whatsapp_enabled": bool(record.get("notification_whatsapp_enabled", False)),
+        "notification_email_enabled": bool(record.get("notification_email_enabled", False)),
+        "notification_nudge_time": str(record.get("notification_nudge_time") or "20:30").strip() or "20:30",
 
         "points": stats["points"],
 

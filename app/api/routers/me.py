@@ -185,6 +185,18 @@ async def update_me(
         update_doc["preferred_language"] = preferred_language
         update_doc["onboarding_state.language"] = preferred_language
 
+    if payload.notification_push_enabled is not None:
+        update_doc["notification_push_enabled"] = bool(payload.notification_push_enabled)
+
+    if payload.notification_whatsapp_enabled is not None:
+        update_doc["notification_whatsapp_enabled"] = bool(payload.notification_whatsapp_enabled)
+
+    if payload.notification_email_enabled is not None:
+        update_doc["notification_email_enabled"] = bool(payload.notification_email_enabled)
+
+    if payload.notification_nudge_time is not None:
+        update_doc["notification_nudge_time"] = payload.notification_nudge_time.strip() or "20:30"
+
     if payload.motivation_statement is not None:
 
         motivation_statement = payload.motivation_statement.strip()
