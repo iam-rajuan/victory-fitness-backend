@@ -1443,6 +1443,11 @@ class NutritionMealLogCreateRequest(BaseModel):
     source: str = Field(default="manual", max_length=80)
     source_analysis_id: str | None = Field(default=None, max_length=80)
     logged_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    completed: bool = False
+
+
+class NutritionMealLogUpdateRequest(BaseModel):
+    completed: bool
 
 
 class NutritionMealLogResponse(BaseModel):
@@ -1455,6 +1460,7 @@ class NutritionMealLogResponse(BaseModel):
     source: str = "manual"
     source_analysis_id: str = ""
     logged_date: str
+    completed: bool = False
     created_at: datetime
 
 

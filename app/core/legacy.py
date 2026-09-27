@@ -393,6 +393,8 @@ from ..models import (
 
     NutritionMealLogResponse,
 
+    NutritionMealLogUpdateRequest,
+
     NutritionPlanJobResponse,
 
     NutritionPlanRequest,

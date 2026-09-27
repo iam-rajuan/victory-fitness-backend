@@ -21,6 +21,7 @@ def _serialize_nutrition_meal_log(record: dict) -> NutritionMealLogResponse:
         source=str(record.get("source") or "manual"),
         source_analysis_id=str(record.get("source_analysis_id") or ""),
         logged_date=str(record.get("logged_date") or _today_log_date()),
+        completed=bool(record["completed"]) if "completed" in record else True,
         created_at=record.get("created_at") or datetime.now(timezone.utc),
     )
 
@@ -55,6 +56,7 @@ async def create_nutrition_meal_log(
         "source": str(payload.source or "manual").strip() or "manual",
         "source_analysis_id": str(payload.source_analysis_id or "").strip(),
         "logged_date": payload.logged_date or now.date().isoformat(),
+        "completed": payload.completed,
         "created_at": now,
         "updated_at": now,
     }
@@ -64,6 +66,24 @@ async def create_nutrition_meal_log(
     except Exception:
         pass
     return _serialize_nutrition_meal_log(document)
+
+
+@router.patch("/ai/nutrition/meal-logs/{log_id}", response_model=NutritionMealLogResponse)
+async def update_nutrition_meal_log(
+    log_id: str,
+    payload: NutritionMealLogUpdateRequest,
+    user: dict = Depends(_require_meal_plan_access_user),
+) -> NutritionMealLogResponse:
+    if not ObjectId.is_valid(log_id):
+        raise HTTPException(status_code=404, detail="Meal log not found")
+    updated = await nutrition_logs_collection.find_one_and_update(
+        {"_id": ObjectId(log_id), "user_id": str(user["_id"])},
+        {"$set": {"completed": payload.completed, "updated_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Meal log not found")
+    return _serialize_nutrition_meal_log(updated)
 
 
 @router.delete("/ai/nutrition/meal-logs/{log_id}", status_code=status.HTTP_204_NO_CONTENT)
