@@ -1430,7 +1430,7 @@ class NutritionPlanJobResponse(BaseModel):
 
 class NutritionMealCompletionUpdateRequest(BaseModel):
     day: str = Field(pattern=r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$")
-    meal_key: str = Field(pattern=r"^(breakfast|lunch|dinner)$")
+    meal_key: str = Field(pattern=r"^(breakfast|lunch|dinner|pre_workout|post_workout)$")
     completed: bool = True
 
 
