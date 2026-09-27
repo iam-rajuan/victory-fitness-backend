@@ -1366,6 +1366,9 @@ class NutritionPlanRequest(BaseModel):
     weight: str | None = None
     health_conditions: list[str] = Field(default_factory=list)
     workout_time: str | None = None
+    cooking_time_weekday: str | None = None
+    people_cooking_for: str | None = None
+    weekly_food_budget: str | None = None
     regenerate: bool = False
     force_refresh: bool = False
 

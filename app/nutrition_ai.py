@@ -414,6 +414,9 @@ def build_nutrition_plan_signature(payload: dict) -> str:
         "gender": _normalize_text(payload.get("gender"), ""),
         "height": _normalize_text(payload.get("height"), ""),
         "weight": _normalize_text(payload.get("weight"), ""),
+        "cooking_time_weekday": _normalize_text(payload.get("cooking_time_weekday"), ""),
+        "people_cooking_for": _normalize_text(payload.get("people_cooking_for"), ""),
+        "weekly_food_budget": _normalize_text(payload.get("weekly_food_budget"), ""),
         "language": _normalize_text(payload.get("language") or payload.get("preferred_language"), "en").lower(),
         "health_conditions": sorted(
             {
@@ -504,6 +507,23 @@ def _protein_target_instruction(payload: dict) -> str:
         f"Distribute across all 5 meals: ~{int(target_protein * 0.20)}g breakfast, ~{int(target_protein * 0.25)}g lunch, ~{int(target_protein * 0.15)}g pre_workout, ~{int(target_protein * 0.25)}g post_workout, ~{int(target_protein * 0.15)}g dinner. "
         "Strict Macro Math: For each meal, kcal must equal (p * 4) + (c * 4) + (f * 9) within ±5 kcal. All meals must sum accurately to the daily calorie and protein totals.\n"
     )
+
+
+def _meal_plan_practical_constraints_instruction(payload: dict) -> str:
+    cooking_time = str(payload.get("cooking_time_weekday") or "").strip()
+    people = str(payload.get("people_cooking_for") or "").strip()
+    budget = str(payload.get("weekly_food_budget") or "").strip()
+    instructions = ["PRACTICAL WEEKLY PLANNING CONSTRAINTS:"]
+    if cooking_time:
+        instructions.append(f"- Weekday cooking/prep time target: {cooking_time}. Keep weekday meals at or below this where possible.")
+    if people:
+        instructions.append(f"- Scale recipes and shopping quantities for {people} people/portions.")
+    if budget:
+        instructions.append(f"- Weekly food budget: {budget}. Prefer cost-aware ingredients and reuse staples across meals.")
+    if len(instructions) == 1:
+        return ""
+    instructions.append("- Reflect these constraints in the summary, meal choices, preparation steps, and shopping list quantities.")
+    return "\n".join(instructions) + "\n"
 
 
 def _build_fallback_nutrition_plan(payload: dict) -> dict:
@@ -1196,11 +1216,13 @@ def _build_nutrition_plan_prompt(payload: dict) -> str:
     fav_inst = _favorite_meals_instruction(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
+    practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         "Create a 7-day nutrition plan in JSON with this exact top-level structure:\n"
         f"{fav_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
+        f"{practical_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
@@ -1220,11 +1242,13 @@ def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
     fav_inst = _favorite_meals_instruction(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
+    practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         "Create only Monday for a 7-day nutrition plan in JSON with this exact structure:\n"
         f"{fav_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
+        f"{practical_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
@@ -1242,11 +1266,13 @@ def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_pl
     fav_inst = _favorite_meals_instruction(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
+    practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         "Complete a 7-day nutrition plan in JSON with this exact top-level structure:\n"
         f"{fav_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
+        f"{practical_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
@@ -1267,11 +1293,13 @@ def _build_progressive_nutrition_plan_day_prompt(payload: dict, day_name: str, p
     fav_inst = _favorite_meals_instruction(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
+    practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         f"Create only {day_name} for a 7-day nutrition plan in JSON with this exact structure:\n"
         f"{fav_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
+        f"{practical_inst}"
         "{"
         '"summary": string, '
         '"goal_label": string, '
