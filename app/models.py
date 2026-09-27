@@ -1705,6 +1705,15 @@ class AdminUserListItem(BaseModel):
     createdAt: datetime
     updatedAt: datetime
     profileImage: str = ""
+    lastActiveAt: datetime | None = None
+    lastActiveLabel: str = "Never"
+    isPaying: bool = False
+    isTrial: bool = False
+    isBetaTester: bool = False
+    isAtRisk: bool = False
+    neverActive: bool = False
+    trialDaysRemaining: int = 0
+    statusLabel: str = "Healthy"
 
 
 class AdminUserDetailResponse(AdminUserListItem):
@@ -1832,6 +1841,11 @@ class AdminUserSummaryResponse(BaseModel):
     totalUsers: int = 0
     activeUsers: int = 0
     pendingUsers: int = 0
+    payingUsers: int = 0
+    active7DaysUsers: int = 0
+    neverActiveUsers: int = 0
+    countryCount: int = 0
+    registeredThisWeek: int = 0
     userChart: list[AdminUserChartPoint] = Field(default_factory=list)
 
 
@@ -1998,6 +2012,16 @@ class AdminUserUpdateRequest(BaseModel):
     role: str | None = Field(default=None, min_length=1, max_length=50)
     status: str | None = Field(default=None, pattern=r"^(ACTIVE|INACTIVE|PENDING)$")
     isVerified: bool | None = None
+    contactNumber: str | None = Field(default=None, max_length=40)
+    country: str | None = Field(default=None, max_length=80)
+    profileImage: str | None = Field(default=None, max_length=500)
+
+
+class AdminUserCreateRequest(BaseModel):
+    fullName: str = Field(min_length=2, max_length=100)
+    email: EmailStr
+    role: str = Field(default="user", min_length=1, max_length=50)
+    status: str = Field(default="PENDING", pattern=r"^(ACTIVE|INACTIVE|PENDING)$")
     contactNumber: str | None = Field(default=None, max_length=40)
     country: str | None = Field(default=None, max_length=80)
     profileImage: str | None = Field(default=None, max_length=500)

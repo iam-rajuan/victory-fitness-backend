@@ -1,9 +1,17 @@
+import secrets
+import string
+
 from fastapi import APIRouter
 
 from ...core.legacy import *
 from ...utils.country import derive_country_code
 
 router = APIRouter()
+
+
+def _generate_temporary_password(length: int = 14) -> str:
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 @router.get("/admin/users/summary", response_model=AdminUserSummaryResponse)
 
@@ -32,6 +40,51 @@ async def admin_list_users(
 ) -> AdminUserListResponse:
 
     return await _build_admin_user_list_response(page=page, limit=limit, query=query)
+
+
+@router.post("/admin/users", response_model=AdminUserDetailResponse, status_code=201)
+async def admin_create_user(
+    payload: AdminUserCreateRequest,
+    _: dict = Depends(_require_admin_user),
+) -> AdminUserDetailResponse:
+    new_email = payload.email.lower().strip()
+    existing_user = await users_collection.find_one({"email": new_email})
+    if existing_user:
+        raise HTTPException(status_code=409, detail="Email already exists")
+
+    normalized_role = payload.role.strip().lower()
+    if normalized_role not in {"user", "trainer", "moderator"}:
+        raise HTTPException(status_code=400, detail="Invalid role")
+
+    normalized_status = payload.status.upper()
+    now = datetime.now(timezone.utc)
+    temporary_password = _generate_temporary_password()
+    country = (payload.country or "").strip()
+    derived_country_code = derive_country_code(country) if country else None
+    document = {
+        "name": payload.fullName.strip(),
+        "email": new_email,
+        "password_hash": hash_password(temporary_password),
+        "role": normalized_role,
+        "is_admin": False,
+        "status": normalized_status,
+        "is_verified": normalized_status == "ACTIVE",
+        "contact_number": (payload.contactNumber or "").strip(),
+        "country": country,
+        "country_code": derived_country_code.upper() if derived_country_code else None,
+        "profile_image": (payload.profileImage or "").strip(),
+        "subscription_tier": "NONE",
+        "subscription_status": "NONE",
+        "admin_invited": True,
+        "must_reset_password": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = await users_collection.insert_one(document)
+    record = await users_collection.find_one({"_id": result.inserted_id})
+    if not record:
+        raise HTTPException(status_code=500, detail="User was created but could not be loaded")
+    return AdminUserDetailResponse(**_serialize_admin_user_record(record))
 
 @router.get("/admin/users/{user_id}", response_model=AdminUserDetailResponse)
 

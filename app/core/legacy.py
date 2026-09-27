@@ -297,6 +297,8 @@ from ..models import (
 
     AdminUserSummaryResponse,
 
+    AdminUserCreateRequest,
+
     AdminUserUpdateRequest,
 
     AdminWorkoutItem,
@@ -7314,10 +7316,124 @@ def _serialize_admin_masterclass_item(item: dict) -> dict:
 
     }
 
+ADMIN_USER_PAID_TIERS = {"SILVER", "GOLD", "GOLD_BETA", "PLATINUM", "INNER_CIRCLE"}
+
+
+def _admin_user_is_paying(record: dict) -> bool:
+    summary = _build_subscription_summary(record)
+    tier = _normalize_subscription_tier(summary.get("tier") or record.get("subscription_tier"))
+    status = str(summary.get("status") or record.get("subscription_status") or "").upper()
+    return tier in ADMIN_USER_PAID_TIERS and (
+        bool(summary.get("is_purchased"))
+        or status in {"ACTIVE", "TRIALING"}
+        or bool(record.get("subscription_confirmed_at"))
+    )
+
+
+def _admin_activity_dt(value: Any) -> datetime | None:
+    return _coerce_utc_datetime(value)
+
+
+def _admin_user_last_activity_from_record(record: dict) -> datetime | None:
+    candidates = [
+        record.get("last_active_at"),
+        record.get("last_login_at"),
+        record.get("last_seen_at"),
+        record.get("last_opened_at"),
+        record.get("last_feature_opened_at"),
+    ]
+    parsed = [_admin_activity_dt(value) for value in candidates]
+    parsed = [value for value in parsed if value is not None]
+    return max(parsed) if parsed else None
+
+
+async def _admin_activity_map_for_user_ids(user_ids: list[str]) -> dict[str, datetime]:
+    ids = [str(user_id) for user_id in user_ids if str(user_id or "").strip()]
+    if not ids:
+        return {}
+
+    activity: dict[str, datetime] = {}
+
+    async def merge_collection(collection, date_fields: list[str], query_extra: dict | None = None) -> None:
+        query: dict[str, Any] = {"user_id": {"$in": ids}}
+        if query_extra:
+            query.update(query_extra)
+        projection = {"user_id": 1, **{field: 1 for field in date_fields}}
+        try:
+            rows = await collection.find(query, projection=projection).to_list(length=None)
+        except Exception:
+            return
+        for row in rows:
+            user_id = str(row.get("user_id") or "")
+            dates = [_admin_activity_dt(row.get(field)) for field in date_fields]
+            dates = [value for value in dates if value is not None]
+            if not user_id or not dates:
+                continue
+            latest = max(dates)
+            if user_id not in activity or latest > activity[user_id]:
+                activity[user_id] = latest
+
+    await asyncio.gather(
+        merge_collection(analytics_events_collection, ["created_at"]),
+        merge_collection(workout_logs_collection, ["completed_at", "started_at", "created_at"]),
+        merge_collection(community_posts_collection, ["updated_at", "created_at"]),
+        merge_collection(community_comments_collection, ["updated_at", "created_at"]),
+        merge_collection(nutrition_logs_collection, ["updated_at", "created_at"]),
+        merge_collection(nutrition_plans_collection, ["updated_at", "created_at"]),
+        merge_collection(coach_victor_threads_collection, ["last_message_at", "updated_at", "created_at"]),
+        merge_collection(journal_entries_collection, ["updated_at", "created_at"]),
+        merge_collection(challenge_memberships_collection, ["completed_at", "updated_at", "joined_at", "created_at"]),
+    )
+    return activity
+
+
+def _format_admin_relative_activity(dt: datetime | None, now: datetime | None = None) -> str:
+    if not dt:
+        return "Never"
+    now = now or datetime.now(timezone.utc)
+    dt = _as_utc(dt)
+    delta = now - dt
+    if delta.total_seconds() < 0:
+        return "Today"
+    if delta.days <= 0:
+        hours = int(delta.total_seconds() // 3600)
+        if hours <= 0:
+            return "Just now"
+        return f"{hours} hour{'s' if hours != 1 else ''} ago"
+    if delta.days == 1:
+        return "Yesterday"
+    if delta.days < 7:
+        return f"{delta.days} days ago"
+    if delta.days < 30:
+        weeks = max(1, delta.days // 7)
+        return f"{weeks} week{'s' if weeks != 1 else ''} ago"
+    return dt.strftime("%d %b %Y")
+
+
+def _admin_user_status_label(record: dict, last_active_at: datetime | None, now: datetime | None = None) -> tuple[str, str, bool, bool]:
+    now = now or datetime.now(timezone.utc)
+    trial = _trial_summary(record)
+    is_beta = bool(trial.get("is_beta_tester"))
+    days_remaining = int(trial.get("days_remaining") or 0)
+    never_active = last_active_at is None
+    if never_active:
+        return ("Never activated", "bad", True, False)
+    inactive_days = (now - _as_utc(last_active_at)).days
+    if is_beta and 0 < days_remaining <= 2:
+        return (f"Ends in {days_remaining} day{'s' if days_remaining != 1 else ''}", "warn", False, True)
+    if inactive_days >= 14:
+        return ("At risk", "bad", False, True)
+    if inactive_days >= 5:
+        return ("Going quiet", "warn", False, True)
+    return ("Healthy", "good", False, False)
+
+
 async def _build_admin_user_summary_response(year: int | None = None) -> AdminUserSummaryResponse:
     selected_year = year or datetime.now(timezone.utc).year
     year_start = datetime(selected_year, 1, 1, tzinfo=timezone.utc)
     next_year_start = datetime(selected_year + 1, 1, 1, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    week_start = now - timedelta(days=7)
     base_filter = {"is_admin": {"$ne": True}}
     active_filter = {
         "$or": [
@@ -7325,14 +7441,58 @@ async def _build_admin_user_summary_response(year: int | None = None) -> AdminUs
             {"status": {"$regex": "^active$", "$options": "i"}},
         ]
     }
-    total_users, active_users, yearly_users = await asyncio.gather(
+    total_users, active_users, yearly_users, all_users = await asyncio.gather(
         users_collection.count_documents(base_filter),
         users_collection.count_documents({"$and": [base_filter, active_filter]}),
         users_collection.find(
             {**base_filter, "created_at": {"$gte": year_start, "$lt": next_year_start}},
             projection={"created_at": 1, "is_verified": 1, "status": 1},
         ).to_list(length=None),
+        users_collection.find(
+            base_filter,
+            projection={
+                "_id": 1,
+                "created_at": 1,
+                "country": 1,
+                "country_code": 1,
+                "subscription_tier": 1,
+                "subscription_status": 1,
+                "subscription_confirmed_at": 1,
+                "subscription_is_purchased": 1,
+                "subscription": 1,
+                "trial_end_at": 1,
+                "beta_phase_one": 1,
+                "gold_trial": 1,
+                "last_active_at": 1,
+                "last_login_at": 1,
+                "last_seen_at": 1,
+                "last_opened_at": 1,
+                "last_feature_opened_at": 1,
+            },
+        ).to_list(length=None),
     )
+    user_ids = [str(record.get("_id")) for record in all_users]
+    activity_map = await _admin_activity_map_for_user_ids(user_ids)
+    paying_users = 0
+    active_7_days = 0
+    never_active = 0
+    countries: set[str] = set()
+    registered_this_week = 0
+    for record in all_users:
+        user_id = str(record.get("_id") or "")
+        last_activity = activity_map.get(user_id) or _admin_user_last_activity_from_record(record)
+        if _admin_user_is_paying(record):
+            paying_users += 1
+        if last_activity and last_activity >= week_start:
+            active_7_days += 1
+        if not last_activity:
+            never_active += 1
+        country_key = str(record.get("country_code") or record.get("country") or "").strip().lower()
+        if country_key:
+            countries.add(country_key)
+        created_at = _admin_activity_dt(record.get("created_at"))
+        if created_at and created_at >= week_start:
+            registered_this_week += 1
     pending_users = max(total_users - active_users, 0)
     monthly = {month: {"userCount": 0, "activeUserCount": 0} for month in month_abbr[1:]}
     for record in yearly_users:
@@ -7347,6 +7507,11 @@ async def _build_admin_user_summary_response(year: int | None = None) -> AdminUs
         totalUsers=total_users,
         activeUsers=active_users,
         pendingUsers=pending_users,
+        payingUsers=paying_users,
+        active7DaysUsers=active_7_days,
+        neverActiveUsers=never_active,
+        countryCount=len(countries),
+        registeredThisWeek=registered_this_week,
         userChart=[AdminUserChartPoint(month=month, **values) for month, values in monthly.items()],
     )
 
@@ -7356,7 +7521,7 @@ async def _build_admin_user_list_response(
     query: str | None = None,
 ) -> AdminUserListResponse:
     normalized_page = max(int(page or 1), 1)
-    normalized_limit = max(min(int(limit or 10), 100), 1)
+    normalized_limit = max(min(int(limit or 10), 500), 1)
     filter_doc: dict = {"is_admin": {"$ne": True}}
     search = (query or "").strip()
     if search:
@@ -7377,11 +7542,12 @@ async def _build_admin_user_list_response(
         .limit(normalized_limit)
         .to_list(length=normalized_limit),
     )
+    activity_map = await _admin_activity_map_for_user_ids([str(record.get("_id")) for record in records])
     return AdminUserListResponse(
         total=total,
         page=normalized_page,
         limit=normalized_limit,
-        users=[AdminUserListItem(**_serialize_admin_user_record(record)) for record in records],
+        users=[AdminUserListItem(**_serialize_admin_user_record(record, activity_map=activity_map)) for record in records],
     )
 
 def _serialize_admin_workout_record(record: dict) -> dict:
@@ -10173,7 +10339,7 @@ def _serialize_admin_profile_record(record: dict) -> dict:
 
     }
 
-def _serialize_admin_user_record(record: dict) -> dict:
+def _serialize_admin_user_record(record: dict, activity_map: dict[str, datetime] | None = None) -> dict:
 
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
 
@@ -10184,6 +10350,13 @@ def _serialize_admin_user_record(record: dict) -> dict:
     subscription_summary = _build_subscription_summary(record)
     trial_summary = _trial_summary(record)
     is_beta_tester = bool(trial_summary.get("is_beta_tester"))
+    user_id = str(record.get("_id") or "")
+    last_active_at = (activity_map or {}).get(user_id) or _admin_user_last_activity_from_record(record)
+    status_label, tone, never_active, is_at_risk = _admin_user_status_label(record, last_active_at)
+    normalized_tier = _normalize_subscription_tier(subscription_summary["tier"])
+    tier_label = "BETA" if is_beta_tester and normalized_tier in {"NONE", "GOLD_BETA"} else normalized_tier
+    if is_beta_tester and normalized_tier not in {"NONE", "GOLD_BETA"}:
+        tier_label = f"TRIAL · {normalized_tier}"
 
     return {
 
@@ -10205,11 +10378,33 @@ def _serialize_admin_user_record(record: dict) -> dict:
 
         "country_code": (str(record.get("country_code") or "").upper() or None),
 
+        "tier": tier_label,
+
         "createdAt": created_at,
 
         "updatedAt": updated_at,
 
         "profileImage": str(record.get("profile_image") or ""),
+
+        "lastActiveAt": last_active_at,
+
+        "lastActiveLabel": _format_admin_relative_activity(last_active_at),
+
+        "isPaying": _admin_user_is_paying(record),
+
+        "isTrial": bool(is_beta_tester or trial_summary.get("trial_type")),
+
+        "isBetaTester": is_beta_tester,
+
+        "isAtRisk": is_at_risk,
+
+        "neverActive": never_active,
+
+        "trialDaysRemaining": int(trial_summary["days_remaining"] or 0),
+
+        "statusLabel": status_label,
+
+        "tone": tone,
 
         "subscription_tier": subscription_summary["tier"],
 
