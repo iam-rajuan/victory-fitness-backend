@@ -1373,17 +1373,15 @@ class NutritionPlanRequest(BaseModel):
     force_refresh: bool = False
 
     @model_validator(mode="after")
-    def require_three_favorite_meals(self) -> "NutritionPlanRequest":
+    def normalize_favorite_meals(self) -> "NutritionPlanRequest":
         meals: list[str] = []
         for meal in [self.favorite_meal, *self.favorite_meals, *self.favorite_meals_json]:
             normalized = str(meal or "").strip()
             if normalized and normalized.lower() not in {item.lower() for item in meals}:
                 meals.append(normalized)
-        if len(meals) < 3:
-            raise ValueError("At least 3 favourite meals are required before meal plan generation")
         self.favorite_meals = meals[:8]
         self.favorite_meals_json = self.favorite_meals
-        self.favorite_meal = self.favorite_meals[0]
+        self.favorite_meal = self.favorite_meals[0] if self.favorite_meals else None
         return self
 
 
