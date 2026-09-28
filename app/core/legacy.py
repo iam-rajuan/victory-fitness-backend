@@ -529,6 +529,8 @@ from ..database import (
 
     support_messages_collection,
 
+    users_collection,
+
     workouts_collection,
 
     # Section 18 analytics collections
@@ -8270,12 +8272,23 @@ def _serialize_coaching_application_record(record: dict) -> CoachingApplicationR
     first_name = str(record.get("first_name") or "").strip()
 
     last_name = str(record.get("last_name") or "").strip()
+    account_name = str(record.get("applicant_user_name") or "").strip()
+    account_email = str(record.get("applicant_user_email") or "").strip()
+    applicant_country = str(record.get("applicant_user_country") or record.get("country") or "").strip()
+    applicant_country_code = str(record.get("applicant_user_country_code") or record.get("country_code") or "").strip().upper()
+    market = str(record.get("market") or applicant_country or applicant_country_code or "").strip()
 
     return CoachingApplicationResponse(
 
         id=str(record.get("_id")),
 
         user_id=str(record.get("user_id") or ""),
+        applicant_user_name=account_name,
+        applicant_user_email=account_email,
+        applicant_user_country=applicant_country,
+        applicant_user_country_code=applicant_country_code,
+        applicant_subscription_tier=str(record.get("applicant_subscription_tier") or "").strip(),
+        applicant_is_admin=bool(record.get("applicant_is_admin", False)),
 
         first_name=first_name,
 
@@ -8286,6 +8299,8 @@ def _serialize_coaching_application_record(record: dict) -> CoachingApplicationR
         email=str(record.get("email") or ""),
 
         phone_number=str(record.get("phone_number") or ""),
+        country=applicant_country,
+        market=market,
 
         goal=str(record.get("goal") or ""),
 
@@ -8323,6 +8338,8 @@ def _serialize_coaching_application_record(record: dict) -> CoachingApplicationR
             if record.get("applicant_notified_at")
             else None
         ),
+        applicant_email_status=str(record.get("applicant_email_status") or ""),
+        applicant_email_error=str(record.get("applicant_email_error") or ""),
 
         created_at=_as_utc(record.get("created_at") or datetime.now(timezone.utc)),
 

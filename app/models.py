@@ -690,11 +690,19 @@ class CoachingApplicationCreateRequest(BaseModel):
 class CoachingApplicationResponse(BaseModel):
     id: str
     user_id: str = ""
+    applicant_user_name: str = ""
+    applicant_user_email: str = ""
+    applicant_user_country: str = ""
+    applicant_user_country_code: str = ""
+    applicant_subscription_tier: str = ""
+    applicant_is_admin: bool = False
     first_name: str
     last_name: str
     full_name: str
     email: EmailStr
     phone_number: str = ""
+    country: str = ""
+    market: str = ""
     goal: str
     obstacle: str
     investment: str
@@ -709,6 +717,8 @@ class CoachingApplicationResponse(BaseModel):
     admin_verdict: str = ""
     call_slot: str = ""
     applicant_notified_at: datetime | None = None
+    applicant_email_status: str = ""
+    applicant_email_error: str = ""
     created_at: datetime
     updated_at: datetime
 

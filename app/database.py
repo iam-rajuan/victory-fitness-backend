@@ -291,6 +291,8 @@ async def ensure_indexes() -> None:
     await app_content_collection.create_index("key", unique=True)
     await coaching_applications_collection.create_index([("user_id", 1), ("created_at", -1)])
     await coaching_applications_collection.create_index([("status", 1), ("created_at", -1)])
+    await coaching_applications_collection.create_index([("applicant_user_email", 1), ("created_at", -1)])
+    await coaching_applications_collection.create_index([("market", 1), ("created_at", -1)])
     await support_messages_collection.create_index([("user_id", 1), ("created_at", -1)])
     await support_messages_collection.create_index([("status", 1), ("created_at", -1)])
     await longevity_os_profiles_collection.create_index("user_id", unique=True)

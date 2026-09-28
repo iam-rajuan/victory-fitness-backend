@@ -149,3 +149,39 @@ def send_retention_email(
             "Open Victory Fitness to continue your progress."
         ),
     )
+
+
+def send_inner_circle_application_email(
+    *,
+    to_email: str,
+    name: str,
+    verdict: str,
+    message: str,
+) -> None:
+    if not to_email:
+        raise RuntimeError("Applicant email is missing")
+    if not _is_resend_configured():
+        raise RuntimeError("Email delivery is not configured")
+
+    normalized_verdict = str(verdict or "").strip()
+    if normalized_verdict == "Book a call":
+        subject = "Victory Fitness Inner Circle — call invitation"
+    elif normalized_verdict == "Ask one more question":
+        subject = "Victory Fitness Inner Circle — one more question"
+    elif "Platinum" in normalized_verdict:
+        subject = "Victory Fitness Inner Circle — Platinum recommendation"
+    elif "Gold" in normalized_verdict:
+        subject = "Victory Fitness Inner Circle — Gold recommendation"
+    else:
+        subject = "Victory Fitness Inner Circle application"
+
+    _send_email(
+        flow="inner_circle_application",
+        to_email=to_email,
+        subject=subject,
+        text_body=(
+            f"Hi {name or 'there'},\n\n"
+            f"{message.strip()}\n\n"
+            "Victory Fitness"
+        ),
+    )
