@@ -68,7 +68,16 @@ async def get_community_posts(
     user: dict = Depends(_require_community_access_user),
 ) -> CommunityPostListResponse:
     allowed_audiences = set(_get_allowed_community_audiences(user))
-    query: dict[str, Any] = {"audience": {"$in": sorted(allowed_audiences)}}
+    now = datetime.now(timezone.utc)
+    query: dict[str, Any] = {
+        "audience": {"$in": sorted(allowed_audiences)},
+        "$or": [
+            {"publish_status": {"$ne": "scheduled"}},
+            {"scheduled_at": {"$lte": now}},
+            {"scheduled_at": None},
+            {"scheduled_at": {"$exists": False}},
+        ],
+    }
     requested_audience = str(audience or "").strip().upper()
     if requested_audience and requested_audience != "ALL":
         if requested_audience not in allowed_audiences:

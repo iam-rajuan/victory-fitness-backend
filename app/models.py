@@ -837,6 +837,12 @@ class CommunityPostResponse(BaseModel):
     author_tier: str = "SILVER"
     author_profile_image: str = ""
     audience: str = "ALL"
+    broadcast_format: str = "Text"
+    market: str = "All markets"
+    purpose: str = "Announcement"
+    publish_option: str = "Now"
+    publish_status: str = "published"
+    scheduled_at: datetime | None = None
     content: str
     image_url: str = ""
     video_url: str = ""
@@ -1201,6 +1207,10 @@ class AdminChallengePlanGenerateResponse(BaseModel):
 class AdminCommunityPostCreateRequest(BaseModel):
     content: str = Field(min_length=1, max_length=5000)
     audience: str = Field(default="ALL", pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+    broadcast_format: str = Field(default="Text", max_length=40)
+    market: str = Field(default="All markets", max_length=80)
+    purpose: str = Field(default="Announcement", max_length=80)
+    publish_option: str = Field(default="Now", max_length=80)
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
     audio_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
@@ -1212,6 +1222,10 @@ class AdminCommunityPostCreateRequest(BaseModel):
 class AdminCommunityPostUpdateRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=5000)
     audience: str | None = Field(default=None, pattern=r"^(ALL|SILVER|GOLD|PLATINUM|INNER_CIRCLE)$")
+    broadcast_format: str | None = Field(default=None, max_length=40)
+    market: str | None = Field(default=None, max_length=80)
+    purpose: str | None = Field(default=None, max_length=80)
+    publish_option: str | None = Field(default=None, max_length=80)
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
     audio_base64: str | None = Field(default=None, min_length=32, max_length=20000000)

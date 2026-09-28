@@ -4,6 +4,36 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+BROADCAST_FORMATS = {"Text", "Photo", "Video", "Voice note"}
+BROADCAST_MARKETS = {"All markets", "Germany", "Ghana", "India", "UK", "US"}
+BROADCAST_PURPOSES = {"Announcement", "Offer", "Challenge launch", "Nutrition tip", "Masterclass"}
+BROADCAST_PUBLISH_OPTIONS = {"Now", "Tonight 19:00", "Monday 08:00"}
+
+
+def _normalize_broadcast_choice(value: str | None, allowed: set[str], fallback: str) -> str:
+    raw = str(value or "").strip()
+    for option in allowed:
+        if option.lower() == raw.lower():
+            return option
+    return fallback
+
+
+def _resolve_broadcast_schedule(publish_option: str, now: datetime) -> tuple[str, datetime | None]:
+    option = _normalize_broadcast_choice(publish_option, BROADCAST_PUBLISH_OPTIONS, "Now")
+    if option == "Now":
+        return "published", None
+    if option == "Tonight 19:00":
+        scheduled_at = now.replace(hour=19, minute=0, second=0, microsecond=0)
+        if scheduled_at <= now:
+            scheduled_at = scheduled_at + timedelta(days=1)
+        return "scheduled", scheduled_at
+    if option == "Monday 08:00":
+        days_until_monday = (7 - now.weekday()) % 7
+        scheduled_date = now + timedelta(days=days_until_monday or 7)
+        scheduled_at = scheduled_date.replace(hour=8, minute=0, second=0, microsecond=0)
+        return "scheduled", scheduled_at
+    return "published", None
+
 @router.get("/admin/community/posts", response_model=CommunityPostListResponse)
 async def admin_get_community_posts(
     page: int = Query(default=1, ge=1),
@@ -155,6 +185,11 @@ async def admin_create_community_post(
     admin_name = str(admin_user.get("name") or "Victory Team").strip() or "Victory Team"
     admin_profile_image = str(admin_user.get("profile_image") or "").strip()
     target_audience = str(payload.audience or "ALL").strip().upper() or "ALL"
+    broadcast_format = _normalize_broadcast_choice(payload.broadcast_format, BROADCAST_FORMATS, "Text")
+    market = _normalize_broadcast_choice(payload.market, BROADCAST_MARKETS, "All markets")
+    purpose = _normalize_broadcast_choice(payload.purpose, BROADCAST_PURPOSES, "Announcement")
+    publish_option = _normalize_broadcast_choice(payload.publish_option, BROADCAST_PUBLISH_OPTIONS, "Now")
+    publish_status, scheduled_at = _resolve_broadcast_schedule(publish_option, now)
 
     document = {
         "_id": ObjectId(),
@@ -163,6 +198,12 @@ async def admin_create_community_post(
         "author_role": "admin",
         "author_profile_image": admin_profile_image,
         "audience": target_audience,
+        "broadcast_format": broadcast_format,
+        "market": market,
+        "purpose": purpose,
+        "publish_option": publish_option,
+        "publish_status": publish_status,
+        "scheduled_at": scheduled_at,
         "content": payload.content.strip(),
         "image_url": image_url,
         "video_url": video_url,
@@ -256,6 +297,22 @@ async def admin_update_community_post(
 
     if payload.audience is not None:
         update_doc["audience"] = payload.audience.strip().upper()
+
+    if payload.broadcast_format is not None:
+        update_doc["broadcast_format"] = _normalize_broadcast_choice(payload.broadcast_format, BROADCAST_FORMATS, "Text")
+
+    if payload.market is not None:
+        update_doc["market"] = _normalize_broadcast_choice(payload.market, BROADCAST_MARKETS, "All markets")
+
+    if payload.purpose is not None:
+        update_doc["purpose"] = _normalize_broadcast_choice(payload.purpose, BROADCAST_PURPOSES, "Announcement")
+
+    if payload.publish_option is not None:
+        publish_option = _normalize_broadcast_choice(payload.publish_option, BROADCAST_PUBLISH_OPTIONS, "Now")
+        update_doc["publish_option"] = publish_option
+        publish_status, scheduled_at = _resolve_broadcast_schedule(publish_option, update_doc["updated_at"])
+        update_doc["publish_status"] = publish_status
+        update_doc["scheduled_at"] = scheduled_at
 
     if payload.flagged is not None:
         update_doc["flagged"] = payload.flagged
