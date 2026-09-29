@@ -16,16 +16,63 @@ from ...models import (
 router = APIRouter()
 
 
-def _serialize_notification_template_items(templates: list[dict]) -> list[AdminNotificationTemplateItem]:
+def _channels_for_template(template: dict) -> list[str]:
+    channels = [str(item).strip().lower() for item in (template.get("channels") or []) if str(item).strip()]
+    return channels or ["push", "email"]
+
+
+def _user_enabled_channels(user: dict) -> set[str]:
+    enabled_channels: set[str] = set()
+    if user.get("notification_push_enabled", True):
+        enabled_channels.add("push")
+    if user.get("notification_whatsapp_enabled"):
+        enabled_channels.add("whatsapp")
+    if user.get("notification_email_enabled"):
+        enabled_channels.add("email")
+    return enabled_channels
+
+
+async def _notification_template_stats(notification_type: str, audience: str, channels: list[str]) -> tuple[int, int, int]:
+    if audience != "member":
+        sent = await notification_events_collection.count_documents({"type": notification_type, "status": {"$in": ["sent", "queued", "inbox_only", "partial"]}})
+        return 0, 0, sent
+
+    users = await users_collection.find({"is_admin": {"$ne": True}}).to_list(length=None)
+    enabled = 0
+    disabled = 0
+    offered_channels = set(channels or ["push"])
+    for user in users:
+        has_channel = bool(_user_enabled_channels(user) & offered_channels)
+        template_prefs = user.get("notification_template_preferences") if isinstance(user.get("notification_template_preferences"), dict) else {}
+        template_enabled = bool((template_prefs.get(notification_type) or {}).get("enabled", True))
+        if has_channel and template_enabled:
+            enabled += 1
+        else:
+            disabled += 1
+    sent = await notification_events_collection.count_documents({"type": notification_type, "status": {"$in": ["sent", "queued", "inbox_only", "partial"]}})
+    return enabled, disabled, sent
+
+
+async def _serialize_notification_template_items(templates: list[dict]) -> list[AdminNotificationTemplateItem]:
     now = datetime.now(timezone.utc)
-    return [
-        AdminNotificationTemplateItem(
+    items: list[AdminNotificationTemplateItem] = []
+    for item in templates:
+        notification_type = str(item.get("type") or "").strip()
+        audience = str(item.get("audience") or "member").strip() or "member"
+        channels = _channels_for_template(item)
+        enabled, disabled, sent = await _notification_template_stats(notification_type, audience, channels)
+        items.append(AdminNotificationTemplateItem(
             id=str(item.get("id") or item.get("type") or ""),
-            type=str(item.get("type") or "").strip(),
+            type=notification_type,
             title=str(item.get("title") or "").strip(),
+            channels=channels,
+            audience=audience,
             frequencyCapHours=max(int(item.get("frequencyCapHours") or 24), 1),
             requiresContentReview=bool(item.get("requiresContentReview")),
             reviewStatus=str(item.get("reviewStatus") or ("pending_review" if item.get("requiresContentReview") else "approved")),
+            enabledMembers=enabled,
+            disabledMembers=disabled,
+            sentCount=sent,
             variants=[
                 NotificationTemplateVariantItem(
                     key=str(variant.get("key") or "a").strip().lower(),
@@ -36,9 +83,8 @@ def _serialize_notification_template_items(templates: list[dict]) -> list[AdminN
                 if isinstance(variant, dict)
             ],
             updatedAt=item.get("updated_at") or item.get("updatedAt") or now,
-        )
-        for item in templates
-    ]
+        ))
+    return items
 
 @router.get("/admin/notifications", response_model=AdminNotificationListResponse)
 
@@ -131,7 +177,7 @@ async def admin_list_notification_templates(
     _: dict = Depends(_require_admin_user),
 ) -> AdminNotificationTemplateListResponse:
     templates = await list_notification_templates()
-    return AdminNotificationTemplateListResponse(items=_serialize_notification_template_items(templates))
+    return AdminNotificationTemplateListResponse(items=await _serialize_notification_template_items(templates))
 
 
 @router.put("/admin/notification-templates", response_model=AdminNotificationTemplateListResponse)
@@ -146,6 +192,8 @@ async def admin_replace_notification_templates(
                 "id": (item.id or item.type).strip(),
                 "type": item.type.strip(),
                 "title": item.title.strip(),
+                "channels": [str(channel).strip().lower() for channel in item.channels if str(channel).strip()],
+                "audience": item.audience,
                 "frequencyCapHours": max(int(item.frequencyCapHours or 24), 1),
                 "requiresContentReview": bool(item.requiresContentReview),
                 "reviewStatus": item.reviewStatus,
@@ -160,4 +208,4 @@ async def admin_replace_notification_templates(
             }
         )
     await replace_notification_templates(normalized_items)
-    return AdminNotificationTemplateListResponse(items=_serialize_notification_template_items(normalized_items))
+    return AdminNotificationTemplateListResponse(items=await _serialize_notification_template_items(normalized_items))

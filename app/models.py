@@ -2668,9 +2668,14 @@ class AdminNotificationTemplateItem(BaseModel):
     id: str
     type: str
     title: str
+    channels: list[str] = Field(default_factory=list)
+    audience: str = "member"
     frequencyCapHours: int = 0
     requiresContentReview: bool = False
     reviewStatus: str = "approved"
+    enabledMembers: int = 0
+    disabledMembers: int = 0
+    sentCount: int = 0
     variants: list[NotificationTemplateVariantItem] = Field(default_factory=list)
     updatedAt: datetime
 
@@ -2683,6 +2688,8 @@ class AdminNotificationTemplateRequest(BaseModel):
     id: str | None = Field(default=None, max_length=120)
     type: str = Field(min_length=2, max_length=80)
     title: str = Field(min_length=1, max_length=200)
+    channels: list[str] = Field(default_factory=list)
+    audience: str = Field(default="member", pattern=r"^(member|system)$")
     frequencyCapHours: int = Field(default=0, ge=0, le=720)
     requiresContentReview: bool = False
     reviewStatus: str = Field(default="approved", pattern=r"^(draft|pending_review|approved)$")

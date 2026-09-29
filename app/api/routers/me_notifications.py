@@ -1,10 +1,34 @@
 from fastapi import APIRouter
+from pydantic import BaseModel, Field
 
 from ...core.legacy import *
-from ...conversion_service import mark_notification_event_actioned, mark_notification_event_opened
+from ...conversion_service import list_notification_templates, mark_notification_event_actioned, mark_notification_event_opened
 from ...retention_service import record_notification_open
 
 router = APIRouter()
+
+
+class NotificationPreferenceTemplateState(BaseModel):
+    type: str
+    enabled: bool = True
+
+
+class NotificationPreferencesUpdateRequest(BaseModel):
+    pushEnabled: bool | None = None
+    whatsappEnabled: bool | None = None
+    emailEnabled: bool | None = None
+    nudgeTime: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
+    templates: list[NotificationPreferenceTemplateState] | None = None
+
+
+def _template_preference_map(user: dict) -> dict[str, dict]:
+    raw = user.get("notification_template_preferences") or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _channels_for_template(template: dict) -> list[str]:
+    channels = [str(item).strip().lower() for item in (template.get("channels") or []) if str(item).strip()]
+    return channels or ["push", "email"]
 
 @router.post("/me/push-token")
 async def register_push_token(
@@ -28,6 +52,62 @@ async def list_app_notifications(user: dict = Depends(_require_access_user)) -> 
     records = [item for item in (user.get("app_notifications") or []) if isinstance(item, dict)]
     records.sort(key=lambda item: item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     return AppNotificationListResponse(items=[AppNotificationItem(**item) for item in records[:50]])
+
+
+@router.get("/me/notification-preferences")
+async def get_notification_preferences(user: dict = Depends(_require_access_user)) -> dict:
+    templates = [
+        template
+        for template in await list_notification_templates()
+        if str(template.get("audience") or "member").strip() == "member"
+    ]
+    template_prefs = _template_preference_map(user)
+    return {
+        "pushEnabled": bool(user.get("notification_push_enabled", True)),
+        "whatsappEnabled": bool(user.get("notification_whatsapp_enabled", False)),
+        "emailEnabled": bool(user.get("notification_email_enabled", False)),
+        "nudgeTime": str(user.get("notification_nudge_time") or "20:30"),
+        "templates": [
+            {
+                "id": str(template.get("id") or template.get("type") or ""),
+                "type": str(template.get("type") or ""),
+                "title": str(template.get("title") or ""),
+                "channels": _channels_for_template(template),
+                "approved": str(template.get("reviewStatus") or "approved") == "approved",
+                "frequencyCapHours": max(int(template.get("frequencyCapHours") or 24), 1),
+                "enabled": bool((template_prefs.get(str(template.get("type") or "")) or {}).get("enabled", True)),
+            }
+            for template in templates
+        ],
+    }
+
+
+@router.patch("/me/notification-preferences")
+async def update_notification_preferences(
+    payload: NotificationPreferencesUpdateRequest,
+    user: dict = Depends(_require_access_user),
+) -> dict:
+    update_doc: dict[str, object] = {}
+    if payload.pushEnabled is not None:
+        update_doc["notification_push_enabled"] = bool(payload.pushEnabled)
+    if payload.whatsappEnabled is not None:
+        update_doc["notification_whatsapp_enabled"] = bool(payload.whatsappEnabled)
+    if payload.emailEnabled is not None:
+        update_doc["notification_email_enabled"] = bool(payload.emailEnabled)
+    if payload.nudgeTime is not None:
+        update_doc["notification_nudge_time"] = payload.nudgeTime.strip() or "20:30"
+    if payload.templates is not None:
+        prefs = _template_preference_map(user)
+        for item in payload.templates:
+            notification_type = item.type.strip()
+            if notification_type:
+                prefs[notification_type] = {"enabled": bool(item.enabled)}
+        update_doc["notification_template_preferences"] = prefs
+    if update_doc:
+        update_doc["updated_at"] = datetime.now(timezone.utc)
+        await users_collection.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    updated_user = await users_collection.find_one({"_id": user["_id"]}) or {**user, **update_doc}
+    return await get_notification_preferences(updated_user)
 
 @router.delete("/me/notifications/{notification_id}")
 async def delete_app_notification(

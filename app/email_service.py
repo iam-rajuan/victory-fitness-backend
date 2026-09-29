@@ -151,6 +151,22 @@ def send_retention_email(
     )
 
 
+def send_notification_email(*, to_email: str, name: str, subject: str, body: str, flow: str = "notification") -> None:
+    if not to_email or not _is_resend_configured():
+        return
+
+    _send_email(
+        flow=flow,
+        to_email=to_email,
+        subject=subject,
+        text_body=(
+            f"Hi {name or 'there'},\n\n"
+            f"{body}\n\n"
+            "Open Victory Fitness to respond or manage your reminders."
+        ),
+    )
+
+
 def send_inner_circle_application_email(
     *,
     to_email: str,

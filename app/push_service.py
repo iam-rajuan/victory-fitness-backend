@@ -9,7 +9,8 @@ from urllib.request import Request, urlopen
 from jose import jwt
 
 from .config import settings
-from .conversion_service import log_notification_event, resolve_notification_variant
+from .conversion_service import get_notification_template, is_notification_template_approved, log_notification_event, resolve_notification_variant
+from .email_service import send_notification_email
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 FIREBASE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -71,24 +72,57 @@ async def _emit_notification_event(user_id: str, notification: dict) -> None:
 
 async def notify_user(users_collection, user: dict, title: str, message: str, notification_type: str, data: dict) -> dict:
     notification_id = str(uuid4())
+    if not await is_notification_template_approved(notification_type):
+        await log_notification_event(str(user["_id"]), notification_id, notification_type, "blocked", "blocked_unapproved")
+        return {"status": "blocked_unapproved", "providers": [], "failedProviders": [], "updatedAt": datetime.now(timezone.utc)}
+    template = await get_notification_template(notification_type)
+    template_channels = [str(channel).strip().lower() for channel in ((template or {}).get("channels") or []) if str(channel).strip()]
+    template_channels = template_channels or ["push"]
+    if template and str(template.get("audience") or "member") == "member":
+        template_prefs = user.get("notification_template_preferences") if isinstance(user.get("notification_template_preferences"), dict) else {}
+        if not bool((template_prefs.get(notification_type) or {}).get("enabled", True)):
+            await log_notification_event(str(user["_id"]), notification_id, notification_type, "blocked", "blocked_user_disabled")
+            return {"status": "blocked_user_disabled", "providers": [], "failedProviders": [], "updatedAt": datetime.now(timezone.utc)}
+        user_enabled_channels = set()
+        if user.get("notification_push_enabled", True):
+            user_enabled_channels.add("push")
+        if user.get("notification_whatsapp_enabled"):
+            user_enabled_channels.add("whatsapp")
+        if user.get("notification_email_enabled"):
+            user_enabled_channels.add("email")
+        if not bool(user_enabled_channels & set(template_channels)):
+            await log_notification_event(str(user["_id"]), notification_id, notification_type, "blocked", "blocked_user_muted")
+            return {"status": "blocked_user_muted", "providers": [], "failedProviders": [], "updatedAt": datetime.now(timezone.utc)}
     resolved_title, resolved_message, copy_variant = await resolve_notification_variant(user, notification_type, title, message)
     notification_data = {**data, "notificationId": notification_id, "copyVariant": copy_variant}
     notification = {"id": notification_id, "type": notification_type, "title": resolved_title, "message": resolved_message, "data": notification_data, "copy_variant": copy_variant, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
     await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
     await _emit_notification_event(str(user["_id"]), notification)
     await log_notification_event(str(user["_id"]), notification_id, notification_type, copy_variant, "queued")
-    expo_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
-    web_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if isinstance(item, dict) and str(item.get("platform") or "").lower() == "web" and str(item.get("token") or "").strip()]
+    push_enabled = bool(user.get("notification_push_enabled", True))
+    expo_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if push_enabled and isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
+    web_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if push_enabled and isinstance(item, dict) and str(item.get("platform") or "").lower() == "web" and str(item.get("token") or "").strip()]
     tasks = []
     providers = []
-    if expo_tokens:
+    if "push" in template_channels and expo_tokens:
         providers.append("expo")
         tasks.append(asyncio.to_thread(_send_expo_push, list(dict.fromkeys(expo_tokens)), resolved_title, resolved_message, notification_data))
-    if web_tokens and _has_firebase_web_push_credentials():
+    if "push" in template_channels and web_tokens and _has_firebase_web_push_credentials():
         providers.append("firebase")
         tasks.append(asyncio.to_thread(_send_firebase_web_push, list(dict.fromkeys(web_tokens)), resolved_title, resolved_message, notification_data))
-    elif web_tokens:
+    elif "push" in template_channels and web_tokens:
         logger.info("Skipping Firebase web push delivery because service-account credentials are not configured")
+    email = str(user.get("email") or "").strip()
+    if "email" in template_channels and user.get("notification_email_enabled") and email:
+        providers.append("email")
+        tasks.append(asyncio.to_thread(
+            send_notification_email,
+            to_email=email,
+            name=str(user.get("name") or user.get("full_name") or "there"),
+            subject=resolved_title,
+            body=resolved_message,
+            flow=f"notification_{notification_type}",
+        ))
     delivery_status = "inbox_only" if not tasks else "sent"
     failed_providers = []
     if tasks:

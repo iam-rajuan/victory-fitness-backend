@@ -17,6 +17,8 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
         "id": "workout_reminder",
         "type": "workout_reminder",
         "title": "Workout reminder",
+        "channels": ["push", "whatsapp", "email"],
+        "audience": "member",
         "frequencyCapHours": 24,
         "variants": [
             {"key": "a", "title": "Your next workout is waiting", "message": "Keep your rhythm going with one focused session today."},
@@ -28,6 +30,8 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
         "id": "protein_nudge",
         "type": "protein_nudge",
         "title": "Protein nudge",
+        "channels": ["push", "whatsapp", "email"],
+        "audience": "member",
         "frequencyCapHours": 24,
         "variants": [
             {"key": "a", "title": "Protein target check", "message": "A protein-focused meal now makes the rest of your day easier."},
@@ -39,6 +43,8 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
         "id": "streak_protection",
         "type": "streak_protection",
         "title": "Streak protection",
+        "channels": ["push", "whatsapp", "email"],
+        "audience": "member",
         "frequencyCapHours": 24,
         "requiresContentReview": True,
         "reviewStatus": "approved",
@@ -52,6 +58,8 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
         "id": "challenge_update",
         "type": "challenge_update",
         "title": "Challenge update",
+        "channels": ["push", "whatsapp", "email"],
+        "audience": "member",
         "frequencyCapHours": 12,
         "variants": [
             {"key": "a", "title": "Your challenge has a new step", "message": "Open the challenge and complete the next action."},
@@ -63,11 +71,35 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
         "id": "leaderboard_change",
         "type": "leaderboard_change",
         "title": "Leaderboard change",
+        "channels": ["push", "email"],
+        "audience": "member",
         "frequencyCapHours": 12,
         "variants": [
             {"key": "a", "title": "Leaderboard update", "message": "Check your position and choose your next move."},
             {"key": "b", "title": "The board changed today", "message": "A small action now can keep you in the mix."},
             {"key": "c", "title": "People near you are active", "message": "Your leaderboard group is moving. Open Victory Fitness to respond."},
+        ],
+    },
+    {
+        "id": "monthly_digest",
+        "type": "monthly_digest",
+        "title": "Monthly digest",
+        "channels": ["email"],
+        "audience": "system",
+        "frequencyCapHours": 720,
+        "variants": [
+            {"key": "a", "title": "Your Victory Fitness month", "message": "Review your training, food, and challenge progress for the month."},
+        ],
+    },
+    {
+        "id": "payment_receipt",
+        "type": "payment_receipt",
+        "title": "Payment receipt",
+        "channels": ["email"],
+        "audience": "system",
+        "frequencyCapHours": 1,
+        "variants": [
+            {"key": "a", "title": "Victory Fitness receipt", "message": "Your payment receipt is ready."},
         ],
     },
 ]
@@ -207,6 +239,21 @@ async def list_notification_templates() -> list[dict[str, Any]]:
     return await ensure_notification_templates()
 
 
+async def get_notification_template(notification_type: str) -> dict[str, Any] | None:
+    normalized_type = str(notification_type or "").strip()
+    if not normalized_type:
+        return None
+    templates = await list_notification_templates()
+    return next((item for item in templates if str(item.get("type") or "").strip() == normalized_type), None)
+
+
+async def is_notification_template_approved(notification_type: str) -> bool:
+    template = await get_notification_template(notification_type)
+    if not template:
+        return True
+    return str(template.get("reviewStatus") or "approved").strip() == "approved"
+
+
 async def replace_notification_templates(items: list[dict[str, Any]]) -> None:
     if not _is_collection_available(app_content_collection):
         return
@@ -224,8 +271,7 @@ async def resolve_notification_variant(user: dict, notification_type: str, fallb
         if personalized:
             return personalized
 
-    templates = await list_notification_templates()
-    template = next((item for item in templates if str(item.get("type") or "").strip() == notification_type), None)
+    template = await get_notification_template(notification_type)
     if not template:
         return fallback_title, fallback_message, "a"
     if bool(template.get("requiresContentReview")) and str(template.get("reviewStatus") or "").strip() != "approved":
