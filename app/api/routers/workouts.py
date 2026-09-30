@@ -89,6 +89,66 @@ def _build_session_counts(exercises: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def _as_aware_utc(value: Any) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _strength_plan_is_complete_or_expired(record: dict[str, Any], now: datetime) -> bool:
+    plan = dict(record.get("plan") or {})
+    days = [day for day in plan.get("days") or [] if isinstance(day, dict)]
+    progress = [item for item in record.get("progress") or [] if isinstance(item, dict)]
+    completed_day_keys = {str(item.get("day") or "") for item in progress if item.get("completed")}
+    if days and all(str(day.get("day") or "") in completed_day_keys for day in days):
+        return True
+
+    created_at = _as_aware_utc(record.get("created_at"))
+    if created_at and now.astimezone(timezone.utc) >= created_at + timedelta(days=7):
+        return True
+
+    return False
+
+
+def _build_strength_plan_rationale(record: dict[str, Any], selected_day: dict[str, Any], completed_count: int) -> str:
+    input_data = dict(record.get("input") or {})
+    feedback = [item for item in record.get("session_feedback") or [] if isinstance(item, dict)]
+    if feedback:
+        latest = dict(feedback[-1])
+        next_steps = str(latest.get("next_steps") or latest.get("summary") or "").strip()
+        if next_steps:
+            return next_steps
+
+    source = str(input_data.get("source") or "").strip()
+    day_title = str(selected_day.get("title") or "today's session").strip()
+    duration = _extract_minutes(selected_day.get("est_time"), 0)
+    equipment = [str(item) for item in input_data.get("equipment") or [] if str(item).strip()]
+    goal = str(input_data.get("goal") or "").strip()
+    split = str(input_data.get("split") or "").strip()
+
+    if source == "coach_adjustment":
+        return f"Updated from your coach chat. Next up: {day_title}."
+
+    if completed_count > 0:
+        return f"{completed_count} done. Next up: {day_title}."
+
+    detail_bits = []
+    if goal:
+        detail_bits.append(goal.lower())
+    if split:
+        detail_bits.append(f"{split.lower()} split")
+    if equipment:
+        detail_bits.append(f"using {', '.join(equipment)}")
+    elif duration:
+        detail_bits.append(f"{duration} minutes")
+    detail = ", ".join(detail_bits)
+    if detail:
+        return f"Built from your profile: {detail}."
+    return "Built from your current profile."
+
+
 def _week_start_utc(now: datetime) -> datetime:
     start = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     return start - timedelta(days=start.weekday())
@@ -168,6 +228,53 @@ def _build_week_summary(
     }
 
 
+def _build_strength_plan_week_summary(
+    *,
+    days: list[dict[str, Any]],
+    progress: list[dict[str, Any]],
+    selected_day: dict[str, Any],
+) -> dict[str, Any]:
+    planned_days = [_normalize_weekday_key(day.get("day")) for day in days if _normalize_weekday_key(day.get("day"))]
+    planned_set = set(planned_days)
+    completed_keys = {
+        _normalize_weekday_key(item.get("day"))
+        for item in progress
+        if item.get("completed") and _normalize_weekday_key(item.get("day"))
+    }
+    selected_key = _normalize_weekday_key(selected_day.get("day"))
+
+    pips: list[dict[str, str]] = []
+    for key, label in WEEKDAY_KEYS:
+        if key in completed_keys:
+            state = "done"
+        elif key == selected_key:
+            state = "today"
+        elif key in planned_set:
+            state = "optional"
+        else:
+            state = "rest"
+        pips.append({"label": label, "key": key, "state": state})
+
+    done_count = len(completed_keys)
+    remaining_count = max(0, len([day for day in planned_days if day not in completed_keys]) - (1 if selected_key else 0))
+    left_label = "session" if remaining_count == 1 else "sessions"
+    note_bits = [f"{done_count} done"]
+    if selected_key:
+        note_bits.append("today")
+    note_bits.append(f"{remaining_count} light {left_label} left")
+    if "Sun" not in planned_set:
+        note_bits.append("Sunday optional")
+
+    return {
+        "pips": pips,
+        "note": " · ".join(note_bits),
+        "doneCount": done_count,
+        "targetCount": len(planned_set),
+        "remainingLightSessions": remaining_count,
+        "todayCompleted": selected_key in completed_keys if selected_key else False,
+    }
+
+
 @router.get("/workouts/home-plan-summary")
 async def workout_home_plan_summary(user: dict = Depends(dependency_require_access_user)) -> dict[str, Any]:
     user_id = str(user.get("_id") or user.get("id") or "")
@@ -181,7 +288,11 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
             sort=[("created_at", -1)],
         )
 
-    if strength_record and isinstance(strength_record.get("plan"), dict):
+    if (
+        strength_record
+        and isinstance(strength_record.get("plan"), dict)
+        and not _strength_plan_is_complete_or_expired(strength_record, now)
+    ):
         plan = dict(strength_record.get("plan") or {})
         days = [day for day in plan.get("days") or [] if isinstance(day, dict)]
         progress = [item for item in strength_record.get("progress") or [] if isinstance(item, dict)]
@@ -204,7 +315,8 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
             "planSource": "BUILT BY YOUR COACH",
             "durationMinutes": duration_minutes,
             "equipment": ", ".join(str(item) for item in (strength_record.get("input") or {}).get("equipment") or []),
-            "week": _build_week_summary(now=now, completed_dates=completed_dates, training_days=training_days),
+            "whyToday": _build_strength_plan_rationale(strength_record, selected_day, len(completed_day_keys)),
+            "week": _build_strength_plan_week_summary(days=days, progress=progress, selected_day=selected_day),
             "session": counts,
         }
 
@@ -220,6 +332,7 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
             "planSource": "BUILT BY YOUR COACH",
             "durationMinutes": 0,
             "equipment": "",
+            "whyToday": "",
             "week": _build_week_summary(now=now, completed_dates=completed_dates, training_days=[]),
             "session": {"exerciseCount": 0, "setCount": 0, "compoundCount": 0},
         }
@@ -239,6 +352,7 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
         "planSource": "VIDEO · FROM THE LIBRARY",
         "durationMinutes": duration_minutes,
         "equipment": str(workout.get("equipment") or ""),
+        "whyToday": "This session comes from the published workout library because there is no active custom plan for this account.",
         "week": _build_week_summary(now=now, completed_dates=completed_dates, training_days=["Mon", "Wed", "Fri"]),
         "session": counts,
     }
