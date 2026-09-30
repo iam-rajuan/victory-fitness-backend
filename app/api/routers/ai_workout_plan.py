@@ -169,7 +169,7 @@ def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict
         m = re.search(r"(\d+)", raw_days)
         freq = m.group(1) if m else "4"
     try:
-        freq_int = max(3, min(5, int(freq)))
+        freq_int = max(1, min(7, int(freq)))
     except Exception:
         freq_int = 4
     freq = str(freq_int)
@@ -178,9 +178,13 @@ def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict
     days = [str(item).strip() for item in (payload.days or []) if str(item).strip()]
     if not days:
         default_days_map = {
+            1: ["Mon"],
+            2: ["Mon", "Thu"],
             3: ["Mon", "Wed", "Fri"],
             4: ["Mon", "Tue", "Thu", "Fri"],
             5: ["Mon", "Tue", "Wed", "Fri", "Sat"],
+            6: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+            7: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
         }
         days = default_days_map.get(freq_int, ["Mon", "Tue", "Thu", "Fri"])
 
@@ -293,6 +297,58 @@ async def workout_strength_plan(
                 "days": hydrated_input.days,
                 "age": hydrated_input.age,
                 "weight": hydrated_input.weight,
+            },
+            "plan": plan_data,
+            "progress": [],
+            "created_at": created_at,
+            "updated_at": created_at,
+        }
+    )
+
+    return _serialize_strength_workout_plan_record(
+        {
+            "_id": insert_result.inserted_id,
+            "plan": plan_data,
+            "progress": [],
+            "created_at": created_at,
+        }
+    )
+
+
+@router.post("/ai/workout-plan/home-seven-day", response_model=StrengthWorkoutPlanResponse)
+async def workout_home_seven_day_plan(
+    payload: StrengthWorkoutPlanRequest,
+    user: dict = Depends(_require_workout_plan_access_user),
+) -> StrengthWorkoutPlanResponse:
+    if not payload.days:
+        payload.days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    if not payload.frequency:
+        payload.frequency = str(len(payload.days) or 7)
+    hydrated_input = _hydrate_strength_plan_input(payload, user)
+    hydrated_input.frequency = str(len(hydrated_input.days) or 7)
+    plan_data = generate_strength_workout_plan(hydrated_input)
+
+    created_at = datetime.now(timezone.utc)
+    insert_result = await strength_workout_plans_collection.insert_one(
+        {
+            "user_id": str(user["_id"]),
+            "input": {
+                "goal": hydrated_input.goal,
+                "level": hydrated_input.level,
+                "split": hydrated_input.split,
+                "muscle_group": hydrated_input.muscle_group,
+                "duration_minutes": hydrated_input.duration_minutes,
+                "height": hydrated_input.height,
+                "gender": hydrated_input.gender,
+                "bench": hydrated_input.bench,
+                "squat": hydrated_input.squat,
+                "deadlift": hydrated_input.deadlift,
+                "equipment": hydrated_input.equipment,
+                "frequency": hydrated_input.frequency,
+                "days": hydrated_input.days,
+                "age": hydrated_input.age,
+                "weight": hydrated_input.weight,
+                "source": "home_seven_day",
             },
             "plan": plan_data,
             "progress": [],

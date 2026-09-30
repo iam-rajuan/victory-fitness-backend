@@ -196,7 +196,9 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
         title = str(selected_day.get("title") or "Workout").strip() or "Workout"
         return {
             "source": "strength_plan",
+            "hasPlan": True,
             "planId": str(strength_record.get("_id") or ""),
+            "day": str(selected_day.get("day") or ""),
             "title": title,
             "dayKicker": f"{str(selected_day.get('day') or 'TODAY').upper()} · {duration_minutes} MIN",
             "planSource": "BUILT BY YOUR COACH",
@@ -206,6 +208,22 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
             "session": counts,
         }
 
+    tier = str(user.get("subscription_tier") or user.get("subscription_plan") or "").strip().upper()
+    if tier and tier not in {"SILVER", "NONE"}:
+        return {
+            "source": "empty",
+            "hasPlan": False,
+            "planId": "",
+            "day": "",
+            "title": "",
+            "dayKicker": "",
+            "planSource": "BUILT BY YOUR COACH",
+            "durationMinutes": 0,
+            "equipment": "",
+            "week": _build_week_summary(now=now, completed_dates=completed_dates, training_days=[]),
+            "session": {"exerciseCount": 0, "setCount": 0, "compoundCount": 0},
+        }
+
     records = await list_public_workout_records({"visibility": "Published"})
     workout = shared_serialize_public_workout_record(records[0]) if records else {}
     movements = [dict(item) for item in workout.get("movements") or [] if isinstance(item, dict)]
@@ -213,7 +231,9 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
     duration_minutes = _coerce_positive_int(workout.get("durationMinutes"), 0)
     return {
         "source": "workout_library",
+        "hasPlan": True,
         "planId": "",
+        "day": "",
         "title": str(workout.get("title") or "Workout"),
         "dayKicker": f"TODAY · {duration_minutes or 0} MIN",
         "planSource": "VIDEO · FROM THE LIBRARY",

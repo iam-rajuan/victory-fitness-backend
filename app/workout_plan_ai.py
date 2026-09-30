@@ -29,6 +29,7 @@ class StrengthWorkoutPlanInput:
     duration_minutes: str = ""
     language: str = "en"
     injury_flags: list[str] = field(default_factory=list)
+    custom_notes: str = ""
 
 
 @dataclass
@@ -197,13 +198,13 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
 
 
 def _build_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
-    frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
+    frequency = _safe_int(input_data.frequency, 4, minimum=1, maximum=7)
     preferred_days = _normalize_preferred_days(input_data.days)
     active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
     title_cycle = _strength_title_cycle(input_data.split, input_data.goal, input_data.muscle_group)
     exercise_pool = _strength_exercise_pool(input_data.goal, input_data.equipment, input_data.muscle_group, input_data.duration_minutes, input_data.level)
 
-    frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
+    frequency = _safe_int(input_data.frequency, 4, minimum=1, maximum=7)
 
     injury_list = [str(item).lower() for item in getattr(input_data, "injury_flags", []) if str(item).strip()]
     if "knee" in injury_list:
@@ -384,6 +385,7 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- Each exercise needs: id, name, sets, reps, rest, weight, type.\n"
         "- Weight should be realistic based on the user's lifts when provided, otherwise estimate conservatively.\n"
         "- Split, goal, experience level, selected muscle group, available duration, equipment, and frequency must visibly affect the plan.\n"
+        "- If custom_notes are present, treat them as the user's direct plan instructions and reflect them unless they conflict with injury, duration, or equipment constraints.\n"
         "- STRICT MUSCLE GROUP CONSTRAINT: If muscle_group is not full body, every exercise must train that selected muscle group or a directly supporting sub-muscle. Do not include unrelated chest, back, shoulder, or arm work in a legs-focused plan.\n"
         "- STRICT DURATION CONSTRAINT: Estimate each session inside the requested duration window by adjusting exercise count, sets, and rest. Do not return longer sessions than requested.\n"
         "- STRICT EQUIPMENT CONSTRAINT: If equipment includes 'no equipment', 'bodyweight', or 'outdoors', you MUST ONLY prescribe calisthenics/bodyweight exercises. NEVER include Barbell, Dumbbell, Cable, Machine, or Leg Press lifts. Weight must be 'Bodyweight'.\n"
@@ -822,7 +824,7 @@ def _shape_pool_for_constraints(pool: list[list[dict]], goal: str, level: str, d
 
 
 def _validate_and_correct_strength_plan(plan: dict, input_data: StrengthWorkoutPlanInput) -> dict:
-    frequency = _safe_int(input_data.frequency, 4, minimum=3, maximum=5)
+    frequency = _safe_int(input_data.frequency, 4, minimum=1, maximum=7)
     preferred_days = _normalize_preferred_days(input_data.days)
     active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
     fallback = _build_strength_workout_plan(input_data)

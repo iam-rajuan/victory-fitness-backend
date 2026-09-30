@@ -14,6 +14,7 @@ from ...coach_victor import (
     generate_coach_victor_stream,
     postprocess_coach_victor_reply,
 )
+from .ai_workout_plan import _hydrate_strength_plan_input
 from ...workout_plan_ai import sanitize_workout_plan_for_injuries
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,115 @@ async def handle_pain_signals_if_any(user: dict, user_id: str, message: str) -> 
             logger.info("adjusted_workout_for_pain user_id=%s flags=%s", user_id, flags)
 
     return flags
+
+
+def _coach_message_requests_plan_update(message: str) -> bool:
+    text = str(message or "").lower()
+    update_terms = ("apply", "update", "change", "adjust", "rebuild", "replace", "custom plan", "my plan")
+    plan_terms = ("workout plan", "training plan", "plan card", "split", "push", "pull", "legs", "dumbbell", "bodyweight", "gym")
+    return any(term in text for term in update_terms) and any(term in text for term in plan_terms)
+
+
+def _coach_plan_payload_from_message(message: str) -> StrengthWorkoutPlanRequest:
+    text = str(message or "")
+    lowered = text.lower()
+
+    if any(term in lowered for term in ("lose weight", "fat loss", "cut", "recomp")):
+        goal = "Body Recomp"
+    elif any(term in lowered for term in ("strength", "stronger", "heavy")):
+        goal = "Pure Strength"
+    elif any(term in lowered for term in ("speed", "power", "athletic", "endurance")):
+        goal = "Power & Speed"
+    else:
+        goal = "Hypertrophy"
+
+    if "push" in lowered and "pull" in lowered and "leg" in lowered:
+        split = "Push Pull Legs"
+    elif "upper" in lowered and "lower" in lowered:
+        split = "Upper / Lower"
+    else:
+        split = "Full Body"
+
+    if any(term in lowered for term in ("bodyweight", "no equipment", "nothing at all")):
+        equipment = ["No equipment"]
+    elif "dumbbell" in lowered:
+        equipment = ["Dumbbells"]
+    elif any(term in lowered for term in ("home gym", "bands", "pull-up", "pull up")):
+        equipment = ["Dumbbells", "Bands"]
+    elif "gym" in lowered or "barbell" in lowered:
+        equipment = ["Gym", "Barbell", "Dumbbells", "Cables", "Machines"]
+    else:
+        equipment = []
+
+    duration_match = re.search(r"(\d{2,3})\s*(?:min|minute)", lowered)
+    duration_minutes = duration_match.group(1) if duration_match else None
+    day_count_match = re.search(r"(\d)\s*(?:day|days)", lowered)
+    frequency = day_count_match.group(1) if day_count_match else "7"
+
+    day_aliases = [
+        ("mon", "Mon"), ("monday", "Mon"),
+        ("tue", "Tue"), ("tuesday", "Tue"),
+        ("wed", "Wed"), ("wednesday", "Wed"),
+        ("thu", "Thu"), ("thursday", "Thu"),
+        ("fri", "Fri"), ("friday", "Fri"),
+        ("sat", "Sat"), ("saturday", "Sat"),
+        ("sun", "Sun"), ("sunday", "Sun"),
+    ]
+    days = []
+    for needle, day in day_aliases:
+        if needle in lowered and day not in days:
+            days.append(day)
+    if not days and frequency == "7":
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+    return StrengthWorkoutPlanRequest(
+        goal=goal,
+        split=split,
+        duration_minutes=duration_minutes,
+        equipment=equipment,
+        frequency=frequency,
+        days=days,
+        muscle_group="Full Body",
+    )
+
+
+async def _maybe_apply_coach_workout_plan_update(user: dict, user_id: str, message: str) -> bool:
+    if not _coach_message_requests_plan_update(message):
+        return False
+    payload = _coach_plan_payload_from_message(message)
+    hydrated_input = _hydrate_strength_plan_input(payload, user)
+    hydrated_input.custom_notes = str(message or "").strip()[:4000]
+    plan_data = generate_strength_workout_plan(hydrated_input)
+    now = datetime.now(timezone.utc)
+    await strength_workout_plans_collection.insert_one(
+        {
+            "user_id": user_id,
+            "input": {
+                "goal": hydrated_input.goal,
+                "level": hydrated_input.level,
+                "split": hydrated_input.split,
+                "muscle_group": hydrated_input.muscle_group,
+                "duration_minutes": hydrated_input.duration_minutes,
+                "height": hydrated_input.height,
+                "gender": hydrated_input.gender,
+                "bench": hydrated_input.bench,
+                "squat": hydrated_input.squat,
+                "deadlift": hydrated_input.deadlift,
+                "equipment": hydrated_input.equipment,
+                "frequency": hydrated_input.frequency,
+                "days": hydrated_input.days,
+                "age": hydrated_input.age,
+                "weight": hydrated_input.weight,
+                "source": "coach_adjustment",
+                "coach_message": str(message or "")[:2000],
+            },
+            "plan": plan_data,
+            "progress": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+    return True
 
 
 async def _latest_nutrition_profile(user_id: str, user: dict | None = None) -> dict[str, Any]:
@@ -254,6 +364,7 @@ async def coach_victor_chat(
 
     # Pain flag detection & active adjustment
     await handle_pain_signals_if_any(user, user_id, payload.message)
+    plan_was_updated = await _maybe_apply_coach_workout_plan_update(user, user_id, payload.message)
 
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
@@ -287,10 +398,14 @@ async def coach_victor_chat(
         "content": payload.message,
         "created_at": now,
     }
+    reply_text = result.reply
+    if plan_was_updated:
+        reply_text = f"{reply_text}\n\nI updated your active workout plan. Your Home plan card will show the revised next session."
+
     assistant_message = {
         "id": str(ObjectId()),
         "role": "assistant",
-        "content": result.reply,
+        "content": reply_text,
         "created_at": now,
     }
     next_full_messages = [*full_thread_messages, user_message, assistant_message]
@@ -323,7 +438,7 @@ async def coach_victor_chat(
         len(next_full_messages),
     )
     await _record_trial_engagement(user, "coach_message")
-    return CoachVictorChatResponse(reply=result.reply, thread_id=thread_id)
+    return CoachVictorChatResponse(reply=reply_text, thread_id=thread_id)
 
 
 @router.post("/ai/coach-victor/stream")
@@ -337,6 +452,7 @@ async def coach_victor_stream(
     logger.info("coach_stream_attempt user_id=%s", user_id)
 
     await handle_pain_signals_if_any(user, user_id, payload.message)
+    plan_was_updated = await _maybe_apply_coach_workout_plan_update(user, user_id, payload.message)
 
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
@@ -375,6 +491,8 @@ async def coach_victor_stream(
             user_context=user_context,
             last_user_message=payload.message,
         )
+        if plan_was_updated:
+            full_reply_text = f"{full_reply_text}\n\nI updated your active workout plan. Your Home plan card will show the revised next session."
         now = datetime.now(timezone.utc)
         user_msg = {
             "id": str(ObjectId()),
