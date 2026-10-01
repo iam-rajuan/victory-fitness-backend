@@ -13,6 +13,7 @@ from ..core.legacy import (
     _trial_summary,
 )
 from ..database import (
+    beta_feedback_collection,
     challenge_memberships_collection,
     coach_victor_archives_collection,
     coach_victor_threads_collection,
@@ -32,6 +33,8 @@ from ..models import (
     PhaseOneBetaCrossFeatureResponse,
     PhaseOneBetaFeatureAdoptionMetric,
     PhaseOneBetaFeatureAdoptionResponse,
+    PhaseOneBetaFeedbackInboxResponse,
+    PhaseOneBetaFeedbackThemeItem,
     PhaseOneBetaParticipationResponse,
     PhaseOneBetaSummaryResponse,
     PhaseOneBetaSupportReferenceResponse,
@@ -41,6 +44,23 @@ from ..models import (
 
 CHECKPOINT_DAYS = tuple(range(1, 22))
 ENDING_SOON_DAYS = 2
+
+FEEDBACK_THEME_LABELS = {
+    "nutrition_logging": "Nutrition logging is too slow",
+    "coach_context": "Wanted the coach to know my injury",
+    "video_playback": "Videos buffer on mobile data",
+    "identity_statement": "Loved the identity statement",
+    "gold_value": "Did not understand what Gold included",
+    "workout_plan": "Workout plan needs adjustment",
+    "other": "General feedback",
+}
+
+FEEDBACK_THEME_STATUS = {
+    "nutrition_logging": ("FIXED", "good", "Tell them it shipped"),
+    "coach_context": ("IN BUILD", "warn", "See the build ticket"),
+    "identity_statement": ("KEEP", "good", "Use as marketing copy"),
+    "other": ("OPEN", "bad", "Reply to feedback"),
+}
 
 
 def _as_utc_datetime(value: Any) -> datetime | None:
@@ -61,6 +81,21 @@ def _normalize_user_id(value: Any) -> str:
 
 def _normalize_country_label(value: Any) -> str:
     return str(value or "").strip() or "Unknown"
+
+
+def _normalize_feedback_theme(value: Any) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return raw if raw in FEEDBACK_THEME_LABELS else "other"
+
+
+def _feedback_theme_meta(theme: str, average_rating: float) -> tuple[str, str, str]:
+    if theme in FEEDBACK_THEME_STATUS:
+        return FEEDBACK_THEME_STATUS[theme]
+    if average_rating >= 4:
+        return ("KEEP", "good", "Use as marketing copy")
+    if average_rating >= 3:
+        return ("OPEN", "warn", "Reply to feedback")
+    return ("OPEN", "bad", "Assign to dev")
 
 
 def _in_window(timestamp: datetime | None, start_at: datetime | None, end_at: datetime | None) -> bool:
@@ -191,6 +226,76 @@ async def _load_records(collection, query: dict, *, projection: dict | None = No
         return []
 
 
+async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict], start_at: datetime, end_at: datetime) -> PhaseOneBetaFeedbackInboxResponse:
+    records = await _load_records(
+        beta_feedback_collection,
+        {
+            "user_id": {"$in": user_ids},
+            "created_at": {"$gte": start_at, "$lte": end_at},
+        },
+        projection={"user_id": 1, "rating": 1, "theme": 1, "message": 1, "would_pay": 1, "created_at": 1, "country": 1, "country_code": 1},
+    )
+    if not records:
+        return PhaseOneBetaFeedbackInboxResponse()
+
+    grouped: dict[str, dict[str, Any]] = {}
+    total_rating = 0
+    would_pay_count = 0
+    for record in records:
+        theme = _normalize_feedback_theme(record.get("theme"))
+        rating = max(1, min(int(record.get("rating") or 1), 5))
+        total_rating += rating
+        if bool(record.get("would_pay")):
+            would_pay_count += 1
+        user_id = _normalize_user_id(record.get("user_id"))
+        bucket = grouped.setdefault(theme, {"count": 0, "ratings": [], "messages": [], "users": set(), "countries": set()})
+        bucket["count"] += 1
+        bucket["ratings"].append(rating)
+        message = str(record.get("message") or "").strip()
+        if message:
+            bucket["messages"].append((record.get("created_at"), message))
+        if user_id:
+            bucket["users"].add(user_id)
+        user = users_by_id.get(user_id) or {}
+        country = str(record.get("country") or user.get("country") or record.get("country_code") or user.get("country_code") or "").strip()
+        if country:
+            bucket["countries"].add(country)
+
+    themes: list[PhaseOneBetaFeedbackThemeItem] = []
+    for theme, bucket in grouped.items():
+        ratings = bucket["ratings"] or [0]
+        average_rating = round(sum(ratings) / max(len(ratings), 1), 1)
+        status, tone, cta = _feedback_theme_meta(theme, average_rating)
+        messages = sorted(bucket["messages"], key=lambda item: _as_utc_datetime(item[0]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        tester_count = len(bucket["users"]) or bucket["count"]
+        countries = sorted(bucket["countries"])
+        who_market = ", ".join(countries[:4]) if countries else "all markets"
+        themes.append(
+            PhaseOneBetaFeedbackThemeItem(
+                c=int(bucket["count"]),
+                t=FEEDBACK_THEME_LABELS.get(theme, FEEDBACK_THEME_LABELS["other"]),
+                status=status,
+                tone=tone,
+                quote=messages[0][1] if messages else "",
+                cta=cta,
+                who=f"{tester_count} tester{'s' if tester_count != 1 else ''} · {who_market}",
+                drawer="support",
+                averageRating=average_rating,
+            )
+        )
+
+    themes.sort(key=lambda item: (-item.c, item.t.lower()))
+    total_responses = len(records)
+    return PhaseOneBetaFeedbackInboxResponse(
+        totalResponses=total_responses,
+        themeCount=len(themes),
+        wouldPayCount=would_pay_count,
+        wouldPayPct=round((would_pay_count / total_responses) * 100, 1) if total_responses else 0,
+        averageRating=round(total_rating / total_responses, 1) if total_responses else 0,
+        themes=themes,
+    )
+
+
 async def _load_beta_thread_messages(user_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
     threads = await _load_records(
         coach_victor_threads_collection,
@@ -269,6 +374,7 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
     beta_users.sort(key=lambda user: _as_utc_datetime(user.get("trial_start_at")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     beta_users = beta_users[:normalized_limit]
     user_ids = [_normalize_user_id(user.get("_id")) for user in beta_users]
+    users_by_id = {_normalize_user_id(user.get("_id")): user for user in beta_users}
     user_windows: dict[str, tuple[datetime | None, datetime | None]] = {}
     earliest_start: datetime | None = None
     latest_end: datetime | None = None
@@ -286,6 +392,7 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
     if earliest_start is None or latest_end is None:
         latest_end = now
         earliest_start = now
+    feedback_inbox = await _build_feedback_inbox(user_ids, users_by_id, earliest_start, latest_end)
 
     activity_by_user: dict[str, _UserActivityAccumulator] = {user_id: _UserActivityAccumulator() for user_id in user_ids}
 
@@ -655,6 +762,7 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
             betaUsersWithMessages=sum(1 for count in support_counts.values() if count > 0),
             totalSupportMessages=sum(support_counts.values()),
         ),
+        feedback=feedback_inbox,
         countries=[
             PhaseOneBetaCountryItem(
                 code=code,

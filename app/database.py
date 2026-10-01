@@ -48,6 +48,7 @@ if settings.mongodb_configured:
     app_content_collection = db["app_content"]
     coaching_applications_collection = db["coaching_applications"]
     support_messages_collection = db["support_messages"]
+    beta_feedback_collection = db["beta_feedback"]
     longevity_os_profiles_collection = db["longevity_os_profiles"]
     coach_victor_threads_collection = db["coach_victor_threads"]
     coach_victor_archives_collection = db["coach_victor_archives"]
@@ -104,6 +105,7 @@ else:
     app_content_collection = _UnconfiguredCollection()
     coaching_applications_collection = _UnconfiguredCollection()
     support_messages_collection = _UnconfiguredCollection()
+    beta_feedback_collection = _UnconfiguredCollection()
     longevity_os_profiles_collection = _UnconfiguredCollection()
     coach_victor_threads_collection = _UnconfiguredCollection()
     coach_victor_archives_collection = _UnconfiguredCollection()
@@ -246,6 +248,9 @@ async def ensure_indexes() -> None:
     await users_collection.create_index([("trial_outcome", 1), ("trial_end_at", -1)])
     await users_collection.create_index([("subscription_purchase_source", 1), ("trial_end_at", -1)])
     await users_collection.create_index([("beta_phase_one.is_beta_tester", 1), ("trial_start_at", -1)])
+    await beta_feedback_collection.create_index([("created_at", -1)])
+    await beta_feedback_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await beta_feedback_collection.create_index([("theme", 1), ("created_at", -1)])
     await phase_one_beta_slots_collection.create_index([("campaign", 1), ("slot_number", 1)], unique=True)
     await phase_one_beta_slots_collection.create_index(
         [("campaign", 1), ("claimed_by", 1)],

@@ -635,5 +635,94 @@ class PhaseOneBetaAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(response.status_code, {401, 403})
 
 
+class BetaFeedbackRouteTests(unittest.TestCase):
+    def test_user_can_submit_beta_feedback(self) -> None:
+        user = {
+            "_id": "beta-feedback-user",
+            "name": "Beta Tester",
+            "email": "beta@example.com",
+            "country": "Ghana",
+            "country_code": "GH",
+            "subscription_tier": "GOLD",
+            "subscription_purchase_source": "beta_trial",
+            "trial_start_at": _utc_now() - timedelta(days=1),
+            "trial_end_at": _utc_now() + timedelta(days=20),
+        }
+        app = FastAPI()
+        app.include_router(trial_router_module.router)
+        app.dependency_overrides[trial_router_module._require_access_user] = lambda: user
+        collection = SimpleNamespace(insert_one=AsyncMock())
+        client = TestClient(app)
+
+        with patch.object(trial_router_module, "beta_feedback_collection", collection), patch.object(
+            trial_router_module, "_record_analytics_event", AsyncMock()
+        ):
+            response = client.post(
+                "/me/beta-feedback",
+                json={
+                    "rating": 5,
+                    "theme": "workout_plan",
+                    "message": "The plan finally fits my week.",
+                    "would_pay": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.json()
+        self.assertEqual(payload["rating"], 5)
+        self.assertEqual(payload["theme"], "workout_plan")
+        self.assertEqual(payload["wouldPay"], True)
+        inserted = collection.insert_one.await_args.args[0]
+        self.assertEqual(inserted["user_id"], "beta-feedback-user")
+        self.assertEqual(inserted["country_code"], "GH")
+        self.assertEqual(inserted["status"], "OPEN")
+
+
+class BetaFeedbackAnalyticsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_feedback_inbox_groups_saved_user_feedback(self) -> None:
+        now = _utc_now()
+
+        class _Cursor:
+            async def to_list(self, length=None):
+                return [
+                    {
+                        "user_id": "user-1",
+                        "rating": 5,
+                        "theme": "workout_plan",
+                        "message": "Workout plan fits my week.",
+                        "would_pay": True,
+                        "created_at": now,
+                    },
+                    {
+                        "user_id": "user-2",
+                        "rating": 3,
+                        "theme": "workout_plan",
+                        "message": "Needs easier swaps.",
+                        "would_pay": False,
+                        "created_at": now - timedelta(minutes=5),
+                    },
+                ]
+
+        class _Collection:
+            def find(self, query, projection=None):
+                return _Cursor()
+
+        with patch.object(beta_analytics_service_module, "beta_feedback_collection", _Collection()):
+            inbox = await beta_analytics_service_module._build_feedback_inbox(
+                ["user-1", "user-2"],
+                {"user-1": {"country": "Ghana"}, "user-2": {"country": "Germany"}},
+                now - timedelta(days=2),
+                now + timedelta(days=1),
+            )
+
+        self.assertEqual(inbox.totalResponses, 2)
+        self.assertEqual(inbox.wouldPayCount, 1)
+        self.assertEqual(inbox.themeCount, 1)
+        self.assertEqual(inbox.themes[0].c, 2)
+        self.assertEqual(inbox.themes[0].t, "Workout plan needs adjustment")
+        self.assertEqual(inbox.themes[0].quote, "Workout plan fits my week.")
+        self.assertIn("Ghana", inbox.themes[0].who)
+
+
 if __name__ == "__main__":
     unittest.main()

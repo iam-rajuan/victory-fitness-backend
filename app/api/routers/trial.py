@@ -1,8 +1,25 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...database import beta_feedback_collection
+from ...models import BetaFeedbackCreateRequest, BetaFeedbackResponse
 
 router = APIRouter()
+
+_BETA_FEEDBACK_THEMES = {
+    "nutrition_logging",
+    "coach_context",
+    "video_playback",
+    "identity_statement",
+    "gold_value",
+    "workout_plan",
+    "other",
+}
+
+
+def _normalize_beta_feedback_theme(value: object) -> str:
+    theme = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return theme if theme in _BETA_FEEDBACK_THEMES else "other"
 
 
 async def _resolve_me_payload(record: dict) -> dict:
@@ -85,6 +102,53 @@ async def start_me_phase_one_beta(user: dict = Depends(_require_access_user)) ->
         market=str(updated_user.get("country_code") or user.get("country_code") or "") or None,
     )
     return MeResponse(**(await _resolve_me_payload(updated_user)))
+
+
+@router.post("/me/beta-feedback", response_model=BetaFeedbackResponse, status_code=status.HTTP_201_CREATED)
+async def create_me_beta_feedback(
+    payload: BetaFeedbackCreateRequest,
+    user: dict = Depends(_require_access_user),
+) -> BetaFeedbackResponse:
+    now = datetime.now(timezone.utc)
+    theme = _normalize_beta_feedback_theme(payload.theme)
+    message = payload.message.strip()
+    if len(message) < 4:
+        raise HTTPException(status_code=422, detail="Feedback message is too short")
+
+    document = {
+        "_id": ObjectId(),
+        "user_id": str(user.get("_id") or ""),
+        "user_name": str(user.get("name") or "").strip(),
+        "user_email": str(user.get("email") or "").strip(),
+        "country": str(user.get("country") or "").strip(),
+        "country_code": str(user.get("country_code") or "").strip().upper(),
+        "subscription_tier": str(user.get("subscription_tier") or "").strip(),
+        "subscription_purchase_source": str(user.get("subscription_purchase_source") or "").strip(),
+        "trial_type": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE if _is_phase_one_beta_user(user) else "",
+        "rating": int(payload.rating),
+        "theme": theme,
+        "message": message,
+        "would_pay": payload.would_pay,
+        "status": "OPEN",
+        "created_at": now,
+        "updated_at": now,
+    }
+    await beta_feedback_collection.insert_one(document)
+    await _record_analytics_event(
+        "beta_feedback_submitted",
+        user_id=str(user.get("_id") or ""),
+        market=document["country_code"] or None,
+        details={"rating": document["rating"], "theme": theme, "would_pay": payload.would_pay},
+    )
+    return BetaFeedbackResponse(
+        id=str(document["_id"]),
+        rating=document["rating"],
+        theme=theme,
+        message=message,
+        wouldPay=payload.would_pay,
+        status=document["status"],
+        createdAt=now,
+    )
 
 @router.get("/me/trial/decision", response_model=GoldTrialDecisionResponse)
 async def get_me_gold_trial_decision(user: dict = Depends(_require_access_user)) -> GoldTrialDecisionResponse:

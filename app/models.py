@@ -1871,6 +1871,44 @@ class PhaseOneBetaSupportReferenceResponse(BaseModel):
     totalSupportMessages: int = 0
 
 
+class BetaFeedbackCreateRequest(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    theme: str = Field(min_length=1, max_length=80)
+    message: str = Field(min_length=4, max_length=2000)
+    would_pay: bool | None = None
+
+
+class BetaFeedbackResponse(BaseModel):
+    id: str
+    rating: int
+    theme: str
+    message: str
+    wouldPay: bool | None = None
+    status: str = "OPEN"
+    createdAt: datetime
+
+
+class PhaseOneBetaFeedbackThemeItem(BaseModel):
+    c: int = 0
+    t: str = ""
+    status: str = "OPEN"
+    tone: str = "bad"
+    quote: str = ""
+    cta: str = "Reply to feedback"
+    who: str = ""
+    drawer: str = "support"
+    averageRating: float = 0
+
+
+class PhaseOneBetaFeedbackInboxResponse(BaseModel):
+    totalResponses: int = 0
+    themeCount: int = 0
+    wouldPayCount: int = 0
+    wouldPayPct: float = 0
+    averageRating: float = 0
+    themes: list[PhaseOneBetaFeedbackThemeItem] = Field(default_factory=list)
+
+
 class AdminUserListResponse(BaseModel):
     total: int = 0
     page: int = 1
@@ -1968,6 +2006,7 @@ class PhaseOneBetaSummaryResponse(BaseModel):
     checkpoints: list[PhaseOneBetaCheckpointItem] = Field(default_factory=list)
     campaignHealth: PhaseOneBetaCampaignHealthResponse = Field(default_factory=PhaseOneBetaCampaignHealthResponse)
     support: PhaseOneBetaSupportReferenceResponse = Field(default_factory=PhaseOneBetaSupportReferenceResponse)
+    feedback: PhaseOneBetaFeedbackInboxResponse = Field(default_factory=PhaseOneBetaFeedbackInboxResponse)
     countries: list[PhaseOneBetaCountryItem] = Field(default_factory=list)
     users: list[PhaseOneBetaUserItem] = Field(default_factory=list)
 
