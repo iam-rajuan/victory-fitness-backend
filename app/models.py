@@ -1270,6 +1270,7 @@ class CoachVictorThreadMessage(CoachVictorMessage):
 
 class CoachVictorChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
+    language_override: str | None = Field(default=None, max_length=20)
 
 
 class CoachVictorChatResponse(BaseModel):
@@ -2288,6 +2289,7 @@ class StrengthWorkoutPlanRequest(BaseModel):
     days: list[str] = Field(default_factory=list)
     age: str | None = None
     weight: str | None = None
+    custom_notes: str | None = Field(default=None, max_length=4000)
 
 
 class StrengthWorkoutPlanResponse(BaseModel):

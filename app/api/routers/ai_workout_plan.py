@@ -266,6 +266,7 @@ def _hydrate_strength_plan_input(payload: StrengthWorkoutPlanRequest, user: dict
         weight=weight,
         language=language,
         injury_flags=injury_flags,
+        custom_notes=str(payload.custom_notes or "").strip(),
     )
 
 

@@ -364,8 +364,6 @@ async def coach_victor_chat(
 
     # Pain flag detection & active adjustment
     await handle_pain_signals_if_any(user, user_id, payload.message)
-    plan_was_updated = await _maybe_apply_coach_workout_plan_update(user, user_id, payload.message)
-
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
         sort=[("updated_at", -1)],
@@ -378,6 +376,8 @@ async def coach_victor_chat(
     ]
     chat_history.append({"role": "user", "content": payload.message})
     user_context = await _coach_user_context(user, existing_messages)
+    if payload.language_override:
+        user_context["preferred_language"] = str(payload.language_override).strip().lower()
     req_lang = request.headers.get("accept-language", "").split(",")[0].split(";")[0].strip().lower()
     if req_lang and not user_context.get("preferred_language"):
         user_context["preferred_language"] = req_lang
@@ -399,8 +399,6 @@ async def coach_victor_chat(
         "created_at": now,
     }
     reply_text = result.reply
-    if plan_was_updated:
-        reply_text = f"{reply_text}\n\nI updated your active workout plan. Your Home plan card will show the revised next session."
 
     assistant_message = {
         "id": str(ObjectId()),
@@ -452,8 +450,6 @@ async def coach_victor_stream(
     logger.info("coach_stream_attempt user_id=%s", user_id)
 
     await handle_pain_signals_if_any(user, user_id, payload.message)
-    plan_was_updated = await _maybe_apply_coach_workout_plan_update(user, user_id, payload.message)
-
     thread = await coach_victor_threads_collection.find_one(
         {"user_id": user_id},
         sort=[("updated_at", -1)],
@@ -466,6 +462,8 @@ async def coach_victor_stream(
     ]
     chat_history.append({"role": "user", "content": payload.message})
     user_context = await _coach_user_context(user, existing_messages)
+    if payload.language_override:
+        user_context["preferred_language"] = str(payload.language_override).strip().lower()
     req_lang = request.headers.get("accept-language", "").split(",")[0].split(";")[0].strip().lower()
     if req_lang and not user_context.get("preferred_language"):
         user_context["preferred_language"] = req_lang
@@ -491,8 +489,6 @@ async def coach_victor_stream(
             user_context=user_context,
             last_user_message=payload.message,
         )
-        if plan_was_updated:
-            full_reply_text = f"{full_reply_text}\n\nI updated your active workout plan. Your Home plan card will show the revised next session."
         now = datetime.now(timezone.utc)
         user_msg = {
             "id": str(ObjectId()),
