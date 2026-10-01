@@ -253,6 +253,7 @@ class OnboardingPersonalProfileResponse(BaseModel):
 
 class OnboardingAnamneseResponse(BaseModel):
     primaryGoal: str = ""
+    primaryGoals: list[str] = Field(default_factory=list)
     activityLevel: str = ""
     healthConcerns: list[str] = Field(default_factory=list)
     healthNotes: str = ""

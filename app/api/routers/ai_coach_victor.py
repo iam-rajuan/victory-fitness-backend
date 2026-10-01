@@ -270,6 +270,48 @@ async def _coach_progress_context(user: dict, user_id: str) -> dict[str, Any]:
         {"user_id": user_id},
         sort=[("updated_at", -1), ("created_at", -1)],
     )
+    current_home_plan: dict[str, Any] = {}
+    if latest_workout_plan and isinstance(latest_workout_plan.get("plan"), dict):
+        plan = dict(latest_workout_plan.get("plan") or {})
+        input_data = dict(latest_workout_plan.get("input") or {})
+        progress_items = [item for item in latest_workout_plan.get("progress") or [] if isinstance(item, dict)]
+        completed_days = {str(item.get("day") or "") for item in progress_items if item.get("completed")}
+        day_summaries: list[dict[str, Any]] = []
+        for day in [item for item in plan.get("days") or [] if isinstance(item, dict)][:7]:
+            exercises = []
+            for exercise in (day.get("exercises") or [])[:6]:
+                if not isinstance(exercise, dict):
+                    continue
+                exercises.append(
+                    {
+                        "name": str(exercise.get("name") or "").strip(),
+                        "sets": exercise.get("sets"),
+                        "reps": exercise.get("reps"),
+                        "rest": exercise.get("rest"),
+                        "equipment": exercise.get("equipment") or exercise.get("weight"),
+                        "type": exercise.get("type") or exercise.get("kind"),
+                    }
+                )
+            day_summaries.append(
+                {
+                    "day": str(day.get("day") or "").strip(),
+                    "title": str(day.get("title") or "").strip(),
+                    "est_time": str(day.get("est_time") or "").strip(),
+                    "intensity": str(day.get("intensity") or "").strip(),
+                    "completed": str(day.get("day") or "").strip() in completed_days,
+                    "exercises": exercises,
+                }
+            )
+        current_home_plan = {
+            "summary": str(plan.get("summary") or "").strip(),
+            "goal": str(input_data.get("goal") or "").strip(),
+            "split": str(input_data.get("split") or "").strip(),
+            "frequency": input_data.get("frequency"),
+            "days": input_data.get("days") or [],
+            "equipment": input_data.get("equipment") or [],
+            "completed_days": sorted(completed_days),
+            "sessions": day_summaries,
+        }
     latest_feedback = {}
     raw_feedback = (latest_workout_plan or {}).get("session_feedback") or []
     if isinstance(raw_feedback, list) and raw_feedback:
@@ -291,6 +333,7 @@ async def _coach_progress_context(user: dict, user_id: str) -> dict[str, Any]:
             if latest_feedback
             else ""
         ),
+        "current_home_workout_plan": current_home_plan,
         "latest_nutrition_summary": latest_nutrition_summary,
         "weekly_plan_focus": str(weekly_plan.get("focus") or weekly_plan.get("headline") or "").strip(),
     }
@@ -561,3 +604,14 @@ async def coach_victor_history(
             for item in all_messages
         ],
     )
+
+
+@router.delete("/ai/coach-victor/history")
+async def clear_coach_victor_history(
+    user: dict = Depends(_require_coach_victor_access_user),
+) -> dict[str, bool]:
+    user_id = str(user["_id"])
+    logger.info("coach_history_clear_attempt user_id=%s", user_id)
+    await coach_victor_threads_collection.delete_many({"user_id": user_id})
+    logger.info("coach_history_clear_success user_id=%s", user_id)
+    return {"cleared": True}

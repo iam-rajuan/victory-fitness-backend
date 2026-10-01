@@ -3524,6 +3524,10 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
         },
         "anamnese": {
             "primaryGoal": str(anamnese.get("primaryGoal") or "").strip(),
+            "primaryGoals": (
+                [str(item).strip() for item in anamnese.get("primaryGoals", []) if str(item).strip()]
+                or ([str(anamnese.get("primaryGoal") or "").strip()] if str(anamnese.get("primaryGoal") or "").strip() else [])
+            ),
             "activityLevel": str(anamnese.get("activityLevel") or "").strip(),
             "healthConcerns": [str(item).strip() for item in anamnese.get("healthConcerns", []) if str(item).strip()],
             "healthNotes": str(anamnese.get("healthNotes") or "").strip(),

@@ -48,6 +48,12 @@ NUTRITION_QUERY_TERMS = [
     "whey", "creatine", "vitamin", "powder", "cook", "recipe", "nutrition",
 ]
 
+WORKOUT_PLAN_QUERY_TERMS = [
+    "workout plan", "training plan", "build my plan", "make my plan", "create my plan",
+    "rebuild my plan", "change my plan", "adjust my plan", "push pull", "push/pull",
+    "split", "leg day", "pull ups", "pull-ups", "squats", "only 10", "10min", "10 min",
+]
+
 
 def is_prompt_leak_query(query: str) -> bool:
     lowered = (query or "").strip().lower()
@@ -57,6 +63,13 @@ def is_prompt_leak_query(query: str) -> bool:
 def _is_nutrition_query(message: str) -> bool:
     lowered = (message or "").lower()
     return any(term in lowered for term in NUTRITION_QUERY_TERMS)
+
+
+def _is_workout_plan_query(message: str) -> bool:
+    lowered = (message or "").lower()
+    if any(term in lowered for term in WORKOUT_PLAN_QUERY_TERMS):
+        return True
+    return bool(re.search(r"\b(build|make|create|rebuild|change|adjust)\b.{0,40}\b(plan|split|workout|training)\b", lowered))
 
 
 def _identity_statement_from_context(user_context: dict[str, object] | None) -> str:
@@ -211,6 +224,7 @@ def build_coach_victor_system_prompt(
         f"Recent 14-day completed workouts: {_safe_text(progress.get('recent_completed_workouts'), '0')}.\n"
         f"Recent 7-day nutrition actions: {_safe_text(progress.get('recent_nutrition_actions'), '0')}.\n"
         f"Latest workout adaptation note: {_safe_text(progress.get('latest_workout_feedback_summary'))}.\n"
+        f"Current active Home workout plan JSON: {json.dumps(progress.get('current_home_workout_plan') or {}, ensure_ascii=False)}.\n"
         f"Latest nutrition summary: {_safe_text(progress.get('latest_nutrition_summary'))}.\n"
         f"Latest longevity weekly plan focus: {_safe_text(progress.get('weekly_plan_focus'))}."
     )
@@ -233,9 +247,21 @@ def build_coach_victor_system_prompt(
         "Prefer concrete sets, reps, exercise choices, scheduling, protein guidance, meal ideas, recovery steps, or behavior changes.\n"
         "If context is incomplete, make a reasonable assumption and state it briefly instead of refusing.\n"
         "Keep answers concise by default and avoid generic filler.\n\n"
-        "WORKOUT PLAN INSERTION RULE:\n"
-        "If the user asks you to build, change, rebuild, apply, or create a workout/training plan, you may propose the plan in chat, but you must NOT claim it has been saved, inserted, replaced, or applied to Home. "
-        "End by asking whether they want this plan to replace their current Home workout plan. The app will handle the explicit insert action only after the user confirms.\n\n"
+        "WORKOUT PLAN GENERATION RULES:\n"
+        "When the user asks you to build, change, rebuild, apply, or create any workout/training plan, DO NOT interview them with multiple questions. "
+        "Generate a usable plan immediately using their message, recent chat context, profile goal, level, time, available days, equipment, and pain/injury info. "
+        "If the user says adjust/change/current routine/current plan/my plan, use the Current active Home workout plan JSON as the starting point and explain only the changed routine. "
+        "The user's latest explicit message is the highest-priority source. It overrides profile/onboarding defaults when they conflict. "
+        "If the user says 10 minutes per day, every session you output must be 10 minutes, never 40 minutes. "
+        "If the user names days such as Saturday, Sunday, Monday, and Tuesday, use only those days unless they explicitly ask for more. "
+        "If the user says pull-ups only, squats only, push-ups, bodyweight, or no equipment, respect that constraint and do not add unrelated gym/barbell work. "
+        "Treat awkward phrases like '10 day per day, 10 minutes per day' as the user meaning 10 minutes per day, not 10 exercises or 10 sessions. "
+        "If something is missing, make one conservative assumption and state it briefly. Ask at most ONE short clarification only if the request is impossible or medically unsafe.\n"
+        "The plan must be compatible with the Home workout plan data model: day key (Mon/Tue/Wed/Thu/Fri/Sat/Sun), title, estimated time, intensity, and exercises with sets, reps, rest, weight/equipment label, and type. "
+        "Write the plan in a clean, scan-friendly format: short summary, then each day with 3-6 exercises. "
+        "Do NOT use markdown tables or pipe-separated columns. Use short bullets like '- Push-up: 2 x 6-10, 60s rest, Bodyweight, Compound'. Keep it friendly and concise.\n"
+        "You must NOT claim the plan has been saved, inserted, replaced, or applied to Home. The app will ask for explicit confirmation and show an insert button after the user confirms.\n"
+        "Do not end workout-plan replies with a list of follow-up questions. Focus on the generated plan.\n\n"
         "USER NAME AND ADDRESSING:\n"
         f"The user's name is {display_name or 'the user'}. Address them naturally by name when appropriate. NEVER address the user as 'Admin'.\n\n"
         "FAVORITE MEALS PRIORITY OVER COUNTRY DEFAULTS:\n"
@@ -358,6 +384,67 @@ def _generate_intelligent_fallback_reply(
     protein_status_de = f"Du hast heute {p_consumed}g deines {p_target}g Ziels erreicht."
     protein_status_hi = f"आपने आज अपने {p_target}g लक्ष्य में से {p_consumed}g प्राप्त कर लिया है।"
     protein_status_en = f"You have hit {p_consumed}g of your {p_target}g target today."
+
+    if _is_workout_plan_query(last_user_message):
+        onboarding = dict(context.get("onboarding") or {})
+        anamnese = dict(onboarding.get("anamnese") or {})
+        equipment = _safe_text(anamnese.get("equipmentAccess"), "available equipment")
+        goal = _safe_text(anamnese.get("primaryGoal"), "strength and consistency")
+        requested_minutes_match = re.search(r"(\d{1,3})\s*(?:min|minute)", lowered)
+        minutes = requested_minutes_match.group(1) if requested_minutes_match else "30"
+        day_aliases = [
+            ("monday", "Mon"), ("mon", "Mon"),
+            ("tuesday", "Tue"), ("tue", "Tue"),
+            ("wednesday", "Wed"), ("wed", "Wed"),
+            ("thursday", "Thu"), ("thu", "Thu"),
+            ("friday", "Fri"), ("fri", "Fri"),
+            ("saturday", "Sat"), ("sat", "Sat"),
+            ("sunday", "Sun"), ("sun", "Sun"),
+        ]
+        requested_days: list[str] = []
+        for needle, day in day_aliases:
+            if needle in lowered and day not in requested_days:
+                requested_days.append(day)
+        if not requested_days:
+            requested_days = ["Mon", "Wed", "Sat"]
+
+        def focus_for_day(day: str, idx: int) -> tuple[str, list[str]]:
+            before, _, after = lowered.partition(day.lower())
+            nearby = after[:80] if after else lowered
+            if "pull" in nearby:
+                return ("Pull-ups Focus", ["Pull-up or inverted row", "Scapular pull", "Dead bug"])
+            if "squat" in nearby:
+                return ("Squat Focus", ["Bodyweight squat", "Glute bridge", "Calf raise"])
+            if "push" in nearby:
+                return ("Push-up Focus", ["Push-up", "Pike press", "Plank shoulder tap"])
+            titles = [
+                ("Push-up Focus", ["Push-up", "Pike press", "Plank shoulder tap"]),
+                ("Pull-ups Focus", ["Pull-up or inverted row", "Scapular pull", "Dead bug"]),
+                ("Squat Focus", ["Bodyweight squat", "Glute bridge", "Calf raise"]),
+            ]
+            return titles[idx % len(titles)]
+
+        plan_blocks = []
+        for idx, day in enumerate(requested_days):
+            title, exercises = focus_for_day(day, idx)
+            plan_blocks.append(
+                f"**{day}: {title}**\n"
+                f"{minutes} min | Moderate intensity\n"
+                f"- {exercises[0]}: 2 x 6-10, 45s rest, Bodyweight/available kit, Compound\n"
+                f"- {exercises[1]}: 2 x 8-12, 30s rest, Bodyweight, Accessory\n"
+                f"- {exercises[2]}: 2 x 20-30s, 30s rest, Bodyweight, Core"
+            )
+
+        if "de" == preferred_lang:
+            return (
+                f"Ich baue den Plan nach deiner Vorgabe: {minutes} Minuten pro Training, nur die genannten Tage. Annahme: Ziel {goal}, Equipment: {equipment}.\n\n"
+                + "\n\n".join(plan_blocks)
+            )
+
+        return (
+            f"Here is the Home-ready plan based on your request: {minutes} minutes per session, only the days you named. Assumption: goal is {goal}, equipment is {equipment}.\n\n"
+            + "\n\n".join(plan_blocks)
+        )
 
     # Food / Meal / Nutrition questions
     is_nutrition_q = _is_nutrition_query(last_user_message)
@@ -489,6 +576,29 @@ def _ensure_nutrition_protein_status(reply: str, *, user_context: dict[str, obje
     return f"{expected_status}\n\n{reply.lstrip()}"
 
 
+def _clean_markdown_tables(reply: str) -> str:
+    if not reply or "|" not in reply:
+        return reply
+    cleaned_lines: list[str] = []
+    table_header: list[str] = []
+    for raw_line in reply.splitlines():
+        stripped = raw_line.strip()
+        if re.match(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$", stripped):
+            continue
+        if stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3:
+            cells = [cell.strip() for cell in stripped.strip("|").split("|") if cell.strip()]
+            lower_cells = [cell.lower() for cell in cells]
+            if any(label in lower_cells for label in ("exercise", "sets", "reps", "rest", "equipment")):
+                table_header = cells
+                continue
+            if table_header or len(cells) >= 3:
+                cleaned_lines.append(f"- {cells[0]}: {', '.join(cells[1:])}")
+                continue
+        table_header = []
+        cleaned_lines.append(raw_line)
+    return "\n".join(cleaned_lines)
+
+
 def postprocess_coach_victor_reply(
     reply: str,
     *,
@@ -496,6 +606,7 @@ def postprocess_coach_victor_reply(
     last_user_message: str,
 ) -> str:
     processed = _redact_identity_statement(reply or "", user_context=user_context)
+    processed = _clean_markdown_tables(processed)
     processed = _ensure_nutrition_protein_status(
         processed,
         user_context=user_context,
