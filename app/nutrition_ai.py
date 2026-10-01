@@ -13,6 +13,11 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from .config import settings
+from .country_food_data import (
+    build_country_food_prompt_context,
+    country_food_dataset_version,
+    get_country_food_dataset,
+)
 from .models import NutritionPlanResponse
 
 
@@ -405,6 +410,9 @@ def build_nutrition_plan_signature(payload: dict) -> str:
         "anthropic_model": settings.anthropic_model,
         "goal": _normalize_text(payload.get("goal"), ""),
         "cuisine": _normalize_text(payload.get("cuisine"), ""),
+        "country": _normalize_text(payload.get("country") or payload.get("user_country"), ""),
+        "country_code": _normalize_text(payload.get("country_code") or payload.get("countryCode") or payload.get("user_country_code"), "").upper(),
+        "country_food_dataset_version": country_food_dataset_version(payload),
         "favorite_meal": _normalize_text(payload.get("favorite_meal"), ""),
         "favorite_meals": favorite_meals,
         "diet": _normalize_text(payload.get("diet"), ""),
@@ -469,12 +477,20 @@ def _favorite_meals_instruction(payload: dict) -> str:
             favorite_meals.insert(0, fav)
 
     cuisine = str(payload.get("cuisine") or "").strip()
+    country_dataset = get_country_food_dataset(payload)
 
     instructions = [
         "CRITICAL FAVOURITE MEALS & CULINARY MANDATE:",
-        "- The 7-day meal plan MUST be built EXCLUSIVELY using the user's declared favourite meals and cuisine preferences.",
-        "- STRICTLY FORBIDDEN: NEVER fall back to or introduce country-of-origin, geographic, or regional defaults when favourite meals or cuisine are specified. For example, if a user is located in or from Ghana but lists Italian cuisine and favourites (such as pasta, pizza, risotto), EVERY meal must be Italian or inspired by those favourites. Do NOT include Ghanaian staples like fufu, banku, or jollof.",
+        "- The 7-day meal plan MUST strongly honor the user's declared favourite meals and cuisine preferences.",
     ]
+    if country_dataset:
+        instructions.append(
+            f"- The approved {country_dataset['country']} food dataset is active. Prioritize its dishes and combinations unless a stated preference, allergy, dietary restriction, or goal makes a specific dish unsuitable."
+        )
+    else:
+        instructions.append(
+            "- STRICTLY FORBIDDEN: NEVER fall back to or introduce country-of-origin, geographic, or regional defaults when favourite meals or cuisine are specified. For example, if a user is located in or from Ghana but lists Italian cuisine and favourites such as pasta, pizza, or risotto, every main meal must stay Italian or inspired by those favourites."
+        )
     if favorite_meals:
         instructions.append(f"- User's Explicit Favourite Meals: {', '.join(favorite_meals)}. Prioritize and feature these dishes across lunches and dinners.")
     if cuisine:
@@ -526,6 +542,40 @@ def _meal_plan_practical_constraints_instruction(payload: dict) -> str:
     return "\n".join(instructions) + "\n"
 
 
+def _format_approved_meal(item: dict) -> str:
+    sides = ", ".join(str(side) for side in item.get("with", []) if str(side).strip())
+    return f"{item.get('dish', 'Ghanaian meal')} with {sides}" if sides else str(item.get("dish") or "Ghanaian meal")
+
+
+def _ghanaian_fallback_meals(payload: dict) -> dict[str, list[str]] | None:
+    dataset = get_country_food_dataset(payload)
+    if not dataset or dataset.get("country") != "Ghana":
+        return None
+
+    favorite_meals = [
+        str(item).strip().lower()
+        for item in (payload.get("favorite_meals") or payload.get("favorite_meals_json") or [])
+        if str(item).strip()
+    ]
+    cuisine = _normalize_text(payload.get("cuisine"), "").lower()
+    approved_terms = {
+        str(item.get("dish") or "").lower()
+        for items in dataset["meals"].values()
+        for item in items
+    }
+    explicitly_non_ghanaian = bool(favorite_meals) and "ghana" not in cuisine and not any(
+        any(term and term in meal for term in approved_terms)
+        for meal in favorite_meals
+    )
+    if explicitly_non_ghanaian:
+        return None
+
+    return {
+        meal_period: [_format_approved_meal(item) for item in items]
+        for meal_period, items in dataset["meals"].items()
+    }
+
+
 def _build_fallback_nutrition_plan(payload: dict) -> dict:
     goal_code = _normalize_text(payload.get("goal"), "").lower()
     diet_code = _normalize_text(payload.get("diet"), "").lower()
@@ -544,6 +594,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
     favorite_meal = favorite_meals[0] if favorite_meals else ("balanced meals" if not cuisine else f"{cuisine} meals")
     allergies = _normalize_text(payload.get("allergies"), "").lower()
     health_conditions = _normalize_string_list(payload.get("health_conditions"))
+    ghanaian_meals = _ghanaian_fallback_meals(payload)
 
     goal_label_map = {
         "g1": "Weight Loss",
@@ -571,7 +622,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
     else:
         breakfast_side = "berries and seeds"
 
-    # User favorite meals priority (Ghana user with Italian favorites gets Italian meals, never country defaults)
+    # User favorite meals remain important; approved Ghanaian data is used when Ghana/Ghanaian context is active.
     has_explicit_favs = len(favorite_meals) > 0
     display_cuisine = cuisine if cuisine else ("Italian" if any("pasta" in f.lower() or "pizza" in f.lower() or "risotto" in f.lower() for f in favorite_meals) else "balanced")
 
@@ -581,6 +632,8 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
     )
     if has_explicit_favs:
         summary += f" It exclusively incorporates your favourites: {', '.join(favorite_meals[:3])}."
+    if ghanaian_meals:
+        summary += " It prioritizes the approved Ghanaian food dataset and preserves local dish combinations."
     if health_conditions:
         summary += f" Mindful of: {', '.join(health_conditions[:3])}."
 
@@ -609,8 +662,11 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         base_kcal = 380 + (index % 3) * 20
         carb_target = base_carb + (0 if is_low_carb else (index % 2) * 6)
 
-        # Select meal names honoring ONLY user favorites
-        if has_explicit_favs:
+        if ghanaian_meals:
+            breakfast_name = ghanaian_meals["breakfast"][index % len(ghanaian_meals["breakfast"])]
+            lunch_dish = ghanaian_meals["lunch"][index % len(ghanaian_meals["lunch"])]
+            dinner_dish = ghanaian_meals["dinner"][index % len(ghanaian_meals["dinner"])]
+        elif has_explicit_favs:
             lunch_dish = favorite_meals[index % len(favorite_meals)]
             dinner_dish = favorite_meals[(index + 1) % len(favorite_meals)]
             breakfast_name = f"{display_cuisine.capitalize()} Protein Breakfast Bowl" if index % 2 == 0 else f"{display_cuisine.capitalize()} Scrambled Eggs & Toast"
@@ -623,8 +679,12 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         pre_workout_timing = f"Scheduled 60–90 mins before {workout_time} workout (e.g. 16:00)"
         post_workout_timing = "Scheduled within 45 mins after workout (e.g. 18:45)"
 
-        pre_dish = favorite_meals[(index + 1) % len(favorite_meals)] if has_explicit_favs else f"{display_cuisine.capitalize()} Energy Bowl"
-        post_dish = favorite_meals[(index + 2) % len(favorite_meals)] if has_explicit_favs else f"Roasted {protein_name} Recovery Plate"
+        if ghanaian_meals:
+            pre_dish = ghanaian_meals["breakfast"][(index + 3) % len(ghanaian_meals["breakfast"])]
+            post_dish = ghanaian_meals["lunch"][(index + 4) % len(ghanaian_meals["lunch"])]
+        else:
+            pre_dish = favorite_meals[(index + 1) % len(favorite_meals)] if has_explicit_favs else f"{display_cuisine.capitalize()} Energy Bowl"
+            post_dish = favorite_meals[(index + 2) % len(favorite_meals)] if has_explicit_favs else f"Roasted {protein_name} Recovery Plate"
 
         lunch_c = max(carb_target + 10, 52)
         pre_c = max(carb_target + 18, 55)
@@ -636,6 +696,45 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         pre_kcal = (pre_p * 4) + (pre_c * 4) + (5 * 9)
         post_kcal = (post_p * 4) + (post_c * 4) + (7 * 9)
         d_kcal = (dinner_p * 4) + (dinner_c * 4) + (12 * 9)
+
+        if ghanaian_meals:
+            breakfast_ingredients = [breakfast_name, "Portion adjusted to match calories and protein", "Water or unsweetened tea"]
+            lunch_ingredients = [lunch_dish, "Lean protein portion adjusted to target", "Vegetable or salad side where suitable"]
+            dinner_ingredients = [dinner_dish, "Soup/stew pairing preserved from approved Ghana dataset", "Extra fish, egg, chicken, beans, or wagashi as needed for protein"]
+            pre_ingredients = [pre_dish, "Small carb-forward portion", "Water"]
+            post_ingredients = [post_dish, "Protein-forward recovery portion", "Water"]
+        else:
+            breakfast_ingredients = [
+                breakfast_protein,
+                "Oats or whole grain bread",
+                breakfast_side,
+                "Cinnamon or light seasoning",
+            ]
+            lunch_ingredients = [
+                protein_name,
+                "Pasta, rice, or grains matching favorite dish",
+                "Steamed vegetables or salad",
+                "1 tsp olive oil",
+                "Herbs and spices",
+            ]
+            dinner_ingredients = [
+                protein_name,
+                "Seasonal vegetables",
+                "Light complex carbs",
+                "Garlic and olive oil",
+                "Fresh herbs",
+            ]
+            pre_ingredients = [
+                "Whole-grain banana toast or oats with honey",
+                "Light whey or plant protein shake",
+                "1 medium banana or dates",
+            ]
+            post_ingredients = [
+                protein_name,
+                "Steamed jasmine rice or sweet potato",
+                "Steamed greens with sea salt",
+                "Electrolyte water",
+            ]
 
         days.append(
             {
@@ -649,10 +748,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "f": 10,
                     "timing": "Morning (07:30–08:30)",
                     "ingredients": [
-                        breakfast_protein,
-                        "Oats or whole grain bread",
-                        breakfast_side,
-                        "Cinnamon or light seasoning",
+                        *breakfast_ingredients,
                     ],
                     "instructions": [
                         "Prepare the base protein and whole grains.",
@@ -669,11 +765,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "f": 11,
                     "timing": "Midday (12:30–13:30)",
                     "ingredients": [
-                        protein_name,
-                        "Pasta, rice, or grains matching favorite dish",
-                        "Steamed vegetables or salad",
-                        "1 tsp olive oil",
-                        "Herbs and spices",
+                        *lunch_ingredients,
                     ],
                     "instructions": [
                         "Cook grains or pasta al dente.",
@@ -690,9 +782,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "f": 5,  # Low fat
                     "timing": f"60–90m before workout ({workout_time})",
                     "ingredients": [
-                        "Whole-grain banana toast or oats with honey",
-                        "Light whey or plant protein shake",
-                        "1 medium banana or dates",
+                        *pre_ingredients,
                     ],
                     "instructions": [
                         "Consume 60 to 90 minutes before your workout.",
@@ -708,10 +798,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "f": 7,
                     "timing": "Within 45m of workout end",
                     "ingredients": [
-                        protein_name,
-                        "Steamed jasmine rice or sweet potato",
-                        "Steamed greens with sea salt",
-                        "Electrolyte water",
+                        *post_ingredients,
                     ],
                     "instructions": [
                         "Consume within 45 minutes of completing your workout.",
@@ -727,11 +814,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
                     "f": 12,
                     "timing": "Evening (19:30–20:30)",
                     "ingredients": [
-                        protein_name,
-                        "Seasonal vegetables",
-                        "Light complex carbs",
-                        "Garlic and olive oil",
-                        "Fresh herbs",
+                        *dinner_ingredients,
                     ],
                     "instructions": [
                         "Cook protein through to lock in amino acids.",
@@ -742,31 +825,59 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
             }
         )
 
-    shopping_list = [
-        {
-            "category": "Proteins",
-            "items": [
-                {"name": breakfast_protein, "qty": "5-7 servings"},
-                {"name": protein_name, "qty": "7-10 servings"},
-                {"name": "Eggs or plant protein backup", "qty": "1 carton/pack"},
-            ],
-        },
-        {
-            "category": "Carbohydrates & Grains",
-            "items": [
-                {"name": "Oats / Whole-grain bread", "qty": "1 pack"},
-                {"name": "Pasta, Rice or specialty grains for favorite meals", "qty": "1-2 kg"},
-            ],
-        },
-        {
-            "category": "Produce & Fresh",
-            "items": [
-                {"name": "Fresh vegetables for sides", "qty": "7-10 cups"},
-                {"name": "Leafy greens", "qty": "4 bags"},
-                {"name": "Fresh berries or fruit", "qty": "7 servings"},
-            ],
-        },
-    ]
+    if ghanaian_meals:
+        shopping_list = [
+            {
+                "category": "Ghanaian Staples",
+                "items": [
+                    {"name": "Waakye rice and beans / rice", "qty": "3-5 servings"},
+                    {"name": "Banku, fufu, kenkey, yam, or ampesi staples", "qty": "7-10 portions"},
+                    {"name": "Gari and talia", "qty": "1 pack each"},
+                ],
+            },
+            {
+                "category": "Proteins",
+                "items": [
+                    {"name": "Fish, tilapia, smoked herring, or fried fish", "qty": "6-8 portions"},
+                    {"name": "Chicken, goat, eggs, or wagashi", "qty": "7-10 portions"},
+                    {"name": "Crab, wele, mushrooms, or beans where suitable", "qty": "3-5 portions"},
+                ],
+            },
+            {
+                "category": "Soups, Sauces & Produce",
+                "items": [
+                    {"name": "Shito, kpakpo shito, pepper sauce", "qty": "1 batch/jar"},
+                    {"name": "Kontomire, okro, ayoyo, or soup vegetables", "qty": "7 servings"},
+                    {"name": "Plantain, avocado, salad vegetables, milk, bread", "qty": "as needed for the selected meals"},
+                ],
+            },
+        ]
+    else:
+        shopping_list = [
+            {
+                "category": "Proteins",
+                "items": [
+                    {"name": breakfast_protein, "qty": "5-7 servings"},
+                    {"name": protein_name, "qty": "7-10 servings"},
+                    {"name": "Eggs or plant protein backup", "qty": "1 carton/pack"},
+                ],
+            },
+            {
+                "category": "Carbohydrates & Grains",
+                "items": [
+                    {"name": "Oats / Whole-grain bread", "qty": "1 pack"},
+                    {"name": "Pasta, Rice or specialty grains for favorite meals", "qty": "1-2 kg"},
+                ],
+            },
+            {
+                "category": "Produce & Fresh",
+                "items": [
+                    {"name": "Fresh vegetables for sides", "qty": "7-10 cups"},
+                    {"name": "Leafy greens", "qty": "4 bags"},
+                    {"name": "Fresh berries or fruit", "qty": "7 servings"},
+                ],
+            },
+        ]
 
     return _validate_nutrition_plan(
         {
@@ -1214,12 +1325,14 @@ def _nutrition_language_instruction(payload: dict) -> str:
 def _build_nutrition_plan_prompt(payload: dict) -> str:
     lang_req = _nutrition_language_instruction(payload)
     fav_inst = _favorite_meals_instruction(payload)
+    country_food_inst = build_country_food_prompt_context(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
     practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         "Create a 7-day nutrition plan in JSON with this exact top-level structure:\n"
         f"{fav_inst}"
+        f"{country_food_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
         f"{practical_inst}"
@@ -1240,12 +1353,14 @@ def _build_nutrition_plan_prompt(payload: dict) -> str:
 def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
     lang_req = _nutrition_language_instruction(payload)
     fav_inst = _favorite_meals_instruction(payload)
+    country_food_inst = build_country_food_prompt_context(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
     practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         "Create only Monday for a 7-day nutrition plan in JSON with this exact structure:\n"
         f"{fav_inst}"
+        f"{country_food_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
         f"{practical_inst}"
@@ -1264,12 +1379,14 @@ def _build_progressive_nutrition_plan_monday_prompt(payload: dict) -> str:
 def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_plan: dict) -> str:
     lang_req = _nutrition_language_instruction(payload)
     fav_inst = _favorite_meals_instruction(payload)
+    country_food_inst = build_country_food_prompt_context(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
     practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         "Complete a 7-day nutrition plan in JSON with this exact top-level structure:\n"
         f"{fav_inst}"
+        f"{country_food_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
         f"{practical_inst}"
@@ -1291,12 +1408,14 @@ def _build_progressive_nutrition_plan_completion_prompt(payload: dict, monday_pl
 def _build_progressive_nutrition_plan_day_prompt(payload: dict, day_name: str, previous_days: list[dict]) -> str:
     lang_req = _nutrition_language_instruction(payload)
     fav_inst = _favorite_meals_instruction(payload)
+    country_food_inst = build_country_food_prompt_context(payload)
     timing_inst = _workout_nutrient_timing_instruction(payload)
     protein_inst = _protein_target_instruction(payload)
     practical_inst = _meal_plan_practical_constraints_instruction(payload)
     return (
         f"Create only {day_name} for a 7-day nutrition plan in JSON with this exact structure:\n"
         f"{fav_inst}"
+        f"{country_food_inst}"
         f"{timing_inst}"
         f"{protein_inst}"
         f"{practical_inst}"

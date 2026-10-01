@@ -1389,6 +1389,8 @@ class NutritionDayPlan(BaseModel):
 class NutritionPlanRequest(BaseModel):
     goal: str | None = None
     cuisine: str | None = None
+    country: str | None = Field(default=None, max_length=120)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
     favorite_meal: str | None = None
     favorite_meals: list[str] = Field(default_factory=list)
     favorite_meals_json: list[str] = Field(default_factory=list)

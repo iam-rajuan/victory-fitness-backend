@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...country_food_data import get_country_food_dataset
 from ...nutrition_ai import _build_fallback_nutrition_plan, _normalize_nutrition_plan
 
 router = APIRouter()
@@ -24,6 +25,32 @@ def _serialize_nutrition_meal_log(record: dict) -> NutritionMealLogResponse:
         completed=bool(record["completed"]) if "completed" in record else True,
         created_at=record.get("created_at") or datetime.now(timezone.utc),
     )
+
+
+def _nutrition_payload_with_user_country(payload_data: dict, user: dict) -> dict:
+    enriched = dict(payload_data)
+    country = str(enriched.get("country") or user.get("country") or "").strip()
+    country_code = str(enriched.get("country_code") or enriched.get("countryCode") or user.get("country_code") or "").strip().upper()
+    if country:
+        enriched["country"] = country
+    if country_code:
+        enriched["country_code"] = country_code
+    return enriched
+
+
+def _validate_nutrition_favorites_or_country_dataset(payload_data: dict) -> None:
+    meals = [
+        str(item).strip()
+        for item in (payload_data.get("favorite_meals") or payload_data.get("favorite_meals_json") or [])
+        if str(item).strip()
+    ]
+    if payload_data.get("favorite_meal") and str(payload_data.get("favorite_meal")).strip():
+        meal = str(payload_data.get("favorite_meal")).strip()
+        if meal.lower() not in {item.lower() for item in meals}:
+            meals.insert(0, meal)
+    if len(meals) >= 3 or get_country_food_dataset(payload_data):
+        return
+    raise HTTPException(status_code=422, detail="At least 3 favourite meals are required to build your meal plan.")
 
 
 @router.get("/ai/nutrition/meal-logs", response_model=NutritionMealLogListResponse)
@@ -110,7 +137,8 @@ async def nutrition_plan(
 
     logger.info("nutrition_plan_attempt user_id=%s", str(user["_id"]))
 
-    payload_data = payload.model_dump()
+    payload_data = _nutrition_payload_with_user_country(payload.model_dump(), user)
+    _validate_nutrition_favorites_or_country_dataset(payload_data)
 
     profile_hash = build_nutrition_plan_signature(payload_data)
 
@@ -135,7 +163,7 @@ async def nutrition_plan(
             {"_id": user["_id"]},
             {
                 "$set": {
-                    "nutrition_onboarding_profile": payload.model_dump(),
+                    "nutrition_onboarding_profile": payload_data,
                     "updated_at": datetime.now(timezone.utc),
                 }
             },
@@ -162,7 +190,7 @@ async def nutrition_plan(
 
         raise HTTPException(status_code=502, detail=f"Nutrition plan unavailable: {exc}") from exc
 
-    plan = NutritionPlanResponse(**result.data, profile=payload.model_dump())
+    plan = NutritionPlanResponse(**result.data, profile=payload_data)
     created_at = datetime.now(timezone.utc)
     insert_result = await nutrition_plans_collection.insert_one(
         {
@@ -180,7 +208,7 @@ async def nutrition_plan(
         {"_id": user["_id"]},
         {
             "$set": {
-                "nutrition_onboarding_profile": payload.model_dump(),
+                "nutrition_onboarding_profile": payload_data,
                 "updated_at": datetime.now(timezone.utc),
             }
         },
@@ -213,7 +241,8 @@ async def nutrition_plan_job(
 
     logger.info("nutrition_plan_job_attempt user_id=%s", str(user["_id"]))
 
-    payload_data = payload.model_dump()
+    payload_data = _nutrition_payload_with_user_country(payload.model_dump(), user)
+    _validate_nutrition_favorites_or_country_dataset(payload_data)
 
     profile_hash = build_nutrition_plan_signature(payload_data)
 
@@ -359,7 +388,10 @@ async def nutrition_latest_plan(
                 "weight": float(user.get("weight") or 70.0),
                 "diet": user.get("diet") or "d1",
                 "cuisine": user.get("cuisine") or "balanced",
+                "country": user.get("country") or "",
+                "country_code": user.get("country_code") or "",
             }
+        user_profile = _nutrition_payload_with_user_country(user_profile, user)
         base_plan = _build_fallback_nutrition_plan(user_profile)
         created_at = datetime.now(timezone.utc)
         insert_res = await nutrition_plans_collection.insert_one(
@@ -429,7 +461,10 @@ async def nutrition_latest_plan_completion(
                 "weight": float(user.get("weight") or 70.0),
                 "diet": user.get("diet") or "d1",
                 "cuisine": user.get("cuisine") or "balanced",
+                "country": user.get("country") or "",
+                "country_code": user.get("country_code") or "",
             }
+        user_profile = _nutrition_payload_with_user_country(user_profile, user)
         base_plan = _build_fallback_nutrition_plan(user_profile)
         created_at = datetime.now(timezone.utc)
         insert_res = await nutrition_plans_collection.insert_one(
@@ -533,7 +568,8 @@ async def progressive_nutrition_plan_job(
 
     logger.info("progressive_nutrition_plan_job_attempt user_id=%s", str(user["_id"]))
 
-    payload_data = payload.model_dump()
+    payload_data = _nutrition_payload_with_user_country(payload.model_dump(), user)
+    _validate_nutrition_favorites_or_country_dataset(payload_data)
 
     profile_hash = build_nutrition_plan_signature(payload_data)
 

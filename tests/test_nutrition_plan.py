@@ -159,6 +159,71 @@ class NutritionPlanPersistenceRouteTests(unittest.TestCase):
             "a3",
         )
 
+    def test_generate_plan_enriches_payload_from_saved_user_country(self) -> None:
+        fake_plans = _FakeNutritionPlansCollection()
+        fake_users = _FakeUsersCollection()
+        captured_payloads: list[dict] = []
+        payload = {
+            "goal": "g2",
+            "cuisine": "balanced",
+            "favorite_meals": ["Waakye", "Banku", "Fufu"],
+            "diet": "balanced",
+            "allergies": "",
+            "activity_level": "a3",
+            "weight": "75",
+        }
+        generated_data = nutrition_ai_module._build_fallback_nutrition_plan(
+            {**payload, "country": "Ghana", "country_code": "GH"}
+        )
+
+        def _capture_generate(data):
+            captured_payloads.append(dict(data))
+            return SimpleNamespace(data=generated_data)
+
+        app = self.client.app
+        previous_override = app.dependency_overrides.get(nutrition_router_module._require_meal_plan_access_user)
+        app.dependency_overrides[nutrition_router_module._require_meal_plan_access_user] = lambda: {
+            "_id": "ghana-user-1",
+            "subscription_tier": "GOLD",
+            "subscription_status": "ACTIVE",
+            "is_verified": True,
+            "country": "Ghana",
+            "country_code": "GH",
+        }
+
+        try:
+            with patch.object(nutrition_router_module, "nutrition_plans_collection", fake_plans), patch.object(
+                nutrition_router_module,
+                "users_collection",
+                fake_users,
+            ), patch.object(
+                nutrition_router_module,
+                "_enforce_nutrition_generation_limit",
+                AsyncMock(),
+            ), patch.object(
+                nutrition_router_module,
+                "_record_trial_engagement",
+                AsyncMock(),
+            ), patch.object(
+                nutrition_router_module,
+                "generate_nutrition_plan",
+                side_effect=_capture_generate,
+            ), patch.object(
+                nutrition_router_module,
+                "build_nutrition_plan_signature",
+                return_value="ghana-profile-hash",
+            ):
+                response = self.client.post("/ai/nutrition/plan", json=payload)
+        finally:
+            if previous_override is None:
+                app.dependency_overrides.pop(nutrition_router_module._require_meal_plan_access_user, None)
+            else:
+                app.dependency_overrides[nutrition_router_module._require_meal_plan_access_user] = previous_override
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured_payloads[-1]["country"], "Ghana")
+        self.assertEqual(captured_payloads[-1]["country_code"], "GH")
+        self.assertEqual(fake_users.updated_payloads[-1]["update"]["$set"]["nutrition_onboarding_profile"]["country"], "Ghana")
+
     def test_generate_plan_rejects_fewer_than_three_favorite_meals(self) -> None:
         payload = {
             "goal": "g2",
@@ -182,6 +247,61 @@ class NutritionPlanPersistenceRouteTests(unittest.TestCase):
 
 
 class NutritionPlanFallbackTests(unittest.TestCase):
+    def test_ghana_country_prompt_includes_approved_food_dataset(self) -> None:
+        prompt = nutrition_ai_module._build_nutrition_plan_prompt(
+            {
+                "goal": "g2",
+                "cuisine": "Ghanaian",
+                "country": "Ghana",
+                "country_code": "GH",
+                "favorite_meals": ["Waakye", "Banku", "Fufu"],
+                "weight": "75",
+            }
+        )
+
+        self.assertIn("Active country dataset: Ghana", prompt)
+        self.assertIn("Waakye -> with gari, shito, stew, talia, egg, wele, fried fish", prompt)
+        self.assertIn("Fufu + Nkate nkwan -> with groundnut soup, chicken/goat", prompt)
+        self.assertIn("Kpakpo shito", prompt)
+
+    def test_non_ghana_prompt_does_not_include_ghana_dataset(self) -> None:
+        prompt = nutrition_ai_module._build_nutrition_plan_prompt(
+            {
+                "goal": "g2",
+                "cuisine": "Italian",
+                "country": "Germany",
+                "country_code": "DE",
+                "favorite_meals": ["Pasta", "Pizza", "Risotto"],
+                "weight": "75",
+            }
+        )
+
+        self.assertNotIn("Active country dataset: Ghana", prompt)
+        self.assertNotIn("Fufu + Nkate nkwan", prompt)
+
+    def test_ghana_fallback_plan_prioritizes_approved_combinations(self) -> None:
+        plan = nutrition_ai_module._build_fallback_nutrition_plan(
+            {
+                "goal": "g2",
+                "cuisine": "Ghanaian",
+                "country": "Ghana",
+                "country_code": "GH",
+                "diet": "balanced",
+                "allergies": "",
+                "weight": "75",
+            }
+        )
+
+        meal_names = " | ".join(
+            meal["name"]
+            for day in plan["days"]
+            for key, meal in day.items()
+            if key != "day" and isinstance(meal, dict)
+        )
+        self.assertIn("Waakye with gari, shito, stew, talia, egg, wele, fried fish", meal_names)
+        self.assertIn("Fufu + Nkate nkwan with groundnut soup, chicken/goat", meal_names)
+        self.assertIn("approved Ghanaian food dataset", plan["summary"])
+
     def test_generate_nutrition_plan_returns_fallback_plan_when_model_json_is_unusable(self) -> None:
         payload = {
             "goal": "g2",
