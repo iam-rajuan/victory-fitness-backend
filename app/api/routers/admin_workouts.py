@@ -140,13 +140,14 @@ async def admin_create_workout(
 
         raise HTTPException(status_code=409, detail="A workout with this video already exists")
 
-    thumbnail = (payload.thumbnail or "").strip()
+    default_thumbnail = (payload.thumbnail or "").strip()
+    custom_thumbnail = ""
 
     if payload.image_base64:
 
         try:
 
-            thumbnail = _upload_image_to_s3(
+            custom_thumbnail = _upload_image_to_s3(
 
                 "workout-thumbnails",
 
@@ -186,7 +187,8 @@ async def admin_create_workout(
 
         "visibility": payload.visibility,
 
-        "thumbnail": thumbnail,
+        "thumbnail": default_thumbnail,
+        "custom_thumbnail": custom_thumbnail,
 
         "movements": _normalize_workout_movements_for_storage(payload.movements),
 
@@ -256,15 +258,17 @@ async def admin_update_workout(
 
         raise HTTPException(status_code=409, detail="A workout with this video already exists")
 
-    previous_thumbnail = str(existing_workout.get("thumbnail") or "").strip()
+    previous_custom_thumbnail = str(existing_workout.get("custom_thumbnail") or "").strip()
 
-    thumbnail = (payload.thumbnail or "").strip()
+    default_thumbnail = (payload.thumbnail or existing_workout.get("thumbnail") or existing_workout.get("thumbnail_url") or "").strip()
+    custom_thumbnail = previous_custom_thumbnail
+    unset_fields: dict[str, str] = {}
 
     if payload.image_base64:
 
         try:
 
-            thumbnail = _upload_image_to_s3(
+            custom_thumbnail = _upload_image_to_s3(
 
                 "workout-thumbnails",
 
@@ -282,9 +286,14 @@ async def admin_update_workout(
 
             raise HTTPException(status_code=500, detail=f"Workout thumbnail upload failed: {exc}") from exc
 
-    if previous_thumbnail and previous_thumbnail != thumbnail:
+    elif payload.removeThumbnail:
 
-        _delete_image_from_s3(previous_thumbnail)
+        custom_thumbnail = ""
+        unset_fields["custom_thumbnail"] = ""
+
+    if previous_custom_thumbnail and previous_custom_thumbnail != custom_thumbnail:
+
+        _delete_image_from_s3(previous_custom_thumbnail)
 
     levels = _normalize_workout_level_values(payload.level, payload.levels)
     update_doc = {
@@ -308,13 +317,17 @@ async def admin_update_workout(
 
         "visibility": payload.visibility,
 
-        "thumbnail": thumbnail,
+        "thumbnail": default_thumbnail,
 
         "movements": _normalize_workout_movements_for_storage(payload.movements),
 
         "updated_at": datetime.now(timezone.utc),
 
     }
+
+    if custom_thumbnail:
+
+        update_doc["custom_thumbnail"] = custom_thumbnail
 
     update_operation: dict[str, Any] = {"$set": update_doc}
 
@@ -324,7 +337,11 @@ async def admin_update_workout(
 
     else:
 
-        update_operation["$unset"] = {"vimeo_id": ""}
+        unset_fields["vimeo_id"] = ""
+
+    if unset_fields:
+
+        update_operation["$unset"] = unset_fields
 
     await workouts_collection.update_one({"_id": object_id}, update_operation)
 
@@ -357,11 +374,23 @@ async def admin_delete_workout(
 
         raise HTTPException(status_code=400, detail="Invalid workout id") from exc
 
+    existing_workout = await workouts_collection.find_one({"_id": object_id})
+
+    if not existing_workout:
+
+        raise HTTPException(status_code=404, detail="Workout not found")
+
     delete_result = await workouts_collection.delete_one({"_id": object_id})
 
     if delete_result.deleted_count == 0:
 
         raise HTTPException(status_code=404, detail="Workout not found")
+
+    custom_thumbnail = str(existing_workout.get("custom_thumbnail") or "").strip()
+
+    if custom_thumbnail:
+
+        _delete_image_from_s3(custom_thumbnail)
 
     return {"status": "success", "message": "Workout deleted"}
 

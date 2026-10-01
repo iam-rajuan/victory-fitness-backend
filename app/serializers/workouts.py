@@ -5,6 +5,18 @@ from ..utils.datetime import as_utc
 VALID_WORKOUT_LEVELS = {"Beginner", "Intermediate", "Advanced"}
 
 
+def workout_default_thumbnail(record: dict) -> str:
+    return str(record.get("thumbnail") or record.get("thumbnail_url") or "").strip()
+
+
+def workout_custom_thumbnail(record: dict) -> str:
+    return str(record.get("custom_thumbnail") or record.get("customThumbnail") or "").strip()
+
+
+def workout_effective_thumbnail(record: dict) -> str:
+    return workout_custom_thumbnail(record) or workout_default_thumbnail(record)
+
+
 def normalize_workout_levels(record: dict) -> list[str]:
     raw_levels = record.get("levels")
     candidates = raw_levels if isinstance(raw_levels, list) else []
@@ -68,7 +80,7 @@ def serialize_public_workout_record(record: dict) -> dict:
         "levels": levels,
         "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
         "durationSeconds": int(record.get("duration_seconds") or record.get("durationSeconds") or 0),
-        "thumbnail": str(record.get("thumbnail") or record.get("thumbnail_url") or ""),
+        "thumbnail": workout_effective_thumbnail(record),
         "movements": _serialize_workout_movements(record.get("movements") or []),
         "dateAdded": created_at,
     }

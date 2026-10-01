@@ -49,3 +49,35 @@ def test_admin_workout_serializes_multiple_levels_for_editor():
 
     assert payload["level"] == "Beginner"
     assert payload["levels"] == ["Beginner", "Intermediate", "Advanced"]
+
+
+def test_public_workout_uses_custom_thumbnail_before_default():
+    payload = serialize_public_workout_record(
+        _workout_record(
+            thumbnail="https://vimeo.example/default.jpg",
+            custom_thumbnail="https://cdn.example/custom.jpg",
+        )
+    )
+
+    assert payload["thumbnail"] == "https://cdn.example/custom.jpg"
+
+
+def test_public_workout_falls_back_to_default_thumbnail():
+    payload = serialize_public_workout_record(
+        _workout_record(thumbnail="https://vimeo.example/default.jpg", custom_thumbnail="")
+    )
+
+    assert payload["thumbnail"] == "https://vimeo.example/default.jpg"
+
+
+def test_admin_workout_exposes_custom_and_default_thumbnails():
+    payload = _serialize_admin_workout_record(
+        _workout_record(
+            thumbnail="https://vimeo.example/default.jpg",
+            custom_thumbnail="https://cdn.example/custom.jpg",
+        )
+    )
+
+    assert payload["thumbnail"] == "https://cdn.example/custom.jpg"
+    assert payload["defaultThumbnail"] == "https://vimeo.example/default.jpg"
+    assert payload["customThumbnail"] == "https://cdn.example/custom.jpg"

@@ -2111,6 +2111,8 @@ class AdminWorkoutItem(BaseModel):
     visibility: str
     providerVisibility: str = "Published"
     thumbnail: str
+    defaultThumbnail: str = ""
+    customThumbnail: str = ""
     movements: list[WorkoutMovementItem] = Field(default_factory=list)
     dateAdded: datetime
     updatedAt: datetime
@@ -2134,6 +2136,7 @@ class AdminWorkoutRequest(BaseModel):
     durationSeconds: int = Field(default=0, ge=0, le=86400)
     visibility: str = Field(pattern=r"^(Published|Draft)$")
     thumbnail: str | None = Field(default=None, max_length=500)
+    removeThumbnail: bool = False
     video_base64: str | None = Field(default=None, min_length=32, max_length=40000000)
     image_base64: str | None = Field(default=None, min_length=32, max_length=20000000)
     video_mime_type: str = Field(default="video/mp4", max_length=120)

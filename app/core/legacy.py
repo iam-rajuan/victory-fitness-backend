@@ -576,7 +576,13 @@ from ..serializers.content import (
 
 )
 
-from ..serializers.workouts import normalize_workout_levels, serialize_public_workout_record as shared_serialize_public_workout_record
+from ..serializers.workouts import (
+    normalize_workout_levels,
+    serialize_public_workout_record as shared_serialize_public_workout_record,
+    workout_custom_thumbnail,
+    workout_default_thumbnail,
+    workout_effective_thumbnail,
+)
 
 from ..utils.datetime import as_utc as shared_as_utc
 
@@ -7622,7 +7628,9 @@ def _serialize_admin_workout_record(record: dict) -> dict:
             or record.get("visibility")
             or "Published"
         ).strip(),
-        "thumbnail": str(record.get("thumbnail") or record.get("thumbnail_url") or "").strip(),
+        "thumbnail": workout_effective_thumbnail(record),
+        "defaultThumbnail": workout_default_thumbnail(record),
+        "customThumbnail": workout_custom_thumbnail(record),
         "movements": _serialize_workout_movements(record.get("movements") or []),
         "dateAdded": created_at,
         "updatedAt": updated_at,
