@@ -147,6 +147,7 @@ class MeResponse(BaseModel):
     workouts_completed: int = 0
     workouts_total: int = 0
     streak_days: int = 0
+    best_streak_days: int = 0
     rank: str = "Noob"
     next_rank: str = "Bronze"
     points_to_next_rank: int = 0

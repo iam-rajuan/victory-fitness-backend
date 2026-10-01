@@ -9269,6 +9269,7 @@ async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies:
             "workouts_total": profile_summary.get("workouts_total", 0),
 
             "streak_days": profile_summary.get("streak_days", 0),
+            "best_streak_days": profile_summary.get("best_streak_days", 0),
 
             "rank": profile_summary.get("rank", "Noob"),
 
@@ -10035,7 +10036,8 @@ async def _serialize_me_record(record: dict) -> dict:
 
         "workouts_total": stats["workouts_total"],
 
-        "streak_days": stats["streak_days"],
+        "streak_days": max(int(record.get("login_streak_days") or 0), 0),
+        "best_streak_days": max(int(record.get("best_login_streak_days") or record.get("login_streak_days") or 0), 0),
 
         "rank": stats["rank"],
 

@@ -92,10 +92,56 @@ def _validate_minimum_supported_age(age_value: str | None) -> None:
     if age < 16:
         raise HTTPException(status_code=400, detail="You must be at least 16 years old to use Victory Fitness")
 
+
+def _login_streak_today_key(user: dict, now: datetime | None = None) -> str:
+    now = now or datetime.now(timezone.utc)
+    onboarding = dict(user.get("onboarding_state") or {})
+    country_code = str(user.get("country_code") or onboarding.get("countryCode") or "").upper()
+    offsets = {
+        "DE": 2,
+        "GH": 0,
+        "IN": 5.5,
+        "GB": 0,
+        "UK": 0,
+        "US": -5,
+    }
+    offset_minutes = int(float(offsets.get(country_code, 0)) * 60)
+    local_now = now.astimezone(timezone(timedelta(minutes=offset_minutes)))
+    return local_now.date().isoformat()
+
+
+async def _touch_daily_login_streak(user: dict, now: datetime | None = None) -> dict:
+    now = now or datetime.now(timezone.utc)
+    today_key = _login_streak_today_key(user, now)
+    last_key = str(user.get("last_login_streak_date") or "").strip()
+    current_streak = max(int(user.get("login_streak_days") or 0), 0)
+    best_streak = max(int(user.get("best_login_streak_days") or user.get("best_streak_days") or current_streak), 0)
+
+    if last_key == today_key:
+        return user
+
+    yesterday = (datetime.fromisoformat(today_key) - timedelta(days=1)).date().isoformat()
+    next_streak = current_streak + 1 if last_key == yesterday else 1
+    next_best = max(best_streak, next_streak)
+    update_doc = {
+        "login_streak_days": next_streak,
+        "best_login_streak_days": next_best,
+        "streak_days": next_streak,
+        "best_streak_days": next_best,
+        "last_login_streak_date": today_key,
+        "last_login_at": now,
+        "last_active_at": now,
+        "updated_at": now,
+    }
+    await users_collection.update_one({"_id": user["_id"]}, {"$set": update_doc})
+    return {**user, **update_doc}
+
+
 @router.get("/me", response_model=MeResponse)
 
 async def get_me(user: dict = Depends(_require_access_user)) -> MeResponse:
 
+    user = await _touch_daily_login_streak(user)
     return MeResponse(**(await _serialize_me_record(user)))
 
 
