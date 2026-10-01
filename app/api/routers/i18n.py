@@ -60,10 +60,12 @@ async def _write_cached_translations(target_language: str, translations: dict[st
     for source_text, translated_text in translations.items():
         if not translated_text:
             continue
+        cache_id = _cache_key(target_language, source_text)
         await app_content_collection.update_one(
-            {"_id": _cache_key(target_language, source_text)},
+            {"_id": cache_id},
             {
                 "$set": {
+                    "key": cache_id,
                     "type": "i18n_translation",
                     "target_language": target_language,
                     "source_text": source_text,
@@ -77,17 +79,18 @@ async def _write_cached_translations(target_language: str, translations: dict[st
 
 
 def _openai_translate(target_language: str, texts: list[str]) -> dict[str, str]:
-    if not settings.openai_api_key:
+    if not settings.openai_api_key or not texts:
         return {}
 
+    model = getattr(settings, "openai_model", None) or "gpt-4o-mini"
     payload = {
-        "model": settings.openai_model,
-        "input": [
+        "model": model,
+        "messages": [
             {
                 "role": "system",
                 "content": (
                     "Translate Victory Fitness app UI copy from English into the requested target language. "
-                    "Return only compact JSON mapping each exact source string to its translation. "
+                    "Return only valid JSON object mapping each exact source string to its translation. "
                     "Preserve placeholders like {name}, numbers, punctuation intent, product names, and short button tone."
                 ),
             },
@@ -96,11 +99,11 @@ def _openai_translate(target_language: str, texts: list[str]) -> dict[str, str]:
                 "content": json.dumps({"target_language": target_language, "texts": texts}, ensure_ascii=False),
             },
         ],
-        "text": {"format": {"type": "json_object"}},
+        "response_format": {"type": "json_object"},
     }
 
     request = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
+        "https://api.openai.com/v1/chat/completions",
         data=json.dumps(payload).encode("utf-8"),
         headers={
             "Authorization": f"Bearer {settings.openai_api_key}",
@@ -112,17 +115,16 @@ def _openai_translate(target_language: str, texts: list[str]) -> dict[str, str]:
     try:
         with urllib.request.urlopen(request, timeout=18) as response:
             data = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+    except Exception:
         return {}
 
-    output_text = str(data.get("output_text") or "").strip()
+    choices = data.get("choices") or []
+    if not choices:
+        return {}
+
+    output_text = str(choices[0].get("message", {}).get("content") or "").strip()
     if not output_text:
-        chunks: list[str] = []
-        for item in data.get("output") or []:
-            for content in item.get("content") or []:
-                if content.get("type") in {"output_text", "text"}:
-                    chunks.append(str(content.get("text") or ""))
-        output_text = "\n".join(chunks).strip()
+        return {}
 
     try:
         parsed = json.loads(output_text)
