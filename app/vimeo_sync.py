@@ -54,6 +54,7 @@ class VimeoWorkoutImportOptions:
     tag: str = "Strength"
     equipment: str = "Dumbbells"
     level: str = "Intermediate"
+    levels: list[str] | None = None
     use_vimeo_duration: bool = True
     visibility: str = "Draft"
     import_limit: int | None = 12
@@ -252,6 +253,7 @@ def _build_workout_document(
         return None
 
     title = str(video.get("name") or "").strip() or f"{module_name} Workout"
+    levels = [str(item).strip() for item in (options.levels or [options.level]) if str(item).strip()]
     return {
         "title": title[:160],
         "vimeo_id": video_id,
@@ -259,7 +261,8 @@ def _build_workout_document(
         "video_source": "VIMEO",
         "tag": _normalize_import_label(options.tag, _normalize_vimeo_module_name(module_name, "Vimeo")),
         "equipment": _normalize_import_label(options.equipment, ""),
-        "level": _normalize_import_label(options.level, ""),
+        "level": _normalize_import_label(levels[0] if levels else options.level, ""),
+        "levels": levels,
         "duration_minutes": _resolve_duration_minutes(video, options.use_vimeo_duration),
         "duration_seconds": _resolve_duration_seconds(video, options.use_vimeo_duration),
         "visibility": _resolve_import_visibility(options, video),
@@ -405,6 +408,7 @@ async def sync_vimeo_workouts(options: VimeoWorkoutImportOptions | None = None) 
                 "tag": str(document.get("tag") or "").strip(),
                 "equipment": str(document.get("equipment") or "").strip(),
                 "level": str(document.get("level") or "").strip(),
+                "levels": [str(item).strip() for item in document.get("levels", []) if str(item).strip()],
                 "durationMinutes": int(document.get("duration_minutes") or 0),
                 "durationSeconds": int(document.get("duration_seconds") or 0),
                 "visibility": str(document.get("visibility") or "Draft").strip() or "Draft",

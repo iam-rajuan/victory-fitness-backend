@@ -2,6 +2,22 @@ from datetime import datetime, timezone
 
 from ..utils.datetime import as_utc
 
+VALID_WORKOUT_LEVELS = {"Beginner", "Intermediate", "Advanced"}
+
+
+def normalize_workout_levels(record: dict) -> list[str]:
+    raw_levels = record.get("levels")
+    candidates = raw_levels if isinstance(raw_levels, list) else []
+    if not candidates:
+        candidates = [record.get("level")]
+    levels: list[str] = []
+    for item in candidates:
+        label = str(item or "").strip()
+        canonical = next((valid for valid in VALID_WORKOUT_LEVELS if valid.lower() == label.lower()), "")
+        if canonical and canonical not in levels:
+            levels.append(canonical)
+    return levels
+
 
 def _serialize_workout_movements(value: object) -> list[dict]:
     if not isinstance(value, list):
@@ -39,6 +55,7 @@ def _serialize_workout_movements(value: object) -> list[dict]:
 
 def serialize_public_workout_record(record: dict) -> dict:
     created_at = as_utc(record.get("created_at") or datetime.now(timezone.utc))
+    levels = normalize_workout_levels(record)
     return {
         "id": str(record["_id"]),
         "title": str(record.get("title") or ""),
@@ -47,7 +64,8 @@ def serialize_public_workout_record(record: dict) -> dict:
         "videoSource": str(record.get("video_source") or "VIMEO"),
         "tag": str(record.get("tag") or "Workout"),
         "equipment": str(record.get("equipment") or ""),
-        "level": str(record.get("level") or ""),
+        "level": levels[0] if levels else str(record.get("level") or ""),
+        "levels": levels,
         "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
         "durationSeconds": int(record.get("duration_seconds") or record.get("durationSeconds") or 0),
         "thumbnail": str(record.get("thumbnail") or record.get("thumbnail_url") or ""),

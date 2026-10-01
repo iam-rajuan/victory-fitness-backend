@@ -4,6 +4,21 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+WORKOUT_LEVEL_OPTIONS = ("Beginner", "Intermediate", "Advanced")
+
+
+def _normalize_workout_level_values(level: str | None = None, levels: list[str] | None = None) -> list[str]:
+    candidates = list(levels or [])
+    if level:
+        candidates.append(level)
+    normalized: list[str] = []
+    for item in candidates:
+        raw = str(item or "").strip()
+        canonical = next((option for option in WORKOUT_LEVEL_OPTIONS if option.lower() == raw.lower()), "")
+        if canonical and canonical not in normalized:
+            normalized.append(canonical)
+    return normalized
+
 
 def _build_vimeo_import_options(payload: AdminWorkoutSyncRequest | None) -> VimeoWorkoutImportOptions:
     return VimeoWorkoutImportOptions(
@@ -11,6 +26,7 @@ def _build_vimeo_import_options(payload: AdminWorkoutSyncRequest | None) -> Vime
         tag=str(payload.tag or "Strength").strip() if payload else "Strength",
         equipment=str(payload.equipment or "Dumbbells").strip() if payload else "Dumbbells",
         level=str(payload.level or "Intermediate").strip() if payload else "Intermediate",
+        levels=_normalize_workout_level_values(payload.level, getattr(payload, "levels", None)) if payload else ["Intermediate"],
         use_vimeo_duration=bool(payload.useVimeoDuration) if payload else True,
         visibility=str(payload.visibility or "Draft").strip() if payload else "Draft",
         import_limit=int(payload.importLimit or 12) if payload else 12,
@@ -43,6 +59,7 @@ async def admin_list_workouts(
             {"equipment": {"$regex": escaped, "$options": "i"}},
 
             {"level": {"$regex": escaped, "$options": "i"}},
+            {"levels": {"$regex": escaped, "$options": "i"}},
 
             {"vimeo_id": {"$regex": escaped, "$options": "i"}},
 
@@ -147,6 +164,7 @@ async def admin_create_workout(
 
             raise HTTPException(status_code=500, detail=f"Workout thumbnail upload failed: {exc}") from exc
 
+    levels = _normalize_workout_level_values(payload.level, payload.levels)
     document = {
 
         "title": payload.title.strip(),
@@ -159,7 +177,8 @@ async def admin_create_workout(
 
         "equipment": payload.equipment.strip(),
 
-        "level": payload.level.strip(),
+        "level": levels[0] if levels else payload.level.strip(),
+        "levels": levels,
 
         "duration_minutes": int(payload.durationMinutes or 0),
 
@@ -267,6 +286,7 @@ async def admin_update_workout(
 
         _delete_image_from_s3(previous_thumbnail)
 
+    levels = _normalize_workout_level_values(payload.level, payload.levels)
     update_doc = {
 
         "title": payload.title.strip(),
@@ -279,7 +299,8 @@ async def admin_update_workout(
 
         "equipment": payload.equipment.strip(),
 
-        "level": payload.level.strip(),
+        "level": levels[0] if levels else payload.level.strip(),
+        "levels": levels,
 
         "duration_minutes": int(payload.durationMinutes or 0),
 
@@ -408,8 +429,8 @@ async def admin_preview_workout_sync(
                     {"tag": ""},
                     {"equipment": {"$exists": False}},
                     {"equipment": ""},
-                    {"level": {"$exists": False}},
-                    {"level": ""},
+                    {"level": {"$exists": False}, "levels": {"$exists": False}},
+                    {"level": "", "levels": {"$in": [[], None]}},
                 ]
             }
         ),
@@ -446,6 +467,7 @@ async def admin_debug_synced_workouts(
             "tag": str(record.get("tag") or ""),
             "equipment": str(record.get("equipment") or ""),
             "level": str(record.get("level") or ""),
+            "levels": normalize_workout_levels(record),
             "durationMinutes": int(record.get("duration_minutes") or 0),
             "visibility": str(record.get("visibility") or "Draft"),
             "providerVisibility": str(record.get("vimeo_provider_visibility") or "Draft"),

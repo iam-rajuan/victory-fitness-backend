@@ -576,7 +576,7 @@ from ..serializers.content import (
 
 )
 
-from ..serializers.workouts import serialize_public_workout_record as shared_serialize_public_workout_record
+from ..serializers.workouts import normalize_workout_levels, serialize_public_workout_record as shared_serialize_public_workout_record
 
 from ..utils.datetime import as_utc as shared_as_utc
 
@@ -7601,6 +7601,7 @@ def _serialize_admin_workout_record(record: dict) -> dict:
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
     updated_at = _as_utc(record.get("updated_at") or created_at)
     video_source = str(record.get("video_source") or "VIMEO").strip().upper() or "VIMEO"
+    levels = normalize_workout_levels(record)
     return {
         "id": str(record.get("_id") or ""),
         "title": str(record.get("title") or "").strip(),
@@ -7609,7 +7610,8 @@ def _serialize_admin_workout_record(record: dict) -> dict:
         "videoSource": video_source,
         "tag": str(record.get("tag") or "").strip(),
         "equipment": str(record.get("equipment") or "").strip(),
-        "level": str(record.get("level") or "").strip(),
+        "level": levels[0] if levels else str(record.get("level") or "").strip(),
+        "levels": levels,
         "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
         "durationSeconds": int(record.get("duration_seconds") or record.get("durationSeconds") or 0),
         "starts": int(record.get("starts_count") or record.get("starts") or 0),

@@ -2104,6 +2104,7 @@ class AdminWorkoutItem(BaseModel):
     tag: str
     equipment: str = ""
     level: str = ""
+    levels: list[str] = Field(default_factory=list)
     durationMinutes: int = 0
     durationSeconds: int = 0
     starts: int = 0
@@ -2128,6 +2129,7 @@ class AdminWorkoutRequest(BaseModel):
     tag: str = Field(min_length=1, max_length=80)
     equipment: str = Field(default="", max_length=80)
     level: str = Field(default="", max_length=80)
+    levels: list[str] = Field(default_factory=list)
     durationMinutes: int = Field(default=0, ge=0, le=600)
     durationSeconds: int = Field(default=0, ge=0, le=86400)
     visibility: str = Field(pattern=r"^(Published|Draft)$")
@@ -2157,6 +2159,7 @@ class AdminWorkoutSyncRequest(BaseModel):
     tag: str = Field(default="Strength", max_length=80)
     equipment: str = Field(default="Dumbbells", max_length=80)
     level: str = Field(default="Intermediate", max_length=80)
+    levels: list[str] = Field(default_factory=list)
     useVimeoDuration: bool = True
     visibility: str = Field(default="Draft", pattern=r"^(Published|Draft)$")
     importLimit: int = Field(default=12, ge=1, le=100)
@@ -2168,6 +2171,7 @@ class AdminWorkoutSyncVideoResponse(BaseModel):
     tag: str = ""
     equipment: str = ""
     level: str = ""
+    levels: list[str] = Field(default_factory=list)
     durationMinutes: int = 0
     durationSeconds: int = 0
     visibility: str = "Draft"
@@ -2203,6 +2207,7 @@ class AdminWorkoutSyncDebugItem(BaseModel):
     tag: str = ""
     equipment: str = ""
     level: str = ""
+    levels: list[str] = Field(default_factory=list)
     durationMinutes: int = 0
     durationSeconds: int = 0
     visibility: str = "Draft"
@@ -2228,6 +2233,7 @@ class WorkoutLibraryItem(BaseModel):
     tag: str
     equipment: str = ""
     level: str = ""
+    levels: list[str] = Field(default_factory=list)
     durationMinutes: int = 0
     durationSeconds: int = 0
     thumbnail: str
