@@ -1306,11 +1306,13 @@ class CoachVictorHistoryResponse(BaseModel):
 class JournalEntryCreateRequest(BaseModel):
     mood: str = Field(min_length=1, max_length=40)
     content: str = Field(min_length=1, max_length=10000)
+    prompt: str | None = Field(default=None, max_length=500)
 
 
 class JournalEntryUpdateRequest(BaseModel):
     mood: str = Field(min_length=1, max_length=40)
     content: str = Field(min_length=1, max_length=10000)
+    prompt: str | None = Field(default=None, max_length=500)
 
 
 class JournalEntryResponse(BaseModel):
@@ -1318,6 +1320,7 @@ class JournalEntryResponse(BaseModel):
     user_id: str
     mood: str
     content: str
+    prompt: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1329,6 +1332,7 @@ class JournalEntryListResponse(BaseModel):
 class JournalAnalysisRequest(BaseModel):
     mood: str = Field(min_length=1, max_length=40)
     content: str = Field(min_length=1, max_length=10000)
+    prompt: str | None = Field(default=None, max_length=500)
 
 
 class JournalAnalysisResponse(BaseModel):

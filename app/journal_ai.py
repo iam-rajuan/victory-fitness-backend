@@ -35,6 +35,7 @@ def generate_journal_analysis(payload: dict) -> JournalAnalysisResult:
         "Summarize the core feeling, the main pattern, and one useful next step.\n"
         "Keep it brief and high level.\n"
         f"Current mood: {payload.get('mood', '')}\n"
+        f"Daily prompt: {payload.get('prompt') or 'No prompt provided'}\n"
         f"Journal entry: {payload.get('content', '')}"
     )
 

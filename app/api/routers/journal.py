@@ -28,6 +28,8 @@ async def create_journal_entry(
 
         "content": payload.content.strip(),
 
+        "prompt": payload.prompt.strip() if payload.prompt else None,
+
         "created_at": now,
 
         "updated_at": now,
@@ -47,6 +49,8 @@ async def create_journal_entry(
         mood=document["mood"],
 
         content=document["content"],
+
+        prompt=document.get("prompt"),
 
         created_at=now,
 
@@ -85,6 +89,8 @@ async def list_journal_entries(
             mood=record["mood"],
 
             content=record["content"],
+
+            prompt=record.get("prompt"),
 
             created_at=record["created_at"],
 
@@ -139,6 +145,8 @@ async def get_journal_entry(
         mood=record["mood"],
 
         content=record["content"],
+
+        prompt=record.get("prompt"),
 
         created_at=record["created_at"],
 
@@ -220,6 +228,10 @@ async def update_journal_entry(
 
     }
 
+    if payload.prompt is not None:
+
+        update_document["prompt"] = payload.prompt.strip() or None
+
     await journal_entries_collection.update_one(
 
         {"_id": object_id, "user_id": user_id},
@@ -239,6 +251,8 @@ async def update_journal_entry(
         mood=update_document["mood"],
 
         content=update_document["content"],
+
+        prompt=update_document.get("prompt", existing_record.get("prompt")),
 
         created_at=existing_record["created_at"],
 
@@ -306,6 +320,8 @@ async def analyze_latest_journal_entry(
 
         content=record["content"],
 
+        prompt=record.get("prompt"),
+
         created_at=record["created_at"],
 
         updated_at=record["updated_at"],
@@ -321,6 +337,8 @@ async def analyze_latest_journal_entry(
                 "mood": entry.mood,
 
                 "content": entry.content,
+
+                "prompt": entry.prompt,
 
             }
 
