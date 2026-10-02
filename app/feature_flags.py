@@ -14,7 +14,21 @@ DEFAULT_FEATURE_FLAGS = [
         "enabled": True,
         "rollout_pct": 50,
         "allowed_countries": [],
-    }
+    },
+    {
+        "key": "requirement_audit_app_marks",
+        "description": "Show red requirement-audit labels and borders inside the member app.",
+        "enabled": False,
+        "rollout_pct": 100,
+        "allowed_countries": [],
+    },
+    {
+        "key": "requirement_audit_admin_marks",
+        "description": "Show red requirement-audit labels and borders inside the admin dashboard.",
+        "enabled": False,
+        "rollout_pct": 100,
+        "allowed_countries": [],
+    },
 ]
 
 
