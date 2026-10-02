@@ -578,6 +578,7 @@ from ..serializers.content import (
 
 from ..serializers.workouts import (
     normalize_workout_levels,
+    normalize_workout_purposes,
     serialize_public_workout_record as shared_serialize_public_workout_record,
     workout_custom_thumbnail,
     workout_default_thumbnail,
@@ -1101,6 +1102,7 @@ CHALLENGE_OVERVIEW_CHALLENGE_PROJECTION = {
     "points": 1,
 
     "difficulty": 1,
+    "difficulties": 1,
 
     "status": 1,
 
@@ -7608,13 +7610,15 @@ def _serialize_admin_workout_record(record: dict) -> dict:
     updated_at = _as_utc(record.get("updated_at") or created_at)
     video_source = str(record.get("video_source") or "VIMEO").strip().upper() or "VIMEO"
     levels = normalize_workout_levels(record)
+    purposes = normalize_workout_purposes(record)
     return {
         "id": str(record.get("_id") or ""),
         "title": str(record.get("title") or "").strip(),
         "vimeoId": str(record.get("vimeo_id") or "").strip(),
         "videoUrl": str(record.get("video_url") or "").strip(),
         "videoSource": video_source,
-        "tag": str(record.get("tag") or "").strip(),
+        "tag": purposes[0] if purposes else str(record.get("tag") or "").strip(),
+        "purposes": purposes,
         "equipment": str(record.get("equipment") or "").strip(),
         "level": levels[0] if levels else str(record.get("level") or "").strip(),
         "levels": levels,
@@ -7844,6 +7848,20 @@ def _challenge_difficulty_color(value: object) -> str:
         return "#F59E0B"
     return "#22C55E"
 
+CHALLENGE_DIFFICULTY_ORDER = ("BEGINNER", "INTERMEDIATE", "ADVANCED")
+
+
+def _normalize_challenge_difficulties(record: dict) -> list[str]:
+    raw_difficulties = record.get("difficulties")
+    candidates = raw_difficulties if isinstance(raw_difficulties, list) else []
+    if not candidates:
+        candidates = [record.get("difficulty")]
+    normalized: list[str] = []
+    for option in CHALLENGE_DIFFICULTY_ORDER:
+        if any(str(item or "").strip().upper() == option for item in candidates):
+            normalized.append(option)
+    return normalized
+
 async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewResponse:
     user_id = str(user.get("_id") or "")
     memberships = await challenge_memberships_collection.find({"user_id": user_id}).to_list(length=None)
@@ -7926,6 +7944,7 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
         completed_today_at = _get_completed_challenge_day_today_at(membership)
         progress = min(completed_days / duration_days, 1.0)
         days_left = max(duration_days - completed_days, 0)
+        difficulties = _normalize_challenge_difficulties(challenge)
         active_challenges.append(
             UserActiveChallengeResponse(
                 id=str(membership.get("_id") or challenge_id),
@@ -7948,6 +7967,8 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
                 featured=bool(challenge.get("featured")),
                 color="#4F8EF7",
+                difficulty=difficulties[0] if difficulties else str(challenge.get("difficulty") or "BEGINNER"),
+                difficulties=difficulties,
                 created_at=challenge.get("created_at"),
             )
         )
@@ -7960,6 +7981,7 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
             continue
         challenge_points = max(int(challenge.get("points") or 0), 0)
         completed_at = _coerce_utc_datetime(membership.get("completed_at")) or _coerce_utc_datetime(membership.get("updated_at")) or datetime.now(timezone.utc)
+        difficulties = _normalize_challenge_difficulties(challenge)
         completed_challenges.append(
             UserCompletedChallengeResponse(
                 id=str(membership.get("_id") or challenge_id),
@@ -7975,6 +7997,8 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 featured=bool(challenge.get("featured")),
                 completed_at=completed_at,
                 color="#22C55E",
+                difficulty=difficulties[0] if difficulties else str(challenge.get("difficulty") or "BEGINNER"),
+                difficulties=difficulties,
                 created_at=challenge.get("created_at"),
             )
         )
@@ -7987,6 +8011,7 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
         if membership_status in {"ACTIVE", "COMPLETED"}:
             continue
         can_start = active_limit is None or active_membership_count < active_limit
+        difficulties = _normalize_challenge_difficulties(challenge)
         ready_to_start.append(
             UserReadyChallengeResponse(
                 id=challenge_id,
@@ -7998,8 +8023,9 @@ async def _build_challenge_overview_response(user: dict) -> ChallengeOverviewRes
                 type=str(challenge.get("category") or "Challenge"),
                 points=max(int(challenge.get("points") or 0), 0),
                 participants=int((stats_map.get(challenge_id) or {}).get("participantCount") or 0),
-                difficulty=str(challenge.get("difficulty") or "BEGINNER"),
-                difficulty_color=_challenge_difficulty_color(challenge.get("difficulty")),
+                difficulty=difficulties[0] if difficulties else str(challenge.get("difficulty") or "BEGINNER"),
+                difficulties=difficulties,
+                difficulty_color=_challenge_difficulty_color(difficulties[-1] if difficulties else challenge.get("difficulty")),
                 status=str(challenge.get("status") or "ACTIVE"),
                 can_start=can_start,
                 thumbnail=_normalize_challenge_thumbnail(challenge.get("thumbnail")),
@@ -8028,6 +8054,7 @@ def _serialize_admin_challenge_record(record: dict, stats: dict[str, dict[str, i
     challenge_stats = (stats or {}).get(challenge_id, {})
     created_at = _as_utc(record.get("created_at") or datetime.now(timezone.utc))
     updated_at = _as_utc(record.get("updated_at") or created_at)
+    difficulties = _normalize_challenge_difficulties(record)
     return {
         "id": challenge_id,
         "title": str(record.get("title") or "").strip(),
@@ -8038,7 +8065,8 @@ def _serialize_admin_challenge_record(record: dict, stats: dict[str, dict[str, i
         "category": str(record.get("category") or "").strip(),
         "durationDays": int(record.get("duration_days") or record.get("durationDays") or 0),
         "points": int(record.get("points") or 0),
-        "difficulty": str(record.get("difficulty") or "BEGINNER").strip().upper(),
+        "difficulty": difficulties[0] if difficulties else str(record.get("difficulty") or "BEGINNER").strip().upper(),
+        "difficulties": difficulties,
         "status": str(record.get("status") or "DRAFT").strip().upper(),
         "thumbnail": str(record.get("thumbnail") or "").strip(),
         "featured": bool(record.get("featured")),

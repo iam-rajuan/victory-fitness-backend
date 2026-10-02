@@ -308,6 +308,7 @@ async def ensure_indexes() -> None:
     await workouts_collection.create_index([("created_at", -1)])
     await workouts_collection.create_index([("visibility", 1), ("created_at", -1)])
     await workouts_collection.create_index([("visibility", 1), ("tag", 1), ("created_at", -1)])
+    await workouts_collection.create_index([("visibility", 1), ("purposes", 1), ("created_at", -1)])
     await workouts_collection.update_many({"vimeo_id": ""}, {"$unset": {"vimeo_id": ""}})
     existing_workout_indexes = await workouts_collection.index_information()
     if "vimeo_id_1" in existing_workout_indexes:
@@ -319,6 +320,7 @@ async def ensure_indexes() -> None:
     )
     await challenges_collection.create_index([("status", 1), ("created_at", -1)])
     await challenges_collection.create_index([("category", 1), ("created_at", -1)])
+    await challenges_collection.create_index([("difficulties", 1), ("created_at", -1)])
     await challenge_memberships_collection.create_index([("user_id", 1), ("joined_at", -1)])
     await challenge_memberships_collection.create_index([("user_id", 1), ("status", 1), ("joined_at", -1)])
     await challenge_memberships_collection.create_index([("challenge_id", 1), ("status", 1)])

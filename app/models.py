@@ -995,6 +995,8 @@ class UserActiveChallengeResponse(BaseModel):
     thumbnail: str = ""
     featured: bool = False
     color: str = "#4F8EF7"
+    difficulty: str = "BEGINNER"
+    difficulties: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
 
 
@@ -1012,6 +1014,8 @@ class UserCompletedChallengeResponse(BaseModel):
     featured: bool = False
     completed_at: datetime
     color: str = "#22C55E"
+    difficulty: str = "BEGINNER"
+    difficulties: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
 
 
@@ -1026,6 +1030,7 @@ class UserReadyChallengeResponse(BaseModel):
     points: int = 0
     participants: int = 0
     difficulty: str
+    difficulties: list[str] = Field(default_factory=list)
     difficulty_color: str = "#22C55E"
     status: str
     can_start: bool = False
@@ -1057,6 +1062,7 @@ class ChallengeDetailResponse(BaseModel):
     duration_days: int
     points: int = 0
     difficulty: str
+    difficulties: list[str] = Field(default_factory=list)
     status: str
     thumbnail: str = ""
     featured: bool = False
@@ -1111,6 +1117,7 @@ class ChallengeChatThreadResponse(BaseModel):
     duration_days: int
     points: int = 0
     difficulty: str
+    difficulties: list[str] = Field(default_factory=list)
     status: str
     thumbnail: str = ""
     featured: bool = False
@@ -1168,6 +1175,7 @@ class AdminChallengeItem(BaseModel):
     durationDays: int
     points: int = 0
     difficulty: str
+    difficulties: list[str] = Field(default_factory=list)
     status: str
     thumbnail: str = ""
     featured: bool = False
@@ -1192,6 +1200,7 @@ class AdminChallengeRequest(BaseModel):
     durationDays: int = Field(ge=1, le=365)
     points: int = Field(ge=0, le=100000)
     difficulty: str = Field(pattern=r"^(BEGINNER|INTERMEDIATE|ADVANCED)$")
+    difficulties: list[str] = Field(default_factory=list)
     status: str = Field(pattern=r"^(ACTIVE|UPCOMING|DRAFT|ARCHIVED)$")
     thumbnail: str | None = Field(default=None, max_length=20000000)
     featured: bool = False
@@ -2152,6 +2161,7 @@ class AdminWorkoutItem(BaseModel):
     videoUrl: str = ""
     videoSource: str = "VIMEO"
     tag: str
+    purposes: list[str] = Field(default_factory=list)
     equipment: str = ""
     level: str = ""
     levels: list[str] = Field(default_factory=list)
@@ -2179,6 +2189,7 @@ class AdminWorkoutRequest(BaseModel):
     videoUrl: str = Field(default="", max_length=2000)
     videoSource: str = Field(default="VIMEO", pattern=r"^(VIMEO|YOUTUBE|UPLOAD)$")
     tag: str = Field(min_length=1, max_length=80)
+    purposes: list[str] = Field(default_factory=list)
     equipment: str = Field(default="", max_length=80)
     level: str = Field(default="", max_length=80)
     levels: list[str] = Field(default_factory=list)
@@ -2284,6 +2295,7 @@ class WorkoutLibraryItem(BaseModel):
     videoUrl: str = ""
     videoSource: str = "VIMEO"
     tag: str
+    purposes: list[str] = Field(default_factory=list)
     equipment: str = ""
     level: str = ""
     levels: list[str] = Field(default_factory=list)

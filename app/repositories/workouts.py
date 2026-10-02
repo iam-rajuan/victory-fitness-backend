@@ -8,6 +8,7 @@ PUBLIC_WORKOUT_PROJECTION = {
     "video_url": 1,
     "video_source": 1,
     "tag": 1,
+    "purposes": 1,
     "equipment": 1,
     "level": 1,
     "levels": 1,

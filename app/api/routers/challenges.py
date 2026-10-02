@@ -205,9 +205,11 @@ def _build_challenge_progress_report_png(
     streak_value = str(max(completed_days, int(selected_day.get("day_number") or 0) if selected_progress and selected_progress.completed else 0, 0))
     exercise_total = sum(len(section.get("exercises") or []) for section in (selected_day or {}).get("sections") or [])
     exercise_done = len(completed_exercise_ids) if completed_exercise_ids else exercise_total if selected_progress and selected_progress.completed else 0
+    difficulties = _normalize_challenge_difficulties(challenge)
+    difficulty_label = " / ".join(difficulties) if difficulties else str(challenge.get("difficulty") or "INTERMEDIATE").upper()
     stat_cards = [
         ("STREAK", f"{streak_value} DAY", cyan),
-        ("INTENSITY", str(challenge.get("difficulty") or "INTERMEDIATE").upper(), pink),
+        ("INTENSITY", difficulty_label, pink),
         ("EXERCISES", f"{exercise_done}/{max(exercise_total, 1)}", gold),
     ]
 
@@ -412,6 +414,7 @@ async def get_challenge_detail(
             can_start = active_membership_count < active_challenge_limit
 
     can_post = has_joined and challenge_status == "ACTIVE"
+    difficulties = _normalize_challenge_difficulties(challenge)
 
     return ChallengeDetailResponse(
 
@@ -433,7 +436,8 @@ async def get_challenge_detail(
 
         points=challenge_points,
 
-        difficulty=str(challenge.get("difficulty") or "BEGINNER"),
+        difficulty=difficulties[0] if difficulties else str(challenge.get("difficulty") or "BEGINNER"),
+        difficulties=difficulties,
 
         status=str(challenge.get("status") or "ACTIVE"),
 
@@ -583,6 +587,8 @@ async def get_challenge_chat_thread(
 
     )
 
+    difficulties = _normalize_challenge_difficulties(challenge)
+
     return ChallengeChatThreadResponse(
 
         challenge_id=challenge_id,
@@ -603,7 +609,8 @@ async def get_challenge_chat_thread(
 
         points=challenge_points,
 
-        difficulty=str(challenge.get("difficulty") or "BEGINNER"),
+        difficulty=difficulties[0] if difficulties else str(challenge.get("difficulty") or "BEGINNER"),
+        difficulties=difficulties,
 
         status=str(challenge.get("status") or "ACTIVE"),
 

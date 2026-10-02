@@ -4,6 +4,19 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+CHALLENGE_DIFFICULTY_OPTIONS = ("BEGINNER", "INTERMEDIATE", "ADVANCED")
+
+
+def _normalize_challenge_difficulty_values(difficulty: str | None = None, difficulties: list[str] | None = None) -> list[str]:
+    candidates = list(difficulties or [])
+    if difficulty:
+        candidates.append(difficulty)
+    normalized: list[str] = []
+    for option in CHALLENGE_DIFFICULTY_OPTIONS:
+        if any(str(item or "").strip().upper() == option for item in candidates):
+            normalized.append(option)
+    return normalized
+
 
 async def _ensure_single_featured_challenge(featured_challenge_id: ObjectId) -> None:
 
@@ -95,6 +108,7 @@ async def admin_list_challenges(
             {"category": {"$regex": escaped, "$options": "i"}},
 
             {"difficulty": {"$regex": escaped, "$options": "i"}},
+            {"difficulties": {"$regex": escaped, "$options": "i"}},
 
             {"status": {"$regex": escaped, "$options": "i"}},
 
@@ -221,6 +235,8 @@ async def admin_create_challenge(
 
             raise HTTPException(status_code=500, detail=f"Challenge thumbnail upload failed: {exc}") from exc
 
+    difficulties = _normalize_challenge_difficulty_values(payload.difficulty, payload.difficulties)
+
     document = {
 
         "title": payload.title.strip(),
@@ -239,7 +255,8 @@ async def admin_create_challenge(
 
         "points": payload.points,
 
-        "difficulty": payload.difficulty,
+        "difficulty": difficulties[0] if difficulties else payload.difficulty,
+        "difficulties": difficulties,
 
         "status": payload.status,
 
@@ -339,6 +356,8 @@ async def admin_update_challenge(
 
     plan_text = _build_challenge_plan_text(plan_days) if plan_days else str(payload.planText or "").strip()
 
+    difficulties = _normalize_challenge_difficulty_values(payload.difficulty, payload.difficulties)
+
     update_doc = {
 
         "title": payload.title.strip(),
@@ -357,7 +376,8 @@ async def admin_update_challenge(
 
         "points": payload.points,
 
-        "difficulty": payload.difficulty,
+        "difficulty": difficulties[0] if difficulties else payload.difficulty,
+        "difficulties": difficulties,
 
         "status": payload.status,
 

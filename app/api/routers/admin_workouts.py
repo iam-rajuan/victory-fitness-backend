@@ -5,6 +5,16 @@ from ...core.legacy import *
 router = APIRouter()
 
 WORKOUT_LEVEL_OPTIONS = ("Beginner", "Intermediate", "Advanced")
+WORKOUT_PURPOSE_OPTIONS = (
+    "Strength",
+    "Full Body Workout",
+    "Mobility",
+    "Core",
+    "Conditioning",
+    "Recovery",
+    "Lower body",
+    "Upper body",
+)
 
 
 def _normalize_workout_level_values(level: str | None = None, levels: list[str] | None = None) -> list[str]:
@@ -15,6 +25,19 @@ def _normalize_workout_level_values(level: str | None = None, levels: list[str] 
     for item in candidates:
         raw = str(item or "").strip()
         canonical = next((option for option in WORKOUT_LEVEL_OPTIONS if option.lower() == raw.lower()), "")
+        if canonical and canonical not in normalized:
+            normalized.append(canonical)
+    return normalized
+
+
+def _normalize_workout_purpose_values(tag: str | None = None, purposes: list[str] | None = None) -> list[str]:
+    candidates = list(purposes or [])
+    if tag:
+        candidates.append(tag)
+    normalized: list[str] = []
+    for item in candidates:
+        raw = str(item or "").strip()
+        canonical = next((option for option in WORKOUT_PURPOSE_OPTIONS if option.lower() == raw.lower()), raw)
         if canonical and canonical not in normalized:
             normalized.append(canonical)
     return normalized
@@ -55,6 +78,7 @@ async def admin_list_workouts(
             {"title": {"$regex": escaped, "$options": "i"}},
 
             {"tag": {"$regex": escaped, "$options": "i"}},
+            {"purposes": {"$regex": escaped, "$options": "i"}},
 
             {"equipment": {"$regex": escaped, "$options": "i"}},
 
@@ -166,6 +190,7 @@ async def admin_create_workout(
             raise HTTPException(status_code=500, detail=f"Workout thumbnail upload failed: {exc}") from exc
 
     levels = _normalize_workout_level_values(payload.level, payload.levels)
+    purposes = _normalize_workout_purpose_values(payload.tag, payload.purposes)
     document = {
 
         "title": payload.title.strip(),
@@ -174,7 +199,8 @@ async def admin_create_workout(
 
         "video_source": video_source,
 
-        "tag": payload.tag.strip(),
+        "tag": purposes[0] if purposes else payload.tag.strip(),
+        "purposes": purposes,
 
         "equipment": payload.equipment.strip(),
 
@@ -296,6 +322,7 @@ async def admin_update_workout(
         _delete_image_from_s3(previous_custom_thumbnail)
 
     levels = _normalize_workout_level_values(payload.level, payload.levels)
+    purposes = _normalize_workout_purpose_values(payload.tag, payload.purposes)
     update_doc = {
 
         "title": payload.title.strip(),
@@ -304,7 +331,8 @@ async def admin_update_workout(
 
         "video_source": video_source,
 
-        "tag": payload.tag.strip(),
+        "tag": purposes[0] if purposes else payload.tag.strip(),
+        "purposes": purposes,
 
         "equipment": payload.equipment.strip(),
 
@@ -454,8 +482,8 @@ async def admin_preview_workout_sync(
         workouts_collection.count_documents(
             {
                 "$or": [
-                    {"tag": {"$exists": False}},
-                    {"tag": ""},
+                    {"tag": {"$exists": False}, "purposes": {"$exists": False}},
+                    {"tag": "", "purposes": {"$in": [[], None]}},
                     {"equipment": {"$exists": False}},
                     {"equipment": ""},
                     {"level": {"$exists": False}, "levels": {"$exists": False}},

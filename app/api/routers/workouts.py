@@ -374,6 +374,7 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
             {"title": {"$regex": escaped, "$options": "i"}},
 
             {"tag": {"$regex": escaped, "$options": "i"}},
+            {"purposes": {"$regex": escaped, "$options": "i"}},
 
         ]
 
@@ -385,23 +386,30 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
 
     for workout in workouts:
 
-        key = workout.tag.strip() or "Workout"
+        purpose_names = workout.purposes or [workout.tag]
 
-        if key not in category_map:
+        for purpose_name in purpose_names:
 
-            category_map[key] = {
+            key = purpose_name.strip() or "Workout"
 
-                "id": key.lower().replace(" ", "-"),
+            if key not in category_map:
 
-                "name": key,
+                category_map[key] = {
 
-                "count": 0,
+                    "id": key.lower().replace(" ", "-"),
 
-                "image": workout.thumbnail,
+                    "name": key,
 
-            }
+                    "count": 0,
 
-        category_map[key]["count"] = int(category_map[key]["count"]) + 1
+                    "image": workout.thumbnail,
+
+                }
+            elif not str(category_map[key].get("image") or "").strip() and workout.thumbnail:
+
+                category_map[key]["image"] = workout.thumbnail
+
+            category_map[key]["count"] = int(category_map[key]["count"]) + 1
 
     categories = [
 
