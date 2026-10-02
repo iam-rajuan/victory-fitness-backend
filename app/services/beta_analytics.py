@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from bson import ObjectId
+
 from ..coach_archive import load_thread_snapshot
 from ..core.legacy import (
     PHASE_ONE_BETA_SUBSCRIPTION_SOURCE,
@@ -86,6 +88,27 @@ def _normalize_country_label(value: Any) -> str:
 def _normalize_feedback_theme(value: Any) -> str:
     raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return raw if raw in FEEDBACK_THEME_LABELS else "other"
+
+
+def _feedback_user_id_query_values(user_ids: list[str]) -> list[Any]:
+    values: list[Any] = []
+    seen: set[str] = set()
+    for user_id in user_ids:
+        normalized = _normalize_user_id(user_id)
+        if not normalized:
+            continue
+        if normalized not in seen:
+            values.append(normalized)
+            seen.add(normalized)
+        try:
+            object_id = ObjectId(normalized)
+        except Exception:
+            continue
+        object_key = str(object_id)
+        if object_key not in seen:
+            values.append(object_id)
+            seen.add(object_key)
+    return values
 
 
 def _feedback_theme_meta(theme: str, average_rating: float) -> tuple[str, str, str]:
@@ -227,13 +250,29 @@ async def _load_records(collection, query: dict, *, projection: dict | None = No
 
 
 async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict], start_at: datetime, end_at: datetime) -> PhaseOneBetaFeedbackInboxResponse:
+    user_id_values = _feedback_user_id_query_values(user_ids)
+    query: dict[str, Any] = {
+        "$or": [
+            {"user_id": {"$in": user_id_values}},
+            {"trial_type": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
+            {"subscription_purchase_source": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
+        ],
+    }
     records = await _load_records(
         beta_feedback_collection,
-        {
-            "user_id": {"$in": user_ids},
-            "created_at": {"$gte": start_at, "$lte": end_at},
+        query,
+        projection={
+            "user_id": 1,
+            "rating": 1,
+            "theme": 1,
+            "message": 1,
+            "would_pay": 1,
+            "created_at": 1,
+            "country": 1,
+            "country_code": 1,
+            "trial_type": 1,
+            "subscription_purchase_source": 1,
         },
-        projection={"user_id": 1, "rating": 1, "theme": 1, "message": 1, "would_pay": 1, "created_at": 1, "country": 1, "country_code": 1},
     )
     if not records:
         return PhaseOneBetaFeedbackInboxResponse()

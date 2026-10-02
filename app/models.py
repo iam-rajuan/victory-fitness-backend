@@ -1278,6 +1278,15 @@ class CoachVictorChatRequest(BaseModel):
 class CoachVictorChatResponse(BaseModel):
     reply: str
     thread_id: str | None = None
+    plan_action: dict | None = None
+
+
+class CoachWorkoutPlanActionApplyRequest(BaseModel):
+    source_prompt: str = Field(min_length=1, max_length=4000)
+    scope: str = Field(default="full_plan", max_length=40)
+    target_days: list[str] = Field(default_factory=list, max_length=7)
+    target_minutes: int | None = Field(default=None, ge=1, le=180)
+    summary: str = Field(default="", max_length=300)
 
 
 class CoachVictorHistoryResponse(BaseModel):

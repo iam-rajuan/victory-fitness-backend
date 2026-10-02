@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ...core.legacy import *
+from ...models import CoachWorkoutPlanActionApplyRequest, StrengthWorkoutPlanResponse
 from ...coach_victor import (
     build_coach_victor_system_prompt,
     generate_coach_victor_reply,
@@ -30,6 +31,214 @@ PAIN_KEYWORDS = {
     "hip": ["hip", "hips", "groin"],
     "ankle": ["ankle", "achilles"],
 }
+
+DAY_ALIASES = [
+    ("monday", "Mon"), ("mon", "Mon"),
+    ("tuesday", "Tue"), ("tue", "Tue"),
+    ("wednesday", "Wed"), ("wed", "Wed"),
+    ("thursday", "Thu"), ("thu", "Thu"),
+    ("friday", "Fri"), ("fri", "Fri"),
+    ("saturday", "Sat"), ("sat", "Sat"),
+    ("sunday", "Sun"), ("sun", "Sun"),
+]
+
+DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _day_sort_key(day: str) -> int:
+    try:
+        return DAY_ORDER.index(day)
+    except ValueError:
+        return 99
+
+
+def _extract_target_days(message: str) -> list[str]:
+    lowered = str(message or "").lower()
+    days: list[str] = []
+    for needle, day in DAY_ALIASES:
+        if re.search(rf"\b{re.escape(needle)}\b", lowered) and day not in days:
+            days.append(day)
+    return sorted(days, key=_day_sort_key)
+
+
+def _extract_target_minutes(message: str) -> int | None:
+    lowered = str(message or "").lower()
+    match = re.search(r"(\d{1,3})\s*(?:min|mins|minute|minutes)\b", lowered)
+    if not match:
+        return None
+    try:
+        value = int(match.group(1))
+    except Exception:
+        return None
+    return max(1, min(value, 180))
+
+
+def _is_full_plan_rebuild_request(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return any(term in lowered for term in ("rebuild", "new plan", "generate", "create", "build my plan", "replace my plan", "full plan", "whole plan"))
+
+
+def _looks_like_home_plan_change_request(message: str) -> bool:
+    lowered = str(message or "").lower()
+    action_terms = ("change", "adjust", "update", "make", "replace", "rebuild", "generate", "create", "insert", "save", "apply", "switch", "remove", "add", "only have", "have")
+    plan_terms = ("workout", "training", "routine", "plan", "session", "today", "tonight", "minutes", "no equipment", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "push", "pull", "squat", "legs")
+    return any(term in lowered for term in action_terms) and any(term in lowered for term in plan_terms)
+
+
+def _coach_plan_action_from_message(message: str, user_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if not _looks_like_home_plan_change_request(message):
+        return None
+    target_days = _extract_target_days(message)
+    target_minutes = _extract_target_minutes(message)
+    lowered = str(message or "").lower()
+    current_plan = dict(((user_context or {}).get("progress") or {}).get("current_home_workout_plan") or {})
+    if not target_days and any(term in lowered for term in ("today", "tonight", "current session", "this session", "today's workout", "todays workout")):
+        for session in current_plan.get("sessions") or []:
+            if isinstance(session, dict) and not session.get("completed"):
+                day_key = str(session.get("day") or "").strip()
+                if day_key in DAY_ORDER:
+                    target_days = [day_key]
+                    break
+    scope = "full_plan" if _is_full_plan_rebuild_request(message) or not target_days else "day"
+    label = ", ".join(target_days) if target_days else "Home plan"
+    summary_bits = []
+    if scope == "day":
+        summary_bits.append(f"Update {label}")
+    else:
+        summary_bits.append("Replace your Home workout plan")
+    if target_minutes:
+        summary_bits.append(f"{target_minutes} min")
+    elif current_plan.get("summary") and scope == "full_plan":
+        summary_bits.append("using your current profile")
+    return {
+        "type": "home_workout_plan_update",
+        "source_prompt": str(message or "").strip(),
+        "scope": scope,
+        "target_days": target_days,
+        "target_minutes": target_minutes,
+        "summary": " · ".join(summary_bits),
+        "button_label": "Apply to Home plan" if scope == "full_plan" else f"Update {label}",
+    }
+
+
+def _plan_input_document(input_data: Any, source: str, message: str) -> dict[str, Any]:
+    return {
+        "goal": input_data.goal,
+        "level": input_data.level,
+        "split": input_data.split,
+        "muscle_group": input_data.muscle_group,
+        "duration_minutes": input_data.duration_minutes,
+        "height": input_data.height,
+        "gender": input_data.gender,
+        "bench": input_data.bench,
+        "squat": input_data.squat,
+        "deadlift": input_data.deadlift,
+        "equipment": input_data.equipment,
+        "frequency": input_data.frequency,
+        "days": input_data.days,
+        "age": input_data.age,
+        "weight": input_data.weight,
+        "source": source,
+        "coach_message": str(message or "")[:2000],
+    }
+
+
+def _matching_generated_day(generated_days: list[dict[str, Any]], target_day: str, fallback_index: int = 0) -> dict[str, Any] | None:
+    for day in generated_days:
+        if str(day.get("day") or "").strip() == target_day:
+            return dict(day)
+    if 0 <= fallback_index < len(generated_days):
+        return dict(generated_days[fallback_index])
+    return dict(generated_days[0]) if generated_days else None
+
+
+def _normalize_generated_day_for_target(day: dict[str, Any], target_day: str, minutes: int | None) -> dict[str, Any]:
+    next_day = dict(day)
+    next_day["day"] = target_day
+    if minutes:
+        next_day["est_time"] = f"{minutes} min"
+    return next_day
+
+
+async def _apply_coach_workout_plan_action(
+    user: dict,
+    *,
+    source_prompt: str,
+    scope: str,
+    target_days: list[str] | None = None,
+    target_minutes: int | None = None,
+) -> dict:
+    user_id = str(user["_id"])
+    now = datetime.now(timezone.utc)
+    clean_days = [day for day in (target_days or []) if day in DAY_ORDER]
+    prompt_with_constraints = source_prompt
+    if target_minutes:
+        prompt_with_constraints = f"{prompt_with_constraints}\n\nHard constraint: every affected session must be around {target_minutes} minutes."
+    if clean_days:
+        prompt_with_constraints = f"{prompt_with_constraints}\n\nHard constraint: affected days are {', '.join(clean_days)}."
+
+    payload = _coach_plan_payload_from_message(prompt_with_constraints)
+    if clean_days:
+        payload.days = clean_days
+        payload.frequency = str(len(clean_days))
+    if target_minutes:
+        payload.duration_minutes = str(target_minutes)
+    hydrated_input = _hydrate_strength_plan_input(payload, user)
+    hydrated_input.custom_notes = prompt_with_constraints[:4000]
+    generated_plan = generate_strength_workout_plan(hydrated_input)
+
+    latest_record = await strength_workout_plans_collection.find_one(
+        {"user_id": user_id},
+        sort=[("created_at", -1)],
+    )
+    should_patch_days = scope == "day" and clean_days and latest_record and isinstance(latest_record.get("plan"), dict)
+    if should_patch_days:
+        base_plan = dict(latest_record.get("plan") or {})
+        base_days = [dict(day) for day in base_plan.get("days") or [] if isinstance(day, dict)]
+        generated_days = [dict(day) for day in generated_plan.get("days") or [] if isinstance(day, dict)]
+        next_days: list[dict[str, Any]] = []
+        for index, existing_day in enumerate(base_days):
+            day_key = str(existing_day.get("day") or "").strip()
+            if day_key in clean_days:
+                replacement = _matching_generated_day(generated_days, day_key, clean_days.index(day_key))
+                next_days.append(_normalize_generated_day_for_target(replacement or existing_day, day_key, target_minutes))
+            else:
+                next_days.append(existing_day)
+        existing_keys = {str(day.get("day") or "") for day in next_days}
+        for index, day_key in enumerate(clean_days):
+            if day_key in existing_keys:
+                continue
+            replacement = _matching_generated_day(generated_days, day_key, index)
+            if replacement:
+                next_days.append(_normalize_generated_day_for_target(replacement, day_key, target_minutes))
+        next_days.sort(key=lambda item: _day_sort_key(str(item.get("day") or "")))
+        next_plan = {**base_plan, "days": next_days}
+        next_plan["summary"] = str(generated_plan.get("summary") or base_plan.get("summary") or "").strip()
+        insert_doc = {
+            "user_id": user_id,
+            "input": {
+                **dict(latest_record.get("input") or {}),
+                "source": "coach_adjustment",
+                "coach_message": source_prompt[:2000],
+                "days": sorted({*(dict(latest_record.get("input") or {}).get("days") or []), *clean_days}, key=_day_sort_key),
+            },
+            "plan": next_plan,
+            "progress": [item for item in latest_record.get("progress") or [] if isinstance(item, dict)],
+            "created_at": now,
+            "updated_at": now,
+        }
+    else:
+        insert_doc = {
+            "user_id": user_id,
+            "input": _plan_input_document(hydrated_input, "coach_adjustment", source_prompt),
+            "plan": generated_plan,
+            "progress": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    insert_result = await strength_workout_plans_collection.insert_one(insert_doc)
+    return {**insert_doc, "_id": insert_result.inserted_id}
 
 
 def detect_pain_flags(message: str) -> list[str]:
@@ -449,6 +658,7 @@ async def coach_victor_chat(
         "content": reply_text,
         "created_at": now,
     }
+    plan_action = _coach_plan_action_from_message(payload.message, user_context)
     next_full_messages = [*full_thread_messages, user_message, assistant_message]
 
     if thread:
@@ -479,7 +689,22 @@ async def coach_victor_chat(
         len(next_full_messages),
     )
     await _record_trial_engagement(user, "coach_message")
-    return CoachVictorChatResponse(reply=reply_text, thread_id=thread_id)
+    return CoachVictorChatResponse(reply=reply_text, thread_id=thread_id, plan_action=plan_action)
+
+
+@router.post("/ai/coach-victor/workout-plan-action/apply", response_model=StrengthWorkoutPlanResponse)
+async def apply_coach_workout_plan_action(
+    payload: CoachWorkoutPlanActionApplyRequest,
+    user: dict = Depends(_require_coach_victor_access_user),
+) -> StrengthWorkoutPlanResponse:
+    record = await _apply_coach_workout_plan_action(
+        user,
+        source_prompt=payload.source_prompt,
+        scope=payload.scope,
+        target_days=payload.target_days,
+        target_minutes=payload.target_minutes,
+    )
+    return _serialize_strength_workout_plan_record(record)
 
 
 @router.post("/ai/coach-victor/stream")
@@ -568,7 +793,8 @@ async def coach_victor_stream(
             insert_res = await coach_victor_threads_collection.insert_one(thread_doc)
             final_thread_id = str(insert_res.inserted_id)
 
-        done_data = json.dumps({"type": "done", "reply": full_reply_text, "thread_id": final_thread_id})
+        plan_action = _coach_plan_action_from_message(payload.message, user_context)
+        done_data = json.dumps({"type": "done", "reply": full_reply_text, "thread_id": final_thread_id, "plan_action": plan_action})
         yield f"data: {done_data}\n\n"
         yield "data: [DONE]\n\n"
 

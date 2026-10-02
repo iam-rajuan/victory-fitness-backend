@@ -723,6 +723,42 @@ class BetaFeedbackAnalyticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inbox.themes[0].quote, "Workout plan fits my week.")
         self.assertIn("Ghana", inbox.themes[0].who)
 
+    async def test_feedback_inbox_includes_saved_beta_feedback_outside_trial_window(self) -> None:
+        now = _utc_now()
+        captured_query = {}
+
+        class _Cursor:
+            async def to_list(self, length=None):
+                return [
+                    {
+                        "user_id": "user-1",
+                        "rating": 4,
+                        "theme": "coach_context",
+                        "message": "Coach should remember my knee note.",
+                        "would_pay": True,
+                        "subscription_purchase_source": "beta_trial",
+                        "created_at": now - timedelta(days=40),
+                    }
+                ]
+
+        class _Collection:
+            def find(self, query, projection=None):
+                captured_query.update(query)
+                return _Cursor()
+
+        with patch.object(beta_analytics_service_module, "beta_feedback_collection", _Collection()):
+            inbox = await beta_analytics_service_module._build_feedback_inbox(
+                ["user-1"],
+                {"user-1": {"country": "Ghana"}},
+                now - timedelta(days=2),
+                now - timedelta(days=1),
+            )
+
+        self.assertNotIn("created_at", captured_query)
+        self.assertEqual(inbox.totalResponses, 1)
+        self.assertEqual(inbox.wouldPayCount, 1)
+        self.assertEqual(inbox.themes[0].t, "Wanted the coach to know my injury")
+
 
 if __name__ == "__main__":
     unittest.main()
