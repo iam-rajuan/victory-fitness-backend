@@ -42,6 +42,8 @@ async def analyze_meal_image(
 
     except RuntimeError as exc:
 
+        logger.exception("meal_image_analyze_runtime_error user_id=%s file_name=%s", user_id, payload.file_name or "")
+
         raise HTTPException(status_code=502, detail=f"Meal image analysis unavailable: {exc}") from exc
 
     created_at = datetime.now(timezone.utc)

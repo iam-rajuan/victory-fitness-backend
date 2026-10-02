@@ -966,10 +966,12 @@ def _build_fallback_meal_analysis(file_name: str | None = None) -> MealImageAnal
 
 def generate_meal_image_analysis(payload: dict) -> MealImageAnalysisResult:
     if not settings.openai_api_key:
-        return _build_fallback_meal_analysis(payload.get("file_name"))
+        raise RuntimeError("OPENAI_API_KEY is not configured")
 
     image_base64 = _normalize_text(payload.get("image_base64"), "")
     mime_type = _normalize_text(payload.get("mime_type"), "image/jpeg").lower()
+    if not image_base64:
+        raise RuntimeError("Meal image analysis requires image data")
 
     # Normalize image to JPEG and cap dimensions with PIL if image_base64 is present
     supported_formats = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -1019,23 +1021,24 @@ def generate_meal_image_analysis(payload: dict) -> MealImageAnalysisResult:
         "max_output_tokens": 1000,
     }
 
+    data = _openai_responses_json_with_retry(request_payload)
     try:
-        data = _openai_responses_json_with_retry(request_payload)
         result_text = _extract_response_text(data).strip()
         parsed = _parse_json_object(result_text)
-        normalized = {
-            "meal_name_guess": _normalize_text(parsed.get("meal_name_guess"), "Meal"),
-            "summary": _normalize_text(parsed.get("summary"), "A practical meal estimate could not be generated."),
-            "estimated_calories": _normalize_int(parsed.get("estimated_calories"), 0, 0, 3000),
-            "estimated_protein": _normalize_int(parsed.get("estimated_protein"), 0, 0, 300),
-            "estimated_carbs": _normalize_int(parsed.get("estimated_carbs"), 0, 0, 500),
-            "estimated_fat": _normalize_int(parsed.get("estimated_fat"), 0, 0, 200),
-            "confidence": _normalize_text(parsed.get("confidence"), "medium"),
-            "notes": _normalize_string_list(parsed.get("notes")),
-        }
-        return MealImageAnalysisResult(data=normalized)
-    except Exception as exc:
-        return _build_fallback_meal_analysis(payload.get("file_name"))
+    except (KeyError, IndexError, AttributeError, TypeError, ValueError) as exc:
+        raise RuntimeError("OpenAI meal image analysis response was missing valid JSON") from exc
+
+    normalized = {
+        "meal_name_guess": _normalize_text(parsed.get("meal_name_guess"), "Meal"),
+        "summary": _normalize_text(parsed.get("summary"), "A practical meal estimate could not be generated."),
+        "estimated_calories": _normalize_int(parsed.get("estimated_calories"), 0, 0, 3000),
+        "estimated_protein": _normalize_int(parsed.get("estimated_protein"), 0, 0, 300),
+        "estimated_carbs": _normalize_int(parsed.get("estimated_carbs"), 0, 0, 500),
+        "estimated_fat": _normalize_int(parsed.get("estimated_fat"), 0, 0, 200),
+        "confidence": _normalize_text(parsed.get("confidence"), "medium"),
+        "notes": _normalize_string_list(parsed.get("notes")),
+    }
+    return MealImageAnalysisResult(data=normalized)
 
 
 def generate_meal_document_analysis(payload: dict) -> MealImageAnalysisResult:
