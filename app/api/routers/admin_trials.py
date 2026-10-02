@@ -4,7 +4,7 @@ from datetime import date
 from fastapi import APIRouter, Query
 
 from ...core.legacy import *
-from ...services.beta_analytics import build_phase_one_beta_analytics
+from ...services.beta_analytics import build_phase_one_beta_analytics_cached
 from ...utils.analytics import market_filter, parse_time_range
 
 router = APIRouter()
@@ -235,4 +235,4 @@ async def admin_phase_one_beta_summary(
     limit: int = 300,
     _: dict = Depends(_require_admin_user),
 ) -> PhaseOneBetaSummaryResponse:
-    return await build_phase_one_beta_analytics(limit=limit)
+    return await build_phase_one_beta_analytics_cached(limit=limit)

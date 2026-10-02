@@ -152,11 +152,76 @@ def _matching_generated_day(generated_days: list[dict[str, Any]], target_day: st
     return dict(generated_days[0]) if generated_days else None
 
 
+def _flatten_strength_day_exercises_for_coach(day: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(day, dict):
+        return []
+    direct = [dict(item) for item in day.get("exercises") or [] if isinstance(item, dict)]
+    if direct:
+        return direct
+    flattened: list[dict[str, Any]] = []
+    for section in day.get("sections") or []:
+        if isinstance(section, dict):
+            flattened.extend(dict(item) for item in section.get("exercises") or [] if isinstance(item, dict))
+    return flattened
+
+
+def _compact_exercises_for_minutes(exercises: list[dict[str, Any]], minutes: int | None) -> list[dict[str, Any]]:
+    clean = [dict(item) for item in exercises if isinstance(item, dict) and str(item.get("name") or "").strip()]
+    if not clean:
+        return []
+    if minutes and minutes <= 8:
+        target_count = 2
+    elif minutes and minutes <= 15:
+        target_count = 3
+    else:
+        target_count = len(clean)
+    compacted: list[dict[str, Any]] = []
+    for index, exercise in enumerate(clean[: max(1, min(target_count, len(clean)))], start=1):
+        next_exercise = dict(exercise)
+        next_exercise["id"] = str(next_exercise.get("id") or f"exercise-{index}")
+        if minutes and minutes <= 8:
+            next_exercise["sets"] = max(1, min(int(next_exercise.get("sets") or 2), 2))
+            next_exercise["rest"] = "45s"
+        elif minutes and minutes <= 15:
+            next_exercise["sets"] = max(1, min(int(next_exercise.get("sets") or 3), 3))
+            next_exercise["rest"] = str(next_exercise.get("rest") or "60s")
+        compacted.append(next_exercise)
+    return compacted
+
+
 def _normalize_generated_day_for_target(day: dict[str, Any], target_day: str, minutes: int | None) -> dict[str, Any]:
     next_day = dict(day)
     next_day["day"] = target_day
     if minutes:
         next_day["est_time"] = f"{minutes} min"
+    exercises = _compact_exercises_for_minutes(_flatten_strength_day_exercises_for_coach(next_day), minutes)
+    if exercises:
+        next_day["exercises"] = exercises
+        next_day["sections"] = []
+    return next_day
+
+
+def _ensure_adjusted_day_has_exercises(
+    replacement: dict[str, Any],
+    *,
+    fallback_day: dict[str, Any] | None,
+    target_day: str,
+    minutes: int | None,
+) -> dict[str, Any]:
+    next_day = _normalize_generated_day_for_target(replacement, target_day, minutes)
+    if _flatten_strength_day_exercises_for_coach(next_day):
+        return next_day
+
+    fallback_exercises = _compact_exercises_for_minutes(
+        _flatten_strength_day_exercises_for_coach(fallback_day),
+        minutes,
+    )
+    if fallback_exercises:
+        next_day["exercises"] = fallback_exercises
+        next_day["sections"] = []
+        next_day["title"] = str(next_day.get("title") or (fallback_day or {}).get("title") or f"{target_day} Strength")
+        next_day["volume"] = str(next_day.get("volume") or (fallback_day or {}).get("volume") or "")
+        next_day["intensity"] = str(next_day.get("intensity") or (fallback_day or {}).get("intensity") or "Moderate")
     return next_day
 
 
@@ -201,7 +266,14 @@ async def _apply_coach_workout_plan_action(
             day_key = str(existing_day.get("day") or "").strip()
             if day_key in clean_days:
                 replacement = _matching_generated_day(generated_days, day_key, clean_days.index(day_key))
-                next_days.append(_normalize_generated_day_for_target(replacement or existing_day, day_key, target_minutes))
+                next_days.append(
+                    _ensure_adjusted_day_has_exercises(
+                        replacement or existing_day,
+                        fallback_day=existing_day,
+                        target_day=day_key,
+                        minutes=target_minutes,
+                    )
+                )
             else:
                 next_days.append(existing_day)
         existing_keys = {str(day.get("day") or "") for day in next_days}
@@ -210,7 +282,14 @@ async def _apply_coach_workout_plan_action(
                 continue
             replacement = _matching_generated_day(generated_days, day_key, index)
             if replacement:
-                next_days.append(_normalize_generated_day_for_target(replacement, day_key, target_minutes))
+                next_days.append(
+                    _ensure_adjusted_day_has_exercises(
+                        replacement,
+                        fallback_day=None,
+                        target_day=day_key,
+                        minutes=target_minutes,
+                    )
+                )
         next_days.sort(key=lambda item: _day_sort_key(str(item.get("day") or "")))
         next_plan = {**base_plan, "days": next_days}
         next_plan["summary"] = str(generated_plan.get("summary") or base_plan.get("summary") or "").strip()
@@ -228,6 +307,20 @@ async def _apply_coach_workout_plan_action(
             "updated_at": now,
         }
     else:
+        normalized_generated_days = []
+        for day in generated_plan.get("days") or []:
+            if isinstance(day, dict):
+                day_key = str(day.get("day") or "").strip()
+                normalized_generated_days.append(
+                    _ensure_adjusted_day_has_exercises(
+                        day,
+                        fallback_day=None,
+                        target_day=day_key if day_key in DAY_ORDER else str(day.get("day") or "Mon"),
+                        minutes=target_minutes,
+                    )
+                )
+        if normalized_generated_days:
+            generated_plan = {**generated_plan, "days": normalized_generated_days}
         insert_doc = {
             "user_id": user_id,
             "input": _plan_input_document(hydrated_input, "coach_adjustment", source_prompt),

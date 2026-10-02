@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from time import monotonic
 from typing import Any
 
 from bson import ObjectId
 
-from ..coach_archive import load_thread_snapshot
 from ..core.legacy import (
     PHASE_ONE_BETA_SUBSCRIPTION_SOURCE,
     _build_subscription_summary,
@@ -46,6 +47,8 @@ from ..models import (
 
 CHECKPOINT_DAYS = tuple(range(1, 22))
 ENDING_SOON_DAYS = 2
+PHASE_ONE_BETA_CACHE_TTL_SECONDS = 15
+_phase_one_beta_cache: dict[int, tuple[float, PhaseOneBetaSummaryResponse]] = {}
 
 FEEDBACK_THEME_LABELS = {
     "nutrition_logging": "Nutrition logging is too slow",
@@ -346,8 +349,6 @@ async def _load_beta_thread_messages(user_ids: list[str]) -> dict[str, list[dict
             "messages": 1,
             "updated_at": 1,
             "created_at": 1,
-            "latest_snapshot_s3_key": 1,
-            "latest_snapshot_s3_bucket": 1,
         },
     )
     if not threads:
@@ -370,20 +371,15 @@ async def _load_beta_thread_messages(user_ids: list[str]) -> dict[str, list[dict
             stored_messages = thread.get("recent_messages")
         stored_messages = stored_messages if isinstance(stored_messages, list) else []
         messages: list[dict[str, Any]] = []
-        snapshot_key = str(thread.get("latest_snapshot_s3_key") or "")
-        snapshot_bucket = str(thread.get("latest_snapshot_s3_bucket") or "")
-        if snapshot_key and snapshot_bucket:
-            try:
-                messages = load_thread_snapshot(snapshot_bucket, snapshot_key)
-            except Exception:
-                messages = []
-        else:
-            for record in sorted(archives_by_thread.get(str(thread.get("_id") or ""), []), key=lambda item: _as_utc_datetime(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)):
-                if record.get("storage_backend") == "mongodb":
-                    payload = record.get("payload")
-                    if isinstance(payload, list):
-                        messages.extend(payload)
-            messages.extend(stored_messages)
+        # Admin beta analytics only needs fast usage counts. Downloading full S3
+        # chat snapshots made this page take several seconds, so this route uses
+        # MongoDB archive chunks plus the thread's recent messages.
+        for record in sorted(archives_by_thread.get(str(thread.get("_id") or ""), []), key=lambda item: _as_utc_datetime(item.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)):
+            if record.get("storage_backend") == "mongodb":
+                payload = record.get("payload")
+                if isinstance(payload, list):
+                    messages.extend(payload)
+        messages.extend(stored_messages)
         if messages:
             messages_by_user[str(thread.get("user_id") or "")].extend(messages)
     return messages_by_user
@@ -431,11 +427,88 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
     if earliest_start is None or latest_end is None:
         latest_end = now
         earliest_start = now
-    feedback_inbox = await _build_feedback_inbox(user_ids, users_by_id, earliest_start, latest_end)
-
     activity_by_user: dict[str, _UserActivityAccumulator] = {user_id: _UserActivityAccumulator() for user_id in user_ids}
 
-    thread_messages_by_user = await _load_beta_thread_messages(user_ids)
+    (
+        feedback_inbox,
+        thread_messages_by_user,
+        nutrition_plan_jobs,
+        meal_entries,
+        workout_logs,
+        challenge_memberships,
+        community_posts,
+        community_comments,
+        community_reactions,
+        support_messages,
+    ) = await asyncio.gather(
+        _build_feedback_inbox(user_ids, users_by_id, earliest_start, latest_end),
+        _load_beta_thread_messages(user_ids),
+        _load_records(
+            nutrition_plan_jobs_collection,
+            {
+                "user_id": {"$in": user_ids},
+                "status": "completed",
+                "created_at": {"$gte": earliest_start, "$lte": latest_end},
+            },
+            projection={"user_id": 1, "created_at": 1},
+        ),
+        _load_records(
+            meal_analysis_entries_collection,
+            {
+                "user_id": {"$in": user_ids},
+                "created_at": {"$gte": earliest_start, "$lte": latest_end},
+            },
+            projection={"user_id": 1, "created_at": 1},
+        ),
+        _load_records(
+            workout_logs_collection,
+            {
+                "user_id": {"$in": user_ids},
+                "started_at": {"$gte": earliest_start, "$lte": latest_end},
+            },
+            projection={"user_id": 1, "started_at": 1, "completed_at": 1, "status": 1},
+        ),
+        _load_records(
+            challenge_memberships_collection,
+            {
+                "user_id": {"$in": user_ids},
+            },
+            projection={"user_id": 1, "joined_at": 1, "completed_at": 1, "status": 1},
+        ),
+        _load_records(
+            community_posts_collection,
+            {
+                "author_id": {"$in": user_ids},
+                "created_at": {"$gte": earliest_start, "$lte": latest_end},
+            },
+            projection={"author_id": 1, "created_at": 1},
+        ),
+        _load_records(
+            community_comments_collection,
+            {
+                "author_id": {"$in": user_ids},
+                "created_at": {"$gte": earliest_start, "$lte": latest_end},
+            },
+            projection={"author_id": 1, "created_at": 1},
+        ),
+        _load_records(
+            community_reactions_collection,
+            {
+                "user_id": {"$in": user_ids},
+                "created_at": {"$gte": earliest_start, "$lte": latest_end},
+            },
+            projection={"user_id": 1, "created_at": 1},
+        ),
+        _load_records(
+            support_messages_collection,
+            {
+                "user_id": {"$in": user_ids},
+                "created_at": {"$gte": earliest_start, "$lte": latest_end},
+            },
+            projection={"user_id": 1, "created_at": 1},
+        ),
+    )
+
     for user_id, messages in thread_messages_by_user.items():
         start_at, end_at = user_windows.get(user_id, (None, None))
         conversation_seen = False
@@ -453,15 +526,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if conversation_seen and first_conversation_timestamp is not None:
             activity_by_user[user_id].add_ai_conversation(first_conversation_timestamp)
 
-    nutrition_plan_jobs = await _load_records(
-        nutrition_plan_jobs_collection,
-        {
-            "user_id": {"$in": user_ids},
-            "status": "completed",
-            "created_at": {"$gte": earliest_start, "$lte": latest_end},
-        },
-        projection={"user_id": 1, "created_at": 1},
-    )
     for record in nutrition_plan_jobs:
         user_id = _normalize_user_id(record.get("user_id"))
         created_at = _as_utc_datetime(record.get("created_at"))
@@ -469,14 +533,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if _in_window(created_at, start_at, end_at):
             activity_by_user[user_id].add_nutrition_plan(created_at)
 
-    meal_entries = await _load_records(
-        meal_analysis_entries_collection,
-        {
-            "user_id": {"$in": user_ids},
-            "created_at": {"$gte": earliest_start, "$lte": latest_end},
-        },
-        projection={"user_id": 1, "created_at": 1},
-    )
     for record in meal_entries:
         user_id = _normalize_user_id(record.get("user_id"))
         created_at = _as_utc_datetime(record.get("created_at"))
@@ -484,14 +540,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if _in_window(created_at, start_at, end_at):
             activity_by_user[user_id].add_nutrition_log(created_at)
 
-    workout_logs = await _load_records(
-        workout_logs_collection,
-        {
-            "user_id": {"$in": user_ids},
-            "started_at": {"$gte": earliest_start, "$lte": latest_end},
-        },
-        projection={"user_id": 1, "started_at": 1, "completed_at": 1, "status": 1},
-    )
     for record in workout_logs:
         user_id = _normalize_user_id(record.get("user_id"))
         start_at, end_at = user_windows.get(user_id, (None, None))
@@ -502,13 +550,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if _in_window(completed_at, start_at, end_at) and str(record.get("status") or "").lower() == "completed":
             activity_by_user[user_id].add_workout_completed(completed_at)
 
-    challenge_memberships = await _load_records(
-        challenge_memberships_collection,
-        {
-            "user_id": {"$in": user_ids},
-        },
-        projection={"user_id": 1, "joined_at": 1, "completed_at": 1, "status": 1},
-    )
     for record in challenge_memberships:
         user_id = _normalize_user_id(record.get("user_id"))
         start_at, end_at = user_windows.get(user_id, (None, None))
@@ -519,14 +560,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if _in_window(completed_at, start_at, end_at) and str(record.get("status") or "").upper() == "COMPLETED":
             activity_by_user[user_id].add_challenge_completed(completed_at)
 
-    community_posts = await _load_records(
-        community_posts_collection,
-        {
-            "author_id": {"$in": user_ids},
-            "created_at": {"$gte": earliest_start, "$lte": latest_end},
-        },
-        projection={"author_id": 1, "created_at": 1},
-    )
     for record in community_posts:
         user_id = _normalize_user_id(record.get("author_id"))
         created_at = _as_utc_datetime(record.get("created_at"))
@@ -534,14 +567,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if _in_window(created_at, start_at, end_at):
             activity_by_user[user_id].add_community_post(created_at)
 
-    community_comments = await _load_records(
-        community_comments_collection,
-        {
-            "author_id": {"$in": user_ids},
-            "created_at": {"$gte": earliest_start, "$lte": latest_end},
-        },
-        projection={"author_id": 1, "created_at": 1},
-    )
     for record in community_comments:
         user_id = _normalize_user_id(record.get("author_id"))
         created_at = _as_utc_datetime(record.get("created_at"))
@@ -549,14 +574,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if _in_window(created_at, start_at, end_at):
             activity_by_user[user_id].add_community_comment(created_at)
 
-    community_reactions = await _load_records(
-        community_reactions_collection,
-        {
-            "user_id": {"$in": user_ids},
-            "created_at": {"$gte": earliest_start, "$lte": latest_end},
-        },
-        projection={"user_id": 1, "created_at": 1},
-    )
     for record in community_reactions:
         user_id = _normalize_user_id(record.get("user_id"))
         created_at = _as_utc_datetime(record.get("created_at"))
@@ -564,14 +581,6 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         if _in_window(created_at, start_at, end_at):
             activity_by_user[user_id].add_community_reaction(created_at)
 
-    support_messages = await _load_records(
-        support_messages_collection,
-        {
-            "user_id": {"$in": user_ids},
-            "created_at": {"$gte": earliest_start, "$lte": latest_end},
-        },
-        projection={"user_id": 1, "created_at": 1},
-    )
     support_counts: dict[str, int] = defaultdict(int)
     for message in support_messages:
         user_id = _normalize_user_id(message.get("user_id"))
@@ -816,3 +825,15 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         ],
         users=users,
     )
+
+
+async def build_phase_one_beta_analytics_cached(limit: int = 300) -> PhaseOneBetaSummaryResponse:
+    normalized_limit = min(max(int(limit or 300), 1), 500)
+    now = monotonic()
+    cached = _phase_one_beta_cache.get(normalized_limit)
+    if cached and now - cached[0] <= PHASE_ONE_BETA_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    summary = await build_phase_one_beta_analytics(limit=normalized_limit)
+    _phase_one_beta_cache[normalized_limit] = (monotonic(), summary)
+    return summary

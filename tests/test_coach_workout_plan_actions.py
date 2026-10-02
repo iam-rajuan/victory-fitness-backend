@@ -41,3 +41,30 @@ def test_coach_plan_action_rebuilds_full_plan() -> None:
     assert action is not None
     assert action["scope"] == "full_plan"
     assert action["target_days"] == []
+
+
+def test_five_minute_day_update_keeps_exercises_from_fallback() -> None:
+    fallback_day = {
+        "day": "Mon",
+        "title": "Full Body Strength",
+        "est_time": "25 min",
+        "volume": "3 exercises",
+        "intensity": "Moderate",
+        "exercises": [
+            {"id": "ex-1", "name": "Push-Up", "sets": 3, "reps": "8-12", "rest": "60s", "weight": "Bodyweight", "type": "Compound"},
+            {"id": "ex-2", "name": "Bodyweight Squat", "sets": 3, "reps": "8-12", "rest": "60s", "weight": "Bodyweight", "type": "Compound"},
+            {"id": "ex-3", "name": "Plank", "sets": 3, "reps": "30s", "rest": "45s", "weight": "Bodyweight", "type": "Core"},
+        ],
+    }
+
+    adjusted = coach_router._ensure_adjusted_day_has_exercises(
+        {"day": "Mon", "title": "Upper Body Strength", "est_time": "5 min", "exercises": []},
+        fallback_day=fallback_day,
+        target_day="Mon",
+        minutes=5,
+    )
+
+    assert adjusted["est_time"] == "5 min"
+    assert len(adjusted["exercises"]) == 2
+    assert adjusted["exercises"][0]["sets"] <= 2
+    assert adjusted["exercises"][0]["rest"] == "45s"
