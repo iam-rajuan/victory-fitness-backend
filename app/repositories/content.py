@@ -34,7 +34,7 @@ def _version_label(next_index: int) -> str:
 def _base_version_from_record(record: dict, *, now: datetime) -> dict:
     return {
         "id": str(record.get("published_version_id") or uuid4().hex),
-        "version": "v1",
+        "version": str(record.get("version") or "v1"),
         "title": str(record.get("title") or ""),
         "html_content": str(record.get("html_content") or ""),
         "filename": str(record.get("filename") or ""),
@@ -60,6 +60,7 @@ def ensure_content_versions(record: dict, *, default_title: str, default_html_co
     current = next((item for item in versions if str(item.get("id") or "") == published_id), None) or versions[-1]
     record["versions"] = versions
     record["published_version_id"] = str(current.get("id") or published_id)
+    record["version"] = str(current.get("version") or record.get("version") or "v1")
     record["title"] = str(current.get("title") or record.get("title") or default_title)
     record["html_content"] = str(current.get("html_content") or record.get("html_content") or default_html_content)
     record["updated_at"] = current.get("published_at") or record.get("updated_at") or now
@@ -112,6 +113,7 @@ async def upsert_content_record(
     title: str,
     html_content: str,
     filename: str | None = None,
+    version: str | None = None,
     applies_to: list[str] | None = None,
     notification_behavior: str = "silent",
     effective_at: datetime | None = None,
@@ -119,9 +121,12 @@ async def upsert_content_record(
     now = datetime.now(timezone.utc)
     existing = await app_content_collection.find_one({"key": key}, projection=APP_CONTENT_PROJECTION) or {}
     versions = [dict(item) for item in (existing.get("versions") or []) if isinstance(item, dict)]
-    version = {
+
+    version_label = version.strip() if (version and str(version).strip()) else _version_label(len(versions) + 1)
+
+    version_item = {
         "id": uuid4().hex,
-        "version": _version_label(len(versions) + 1),
+        "version": version_label,
         "title": title.strip(),
         "html_content": html_content.strip(),
         "filename": str(filename or "").strip(),
@@ -132,22 +137,23 @@ async def upsert_content_record(
         "effective_at": effective_at or now,
         "created_at": now,
     }
-    versions.append(version)
+    versions.append(version_item)
     await app_content_collection.update_one(
         {"key": key},
         {
             "$set": {
                 "key": key,
-                "title": version["title"],
-                "html_content": version["html_content"],
-                "filename": version["filename"],
-                "applies_to": version["applies_to"],
-                "notification_behavior": version["notification_behavior"],
-                "published_at": version["published_at"],
-                "effective_at": version["effective_at"],
-                "status": version["status"],
+                "title": version_item["title"],
+                "html_content": version_item["html_content"],
+                "filename": version_item["filename"],
+                "version": version_item["version"],
+                "applies_to": version_item["applies_to"],
+                "notification_behavior": version_item["notification_behavior"],
+                "published_at": version_item["published_at"],
+                "effective_at": version_item["effective_at"],
+                "status": version_item["status"],
                 "versions": versions,
-                "published_version_id": version["id"],
+                "published_version_id": version_item["id"],
                 "updated_at": now,
             },
             "$setOnInsert": {

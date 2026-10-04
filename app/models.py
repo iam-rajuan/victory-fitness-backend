@@ -625,6 +625,7 @@ class UpdatePrivacyPolicyRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     html_content: str = Field(min_length=1, max_length=200000)
     filename: str | None = Field(default=None, max_length=255)
+    version: str | None = Field(default=None, max_length=50)
     applies_to: list[str] = Field(default_factory=lambda: ["ALL"])
     notification_behavior: str = Field(default="silent", pattern=r"^(all|eu|silent)$")
     effective_at: datetime | None = None
@@ -651,6 +652,7 @@ class UpdateTermsConditionRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     html_content: str = Field(min_length=1, max_length=200000)
     filename: str | None = Field(default=None, max_length=255)
+    version: str | None = Field(default=None, max_length=50)
     applies_to: list[str] = Field(default_factory=lambda: ["ALL"])
     notification_behavior: str = Field(default="silent", pattern=r"^(all|eu|silent)$")
     effective_at: datetime | None = None
@@ -677,6 +679,7 @@ class UpdateAboutUsRequest(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     html_content: str = Field(min_length=1, max_length=200000)
     filename: str | None = Field(default=None, max_length=255)
+    version: str | None = Field(default=None, max_length=50)
     applies_to: list[str] = Field(default_factory=lambda: ["ALL"])
     notification_behavior: str = Field(default="silent", pattern=r"^(all|eu|silent)$")
     effective_at: datetime | None = None
