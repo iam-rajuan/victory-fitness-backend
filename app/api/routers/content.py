@@ -1,9 +1,70 @@
 from typing import Any
-from fastapi import APIRouter
+from fastapi import APIRouter, Cookie, Security
+from fastapi.security import HTTPAuthorizationCredentials
 
 from ...core.legacy import *
 
 router = APIRouter()
+
+
+async def _get_optional_content_user(
+    credentials: HTTPAuthorizationCredentials | None = Security(bearer_scheme),
+    access_token: str | None = Cookie(default=None),
+) -> dict | None:
+    try:
+        if not credentials and not access_token:
+            return None
+        return await dependency_require_access_user(credentials, access_token)
+    except Exception:
+        return None
+
+
+def _market_from_user(user: dict | None) -> str:
+    if not user:
+        return ""
+    return str(user.get("country_code") or user.get("market") or user.get("country") or "").strip().upper()
+
+
+def _market_matches_version(version: dict, market: str) -> bool:
+    applies_to = {str(item or "").strip().upper() for item in (version.get("applies_to") or ["ALL"])}
+    if not applies_to or "ALL" in applies_to:
+        return True
+    normalized_market = str(market or "").strip().upper()
+    if normalized_market in applies_to:
+        return True
+    if "EU" in applies_to and normalized_market in {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}:
+        return True
+    return False
+
+
+def _record_for_market(record: dict, market: str | None) -> dict:
+    if not market:
+        return record
+    now = datetime.now(timezone.utc)
+    versions = [dict(item) for item in (record.get("versions") or []) if isinstance(item, dict)]
+    eligible = []
+    for version in versions:
+        effective_at = version.get("effective_at") or version.get("published_at") or record.get("updated_at") or now
+        if isinstance(effective_at, str):
+            try:
+                effective_at = datetime.fromisoformat(effective_at.replace("Z", "+00:00"))
+            except ValueError:
+                effective_at = now
+        if isinstance(effective_at, datetime) and effective_at.tzinfo is None:
+            effective_at = effective_at.replace(tzinfo=timezone.utc)
+        if _market_matches_version(version, market) and effective_at <= now:
+            eligible.append(version)
+    if not eligible:
+        eligible = [version for version in versions if "ALL" in {str(item).upper() for item in (version.get("applies_to") or ["ALL"])}]
+    if not eligible:
+        return record
+    selected = eligible[-1]
+    next_record = dict(record)
+    next_record["published_version_id"] = selected.get("id")
+    next_record["title"] = selected.get("title") or record.get("title")
+    next_record["html_content"] = selected.get("html_content") or record.get("html_content")
+    next_record["updated_at"] = selected.get("published_at") or record.get("updated_at")
+    return next_record
 
 
 async def _next_homepage_quote_in_sequence(active_items: list[dict]) -> dict:
@@ -19,19 +80,34 @@ async def _next_homepage_quote_in_sequence(active_items: list[dict]) -> dict:
 
 @router.get("/content/privacy-policy", response_model=PrivacyPolicyResponse)
 
-async def get_privacy_policy() -> PrivacyPolicyResponse:
+async def get_privacy_policy(
+    market: str | None = None,
+    user: dict | None = Depends(_get_optional_content_user),
+) -> PrivacyPolicyResponse:
 
     record = await _ensure_privacy_policy_record()
 
-    return _serialize_privacy_policy_record(record)
+    return _serialize_privacy_policy_record(_record_for_market(record, market or _market_from_user(user)))
+
+
+@router.get("/content/terms-condition", response_model=TermsConditionResponse)
+async def get_terms_condition(
+    market: str | None = None,
+    user: dict | None = Depends(_get_optional_content_user),
+) -> TermsConditionResponse:
+    record = await _ensure_terms_condition_record()
+    return _serialize_terms_condition_record(_record_for_market(record, market or _market_from_user(user)))
 
 @router.get("/content/about-us", response_model=AboutUsResponse)
 
-async def get_about_us() -> AboutUsResponse:
+async def get_about_us(
+    market: str | None = None,
+    user: dict | None = Depends(_get_optional_content_user),
+) -> AboutUsResponse:
 
     record = await _ensure_about_us_record()
 
-    return _serialize_about_us_record(record)
+    return _serialize_about_us_record(_record_for_market(record, market or _market_from_user(user)))
 
 @router.get("/content/onboarding", response_model=OnboardingContentResponse)
 

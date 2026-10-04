@@ -4,6 +4,47 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+EU_COUNTRY_CODES = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}
+
+
+def _market_query(applies_to: list[str], notification_behavior: str) -> dict:
+    markets = {str(item or "").strip().upper() for item in applies_to or []}
+    if notification_behavior == "eu":
+        markets = {"EU"}
+    if not markets or "ALL" in markets:
+        return {"is_admin": {"$ne": True}}
+    country_codes: set[str] = set()
+    if "EU" in markets:
+        country_codes.update(EU_COUNTRY_CODES)
+    country_codes.update(item for item in markets if item not in {"ALL", "EU"})
+    return {"is_admin": {"$ne": True}, "country_code": {"$in": sorted(country_codes)}}
+
+
+async def _notify_legal_document_publish(document_title: str, payload) -> None:
+    if payload.notification_behavior == "silent":
+        return
+    now = datetime.now(timezone.utc)
+    query = _market_query(payload.applies_to, payload.notification_behavior)
+    notification = {
+        "id": uuid4().hex,
+        "type": "legal_document_update",
+        "title": f"{document_title} updated",
+        "message": f"A new version of {document_title} has been published.",
+        "data": {
+            "type": "legal_document_update",
+            "document": document_title,
+            "effectiveAt": (payload.effective_at or now).isoformat(),
+        },
+        "copy_variant": "legal",
+        "created_at": now,
+        "read": False,
+        "delivery": {"status": "inbox_only", "providers": []},
+    }
+    await users_collection.update_many(
+        query,
+        {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}},
+    )
+
 @router.get("/admin/content/privacy-policy", response_model=PrivacyPolicyResponse)
 
 async def admin_get_privacy_policy(_: dict = Depends(_require_admin_user)) -> PrivacyPolicyResponse:
@@ -29,12 +70,18 @@ async def admin_update_privacy_policy(
         title=payload.title,
 
         html_content=payload.html_content,
+        filename=payload.filename,
+        applies_to=payload.applies_to,
+        notification_behavior=payload.notification_behavior,
+        effective_at=payload.effective_at,
 
     )
 
     if not record:
 
         raise HTTPException(status_code=500, detail="Privacy policy could not be saved")
+
+    await _notify_legal_document_publish("Privacy Policy", payload)
 
     return _serialize_privacy_policy_record(record)
 
@@ -63,12 +110,18 @@ async def admin_update_terms_condition(
         title=payload.title,
 
         html_content=payload.html_content,
+        filename=payload.filename,
+        applies_to=payload.applies_to,
+        notification_behavior=payload.notification_behavior,
+        effective_at=payload.effective_at,
 
     )
 
     if not record:
 
         raise HTTPException(status_code=500, detail="Terms & Conditions could not be saved")
+
+    await _notify_legal_document_publish("Terms & Conditions", payload)
 
     return _serialize_terms_condition_record(record)
 
@@ -97,6 +150,10 @@ async def admin_update_about_us(
         title=payload.title,
 
         html_content=payload.html_content,
+        filename=payload.filename,
+        applies_to=payload.applies_to,
+        notification_behavior=payload.notification_behavior,
+        effective_at=payload.effective_at,
 
     )
 
