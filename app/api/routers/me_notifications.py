@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 from ...core.legacy import *
 from ...conversion_service import list_notification_templates, mark_notification_event_actioned, mark_notification_event_opened
+from ...dependencies import normalize_subscription_tier, user_has_active_gold_trial
 from ...retention_service import record_notification_open
 
 router = APIRouter()
@@ -29,6 +30,37 @@ def _template_preference_map(user: dict) -> dict[str, dict]:
 def _channels_for_template(template: dict) -> list[str]:
     channels = [str(item).strip().lower() for item in (template.get("channels") or []) if str(item).strip()]
     return channels or ["push", "email"]
+
+
+def _member_segments_for_template(template: dict) -> list[str]:
+    segments = [
+        str(item).strip()
+        for item in (template.get("memberSegments") or template.get("member_segments") or [])
+        if str(item).strip() in {"all", "silver", "gold", "platinum", "twenty_one_day_tester"}
+    ]
+    if not segments or "all" in segments:
+        return ["all"]
+    return list(dict.fromkeys(segments))
+
+
+def _user_matches_member_segments(user: dict, segments: list[str]) -> bool:
+    if not segments or "all" in segments:
+        return True
+    tier = normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+    return bool(
+        ("silver" in segments and tier == "SILVER")
+        or ("gold" in segments and tier == "GOLD")
+        or ("platinum" in segments and tier == "PLATINUM")
+        or (
+            "twenty_one_day_tester" in segments
+            and (
+                user.get("isBetaTester")
+                or user.get("is_beta_tester")
+                or tier == "GOLD_BETA"
+                or user_has_active_gold_trial(user)
+            )
+        )
+    )
 
 @router.post("/me/push-token")
 async def register_push_token(
@@ -60,6 +92,7 @@ async def get_notification_preferences(user: dict = Depends(_require_access_user
         template
         for template in await list_notification_templates()
         if str(template.get("audience") or "member").strip() == "member"
+        and _user_matches_member_segments(user, _member_segments_for_template(template))
     ]
     template_prefs = _template_preference_map(user)
     return {

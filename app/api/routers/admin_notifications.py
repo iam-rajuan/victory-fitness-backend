@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from ...core.legacy import *
 from ...conversion_service import list_notification_templates, replace_notification_templates
+from ...dependencies import normalize_subscription_tier, user_has_active_gold_trial
 from ...models import (
     AdminNotificationTemplateItem,
     AdminNotificationTemplateListResponse,
@@ -14,6 +15,8 @@ from ...models import (
 )
 
 router = APIRouter()
+
+ALLOWED_MEMBER_SEGMENTS = {"all", "silver", "gold", "platinum", "twenty_one_day_tester"}
 
 
 def _channels_for_template(template: dict) -> list[str]:
@@ -32,7 +35,38 @@ def _user_enabled_channels(user: dict) -> set[str]:
     return enabled_channels
 
 
-async def _notification_template_stats(notification_type: str, audience: str, channels: list[str]) -> tuple[int, int, int]:
+def _member_segments_for_template(template: dict) -> list[str]:
+    segments = [
+        str(item).strip()
+        for item in (template.get("memberSegments") or template.get("member_segments") or [])
+        if str(item).strip() in ALLOWED_MEMBER_SEGMENTS
+    ]
+    if not segments or "all" in segments:
+        return ["all"]
+    return list(dict.fromkeys(segments))
+
+
+def _user_matches_member_segments(user: dict, segments: list[str]) -> bool:
+    if not segments or "all" in segments:
+        return True
+    tier = normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+    if "silver" in segments and tier == "SILVER":
+        return True
+    if "gold" in segments and tier == "GOLD":
+        return True
+    if "platinum" in segments and tier == "PLATINUM":
+        return True
+    if "twenty_one_day_tester" in segments:
+        return bool(
+            user.get("isBetaTester")
+            or user.get("is_beta_tester")
+            or tier == "GOLD_BETA"
+            or user_has_active_gold_trial(user)
+        )
+    return False
+
+
+async def _notification_template_stats(notification_type: str, audience: str, channels: list[str], segments: list[str]) -> tuple[int, int, int]:
     if audience != "member":
         sent = await notification_events_collection.count_documents({"type": notification_type, "status": {"$in": ["sent", "queued", "inbox_only", "partial"]}})
         return 0, 0, sent
@@ -42,6 +76,8 @@ async def _notification_template_stats(notification_type: str, audience: str, ch
     disabled = 0
     offered_channels = set(channels or ["push"])
     for user in users:
+        if not _user_matches_member_segments(user, segments):
+            continue
         has_channel = bool(_user_enabled_channels(user) & offered_channels)
         template_prefs = user.get("notification_template_preferences") if isinstance(user.get("notification_template_preferences"), dict) else {}
         template_enabled = bool((template_prefs.get(notification_type) or {}).get("enabled", True))
@@ -60,13 +96,15 @@ async def _serialize_notification_template_items(templates: list[dict]) -> list[
         notification_type = str(item.get("type") or "").strip()
         audience = str(item.get("audience") or "member").strip() or "member"
         channels = _channels_for_template(item)
-        enabled, disabled, sent = await _notification_template_stats(notification_type, audience, channels)
+        member_segments = _member_segments_for_template(item)
+        enabled, disabled, sent = await _notification_template_stats(notification_type, audience, channels, member_segments)
         items.append(AdminNotificationTemplateItem(
             id=str(item.get("id") or item.get("type") or ""),
             type=notification_type,
             title=str(item.get("title") or "").strip(),
             channels=channels,
             audience=audience,
+            memberSegments=member_segments,
             frequencyCapHours=max(int(item.get("frequencyCapHours") or 24), 1),
             requiresContentReview=bool(item.get("requiresContentReview")),
             reviewStatus=str(item.get("reviewStatus") or ("pending_review" if item.get("requiresContentReview") else "approved")),
@@ -194,6 +232,7 @@ async def admin_replace_notification_templates(
                 "title": item.title.strip(),
                 "channels": [str(channel).strip().lower() for channel in item.channels if str(channel).strip()],
                 "audience": item.audience,
+                "memberSegments": _member_segments_for_template({"memberSegments": item.memberSegments}) if item.audience == "member" else ["all"],
                 "frequencyCapHours": max(int(item.frequencyCapHours or 24), 1),
                 "requiresContentReview": bool(item.requiresContentReview),
                 "reviewStatus": item.reviewStatus,

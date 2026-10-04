@@ -10,6 +10,7 @@ from jose import jwt
 
 from .config import settings
 from .conversion_service import get_notification_template, is_notification_template_approved, log_notification_event, resolve_notification_variant
+from .dependencies import normalize_subscription_tier, user_has_active_gold_trial
 from .email_service import send_notification_email
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
@@ -19,6 +20,37 @@ _firebase_access_token: str | None = None
 _firebase_access_token_expires_at = 0.0
 logger = logging.getLogger(__name__)
 _notification_event_listeners = set()
+
+
+def _member_segments_for_template(template: dict) -> list[str]:
+    segments = [
+        str(item).strip()
+        for item in (template.get("memberSegments") or template.get("member_segments") or [])
+        if str(item).strip() in {"all", "silver", "gold", "platinum", "twenty_one_day_tester"}
+    ]
+    if not segments or "all" in segments:
+        return ["all"]
+    return list(dict.fromkeys(segments))
+
+
+def _user_matches_member_segments(user: dict, segments: list[str]) -> bool:
+    if not segments or "all" in segments:
+        return True
+    tier = normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+    return bool(
+        ("silver" in segments and tier == "SILVER")
+        or ("gold" in segments and tier == "GOLD")
+        or ("platinum" in segments and tier == "PLATINUM")
+        or (
+            "twenty_one_day_tester" in segments
+            and (
+                user.get("isBetaTester")
+                or user.get("is_beta_tester")
+                or tier == "GOLD_BETA"
+                or user_has_active_gold_trial(user)
+            )
+        )
+    )
 
 
 def _has_firebase_web_push_credentials() -> bool:
@@ -79,6 +111,9 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
     template_channels = [str(channel).strip().lower() for channel in ((template or {}).get("channels") or []) if str(channel).strip()]
     template_channels = template_channels or ["push"]
     if template and str(template.get("audience") or "member") == "member":
+        if not _user_matches_member_segments(user, _member_segments_for_template(template)):
+            await log_notification_event(str(user["_id"]), notification_id, notification_type, "blocked", "blocked_member_segment")
+            return {"status": "blocked_member_segment", "providers": [], "failedProviders": [], "updatedAt": datetime.now(timezone.utc)}
         template_prefs = user.get("notification_template_preferences") if isinstance(user.get("notification_template_preferences"), dict) else {}
         if not bool((template_prefs.get(notification_type) or {}).get("enabled", True)):
             await log_notification_event(str(user["_id"]), notification_id, notification_type, "blocked", "blocked_user_disabled")
