@@ -37,34 +37,58 @@ def _market_matches_version(version: dict, market: str) -> bool:
     return False
 
 
+def _parse_effective_at(version: dict, fallback_now: datetime) -> datetime:
+    val = version.get("effective_at") or version.get("published_at") or fallback_now
+    if isinstance(val, str):
+        try:
+            val = datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except ValueError:
+            val = fallback_now
+    if isinstance(val, datetime) and val.tzinfo is None:
+        val = val.replace(tzinfo=timezone.utc)
+    return val
+
+
 def _record_for_market(record: dict, market: str | None) -> dict:
-    if not market:
-        return record
     now = datetime.now(timezone.utc)
     versions = [dict(item) for item in (record.get("versions") or []) if isinstance(item, dict)]
+    if not versions:
+        return record
+
     eligible = []
     for version in versions:
-        effective_at = version.get("effective_at") or version.get("published_at") or record.get("updated_at") or now
-        if isinstance(effective_at, str):
-            try:
-                effective_at = datetime.fromisoformat(effective_at.replace("Z", "+00:00"))
-            except ValueError:
-                effective_at = now
-        if isinstance(effective_at, datetime) and effective_at.tzinfo is None:
-            effective_at = effective_at.replace(tzinfo=timezone.utc)
-        if _market_matches_version(version, market) and effective_at <= now:
+        effective_at = _parse_effective_at(version, now)
+        if _market_matches_version(version, market or "") and effective_at <= now:
             eligible.append(version)
+
     if not eligible:
-        eligible = [version for version in versions if "ALL" in {str(item).upper() for item in (version.get("applies_to") or ["ALL"])}]
+        # Fallback to general ALL-market versions that are effective now
+        eligible = [
+            v for v in versions
+            if "ALL" in {str(item).upper() for item in (v.get("applies_to") or ["ALL"])}
+            and _parse_effective_at(v, now) <= now
+        ]
+
     if not eligible:
+        # Final fallback to any ALL-market version or latest record
+        eligible = [v for v in versions if "ALL" in {str(item).upper() for item in (v.get("applies_to") or ["ALL"])}]
+
+    selected = eligible[-1] if eligible else (versions[-1] if versions else None)
+    if not selected:
         return record
-    selected = eligible[-1]
+
     next_record = dict(record)
     next_record["published_version_id"] = selected.get("id")
+    next_record["version"] = selected.get("version") or "v1"
     next_record["title"] = selected.get("title") or record.get("title")
     next_record["html_content"] = selected.get("html_content") or record.get("html_content")
+    next_record["filename"] = selected.get("filename") or record.get("filename") or ""
+    next_record["applies_to"] = selected.get("applies_to") or ["ALL"]
+    next_record["published_at"] = selected.get("published_at")
+    next_record["effective_at"] = selected.get("effective_at")
     next_record["updated_at"] = selected.get("published_at") or record.get("updated_at")
     return next_record
+
 
 
 async def _next_homepage_quote_in_sequence(active_items: list[dict]) -> dict:
