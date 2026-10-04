@@ -302,8 +302,8 @@ def generate_video_workout_plan(input_data: VideoWorkoutPlanInput, workouts: lis
     published_workouts = workouts[:]
     if not published_workouts:
         published_workouts = [
-            {"id": "fallback-1", "title": "Bodyweight Conditioning", "tag": "Full Body", "thumbnail": ""},
-            {"id": "fallback-2", "title": "Core and Mobility Flow", "tag": "Mobility", "thumbnail": ""},
+            {"id": "fallback-1", "title": "Bodyweight Full Body", "tag": "Full Body", "thumbnail": ""},
+            {"id": "fallback-2", "title": "Core Pilates Flow", "tag": "Pilates", "thumbnail": ""},
             {"id": "fallback-3", "title": "Low Impact Cardio", "tag": "Cardio", "thumbnail": ""},
         ]
 
@@ -1068,10 +1068,10 @@ def _video_goal_categories(goal: str) -> list[str]:
     mapping = {
         "1": ["Upper Body", "Lower Body", "Full Body"],
         "2": ["HIIT", "Core", "Full Body"],
-        "3": ["Cardio", "Conditioning", "Mobility"],
-        "4": ["Mobility", "Stretch", "Core"],
+        "3": ["Cardio", "HIIT", "Pilates"],
+        "4": ["Yoga", "Pilates", "Core"],
     }
-    return mapping.get(str(goal or "").strip(), ["Full Body", "Core", "Mobility"])
+    return mapping.get(str(goal or "").strip(), ["Full Body", "Core", "Yoga"])
 
 
 def _safe_int(value: str | int | None, default: int, *, minimum: int, maximum: int) -> int:

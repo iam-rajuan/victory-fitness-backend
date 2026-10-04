@@ -12,7 +12,7 @@ def _workout_record(**overrides):
         "title": "Full Body Builder",
         "video_url": "https://example.com/workout.mp4",
         "video_source": "UPLOAD",
-        "tag": "Full Body Workout",
+        "tag": "Full Body",
         "equipment": "Dumbbells",
         "duration_minutes": 30,
         "duration_seconds": 1800,
@@ -30,7 +30,7 @@ def test_public_workout_serializes_multiple_levels_and_full_body_purpose():
         _workout_record(level="Beginner", levels=["Beginner", "Advanced"])
     )
 
-    assert payload["tag"] == "Full Body Workout"
+    assert payload["tag"] == "Full Body"
     assert payload["level"] == "Beginner"
     assert payload["levels"] == ["Beginner", "Advanced"]
 

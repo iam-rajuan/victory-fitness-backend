@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from ...core.legacy import *
+from ...workout_categories import WORKOUT_CATEGORY_OPTIONS
 
 router = APIRouter()
 
@@ -386,7 +387,11 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
 
     for workout in workouts:
 
-        purpose_names = workout.purposes or [workout.tag]
+        purpose_names = [
+            purpose
+            for purpose in WORKOUT_CATEGORY_OPTIONS
+            if purpose in (workout.purposes or [workout.tag])
+        ]
 
         for purpose_name in purpose_names:
 
@@ -425,7 +430,7 @@ async def workout_library(query: str | None = None) -> WorkoutLibraryResponse:
 
         )
 
-        for item in sorted(category_map.values(), key=lambda item: (-int(item["count"]), str(item["name"])))
+        for item in sorted(category_map.values(), key=lambda item: WORKOUT_CATEGORY_OPTIONS.index(str(item["name"])))
 
     ]
 

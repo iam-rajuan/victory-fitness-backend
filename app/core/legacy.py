@@ -7617,7 +7617,7 @@ def _serialize_admin_workout_record(record: dict) -> dict:
         "vimeoId": str(record.get("vimeo_id") or "").strip(),
         "videoUrl": str(record.get("video_url") or "").strip(),
         "videoSource": video_source,
-        "tag": purposes[0] if purposes else str(record.get("tag") or "").strip(),
+        "tag": purposes[0],
         "purposes": purposes,
         "equipment": str(record.get("equipment") or "").strip(),
         "level": levels[0] if levels else str(record.get("level") or "").strip(),

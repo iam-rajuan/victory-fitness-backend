@@ -2224,7 +2224,7 @@ class AdminDirectUploadResponse(BaseModel):
 
 class AdminWorkoutSyncRequest(BaseModel):
     folderName: str = Field(default="", max_length=160)
-    tag: str = Field(default="Strength", max_length=80)
+    tag: str = Field(default="Upper Body", max_length=80)
     equipment: str = Field(default="Dumbbells", max_length=80)
     level: str = Field(default="Intermediate", max_length=80)
     levels: list[str] = Field(default_factory=list)

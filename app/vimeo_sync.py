@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from .workout_categories import DEFAULT_WORKOUT_CATEGORY, normalize_workout_category
+
 from .config import settings
 logger = logging.getLogger("victory-fitness.vimeo")
 
@@ -51,7 +53,7 @@ class VimeoSyncSummary:
 @dataclass
 class VimeoWorkoutImportOptions:
     folder_name: str = ""
-    tag: str = "Strength"
+    tag: str = DEFAULT_WORKOUT_CATEGORY
     equipment: str = "Dumbbells"
     level: str = "Intermediate"
     levels: list[str] | None = None
@@ -259,7 +261,7 @@ def _build_workout_document(
         "vimeo_id": video_id,
         "video_url": _build_vimeo_embed_url(video_id),
         "video_source": "VIMEO",
-        "tag": _normalize_import_label(options.tag, _normalize_vimeo_module_name(module_name, "Vimeo")),
+        "tag": normalize_workout_category(_normalize_import_label(options.tag, _normalize_vimeo_module_name(module_name, "Vimeo"))),
         "equipment": _normalize_import_label(options.equipment, ""),
         "level": _normalize_import_label(levels[0] if levels else options.level, ""),
         "levels": levels,

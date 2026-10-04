@@ -1,20 +1,12 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...workout_categories import DEFAULT_WORKOUT_CATEGORY, WORKOUT_CATEGORY_OPTIONS, normalize_workout_categories, normalize_workout_category
 
 router = APIRouter()
 
 WORKOUT_LEVEL_OPTIONS = ("Beginner", "Intermediate", "Advanced")
-WORKOUT_PURPOSE_OPTIONS = (
-    "Strength",
-    "Full Body Workout",
-    "Mobility",
-    "Core",
-    "Conditioning",
-    "Recovery",
-    "Lower body",
-    "Upper body",
-)
+WORKOUT_PURPOSE_OPTIONS = WORKOUT_CATEGORY_OPTIONS
 
 
 def _normalize_workout_level_values(level: str | None = None, levels: list[str] | None = None) -> list[str]:
@@ -31,22 +23,13 @@ def _normalize_workout_level_values(level: str | None = None, levels: list[str] 
 
 
 def _normalize_workout_purpose_values(tag: str | None = None, purposes: list[str] | None = None) -> list[str]:
-    candidates = list(purposes or [])
-    if tag:
-        candidates.append(tag)
-    normalized: list[str] = []
-    for item in candidates:
-        raw = str(item or "").strip()
-        canonical = next((option for option in WORKOUT_PURPOSE_OPTIONS if option.lower() == raw.lower()), raw)
-        if canonical and canonical not in normalized:
-            normalized.append(canonical)
-    return normalized
+    return normalize_workout_categories(tag, purposes)
 
 
 def _build_vimeo_import_options(payload: AdminWorkoutSyncRequest | None) -> VimeoWorkoutImportOptions:
     return VimeoWorkoutImportOptions(
         folder_name=str(payload.folderName or "").strip() if payload else "",
-        tag=str(payload.tag or "Strength").strip() if payload else "Strength",
+        tag=normalize_workout_category(payload.tag if payload else DEFAULT_WORKOUT_CATEGORY),
         equipment=str(payload.equipment or "Dumbbells").strip() if payload else "Dumbbells",
         level=str(payload.level or "Intermediate").strip() if payload else "Intermediate",
         levels=_normalize_workout_level_values(payload.level, getattr(payload, "levels", None)) if payload else ["Intermediate"],
@@ -199,7 +182,7 @@ async def admin_create_workout(
 
         "video_source": video_source,
 
-        "tag": purposes[0] if purposes else payload.tag.strip(),
+        "tag": purposes[0] if purposes else DEFAULT_WORKOUT_CATEGORY,
         "purposes": purposes,
 
         "equipment": payload.equipment.strip(),
@@ -331,7 +314,7 @@ async def admin_update_workout(
 
         "video_source": video_source,
 
-        "tag": purposes[0] if purposes else payload.tag.strip(),
+        "tag": purposes[0] if purposes else DEFAULT_WORKOUT_CATEGORY,
         "purposes": purposes,
 
         "equipment": payload.equipment.strip(),

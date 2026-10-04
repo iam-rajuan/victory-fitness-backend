@@ -1,18 +1,10 @@
 from datetime import datetime, timezone
 
 from ..utils.datetime import as_utc
+from ..workout_categories import DEFAULT_WORKOUT_CATEGORY, WORKOUT_CATEGORY_OPTIONS, normalize_workout_categories
 
 VALID_WORKOUT_LEVELS = {"Beginner", "Intermediate", "Advanced"}
-VALID_WORKOUT_PURPOSES = (
-    "Strength",
-    "Full Body Workout",
-    "Mobility",
-    "Core",
-    "Conditioning",
-    "Recovery",
-    "Lower body",
-    "Upper body",
-)
+VALID_WORKOUT_PURPOSES = WORKOUT_CATEGORY_OPTIONS
 
 
 def workout_default_thumbnail(record: dict) -> str:
@@ -46,13 +38,7 @@ def normalize_workout_purposes(record: dict) -> list[str]:
     candidates = raw_purposes if isinstance(raw_purposes, list) else []
     if not candidates:
         candidates = [record.get("tag")]
-    purposes: list[str] = []
-    for item in candidates:
-        label = str(item or "").strip()
-        canonical = next((valid for valid in VALID_WORKOUT_PURPOSES if valid.lower() == label.lower()), label)
-        if canonical and canonical not in purposes:
-            purposes.append(canonical)
-    return purposes
+    return normalize_workout_categories(purposes=candidates) or [DEFAULT_WORKOUT_CATEGORY]
 
 
 def _serialize_workout_movements(value: object) -> list[dict]:
@@ -99,7 +85,7 @@ def serialize_public_workout_record(record: dict) -> dict:
         "vimeoId": str(record.get("vimeo_id") or ""),
         "videoUrl": str(record.get("video_url") or ""),
         "videoSource": str(record.get("video_source") or "VIMEO"),
-        "tag": purposes[0] if purposes else str(record.get("tag") or "Workout"),
+        "tag": purposes[0],
         "purposes": purposes,
         "equipment": str(record.get("equipment") or ""),
         "level": levels[0] if levels else str(record.get("level") or ""),
