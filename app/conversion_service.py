@@ -254,6 +254,24 @@ async def is_notification_template_approved(notification_type: str) -> bool:
     return str(template.get("reviewStatus") or "approved").strip() == "approved"
 
 
+async def is_notification_frequency_allowed(user_id: str, notification_type: str, frequency_cap_hours: int) -> bool:
+    if not _is_collection_available(notification_events_collection):
+        return True
+    hours = max(int(frequency_cap_hours or 0), 0)
+    if hours <= 0:
+        return True
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    recent_count = await notification_events_collection.count_documents(
+        {
+            "user_id": str(user_id),
+            "type": str(notification_type or "").strip(),
+            "status": {"$in": ["queued", "sent", "inbox_only", "partial"]},
+            "created_at": {"$gte": cutoff},
+        }
+    )
+    return recent_count == 0
+
+
 async def replace_notification_templates(items: list[dict[str, Any]]) -> None:
     if not _is_collection_available(app_content_collection):
         return

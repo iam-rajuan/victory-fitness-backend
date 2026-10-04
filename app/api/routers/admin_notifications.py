@@ -6,6 +6,7 @@ from fastapi import APIRouter
 
 from ...core.legacy import *
 from ...conversion_service import list_notification_templates, replace_notification_templates
+from ...database import notification_events_collection
 from ...dependencies import normalize_subscription_tier, user_has_active_gold_trial
 from ...models import (
     AdminNotificationTemplateItem,

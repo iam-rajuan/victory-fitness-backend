@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 from jose import jwt
 
 from .config import settings
-from .conversion_service import get_notification_template, is_notification_template_approved, log_notification_event, resolve_notification_variant
+from .conversion_service import get_notification_template, is_notification_frequency_allowed, is_notification_template_approved, log_notification_event, resolve_notification_variant
 from .dependencies import normalize_subscription_tier, user_has_active_gold_trial
 from .email_service import send_notification_email
 
@@ -108,6 +108,9 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
         await log_notification_event(str(user["_id"]), notification_id, notification_type, "blocked", "blocked_unapproved")
         return {"status": "blocked_unapproved", "providers": [], "failedProviders": [], "updatedAt": datetime.now(timezone.utc)}
     template = await get_notification_template(notification_type)
+    if template and not await is_notification_frequency_allowed(str(user["_id"]), notification_type, int(template.get("frequencyCapHours") or 0)):
+        await log_notification_event(str(user["_id"]), notification_id, notification_type, "blocked", "blocked_frequency_cap")
+        return {"status": "blocked_frequency_cap", "providers": [], "failedProviders": [], "updatedAt": datetime.now(timezone.utc)}
     template_channels = [str(channel).strip().lower() for channel in ((template or {}).get("channels") or []) if str(channel).strip()]
     template_channels = template_channels or ["push"]
     if template and str(template.get("audience") or "member") == "member":
