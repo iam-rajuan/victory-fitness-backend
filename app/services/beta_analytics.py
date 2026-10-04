@@ -389,6 +389,12 @@ def _checkpoint_bool(timestamps: list[datetime], cutoff: datetime | None) -> boo
     return bool(cutoff and any(timestamp <= cutoff for timestamp in timestamps))
 
 
+def _active_through_checkpoint(last_active_at: datetime | None, start_at: datetime | None, day: int) -> bool:
+    if not last_active_at or not start_at:
+        return False
+    return last_active_at >= start_at + timedelta(days=day)
+
+
 async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummaryResponse:
     normalized_limit = min(max(int(limit or 300), 1), 500)
     now = datetime.now(timezone.utc)
@@ -704,7 +710,7 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
                 if cutoff is None:
                     continue
                 checkpoint.eligibleUsers += 1
-                checkpoint.activeUsers += 1 if accumulator.any_used() and accumulator.last_active_at and accumulator.last_active_at <= cutoff else 0
+                checkpoint.activeUsers += 1 if _active_through_checkpoint(accumulator.last_active_at, start_at, day) else 0
                 checkpoint.aiUsers += 1 if _checkpoint_bool(accumulator.ai_timestamps, cutoff) else 0
                 checkpoint.nutritionUsers += 1 if _checkpoint_bool(accumulator.nutrition_timestamps, cutoff) else 0
                 checkpoint.workoutUsers += 1 if _checkpoint_bool(accumulator.workout_timestamps, cutoff) else 0
