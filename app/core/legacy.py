@@ -577,6 +577,7 @@ from ..serializers.content import (
 )
 
 from ..serializers.workouts import (
+    normalize_workout_duration_minutes,
     normalize_workout_levels,
     normalize_workout_purposes,
     serialize_public_workout_record as shared_serialize_public_workout_record,
@@ -7622,7 +7623,7 @@ def _serialize_admin_workout_record(record: dict) -> dict:
         "equipment": str(record.get("equipment") or "").strip(),
         "level": levels[0] if levels else str(record.get("level") or "").strip(),
         "levels": levels,
-        "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
+        "durationMinutes": normalize_workout_duration_minutes(record.get("duration_minutes") or record.get("durationMinutes")),
         "durationSeconds": int(record.get("duration_seconds") or record.get("durationSeconds") or 0),
         "starts": int(record.get("starts_count") or record.get("starts") or 0),
         "visibility": str(record.get("visibility") or "Published").strip(),

@@ -9,6 +9,14 @@ WORKOUT_LEVEL_OPTIONS = ("Beginner", "Intermediate", "Advanced")
 WORKOUT_PURPOSE_OPTIONS = WORKOUT_CATEGORY_OPTIONS
 
 
+def _normalize_workout_duration_minutes(value: object) -> int:
+    try:
+        minutes = int(value or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    return 35 if minutes == 38 else minutes
+
+
 def _normalize_workout_level_values(level: str | None = None, levels: list[str] | None = None) -> list[str]:
     candidates = list(levels or [])
     if level:
@@ -190,7 +198,7 @@ async def admin_create_workout(
         "level": levels[0] if levels else payload.level.strip(),
         "levels": levels,
 
-        "duration_minutes": int(payload.durationMinutes or 0),
+        "duration_minutes": _normalize_workout_duration_minutes(payload.durationMinutes),
 
         "duration_seconds": int(payload.durationSeconds or 0),
 
@@ -322,7 +330,7 @@ async def admin_update_workout(
         "level": levels[0] if levels else payload.level.strip(),
         "levels": levels,
 
-        "duration_minutes": int(payload.durationMinutes or 0),
+        "duration_minutes": _normalize_workout_duration_minutes(payload.durationMinutes),
 
         "duration_seconds": int(payload.durationSeconds or 0),
 
@@ -508,7 +516,7 @@ async def admin_debug_synced_workouts(
             "equipment": str(record.get("equipment") or ""),
             "level": str(record.get("level") or ""),
             "levels": normalize_workout_levels(record),
-            "durationMinutes": int(record.get("duration_minutes") or 0),
+            "durationMinutes": _normalize_workout_duration_minutes(record.get("duration_minutes")),
             "visibility": str(record.get("visibility") or "Draft"),
             "providerVisibility": str(record.get("vimeo_provider_visibility") or "Draft"),
             "videoSource": str(record.get("video_source") or "VIMEO"),

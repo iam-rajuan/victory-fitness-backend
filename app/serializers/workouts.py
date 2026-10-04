@@ -7,6 +7,14 @@ VALID_WORKOUT_LEVELS = {"Beginner", "Intermediate", "Advanced"}
 VALID_WORKOUT_PURPOSES = WORKOUT_CATEGORY_OPTIONS
 
 
+def normalize_workout_duration_minutes(value: object) -> int:
+    try:
+        minutes = int(value or 0)
+    except (TypeError, ValueError):
+        minutes = 0
+    return 35 if minutes == 38 else minutes
+
+
 def workout_default_thumbnail(record: dict) -> str:
     return str(record.get("thumbnail") or record.get("thumbnail_url") or "").strip()
 
@@ -90,7 +98,7 @@ def serialize_public_workout_record(record: dict) -> dict:
         "equipment": str(record.get("equipment") or ""),
         "level": levels[0] if levels else str(record.get("level") or ""),
         "levels": levels,
-        "durationMinutes": int(record.get("duration_minutes") or record.get("durationMinutes") or 0),
+        "durationMinutes": normalize_workout_duration_minutes(record.get("duration_minutes") or record.get("durationMinutes")),
         "durationSeconds": int(record.get("duration_seconds") or record.get("durationSeconds") or 0),
         "thumbnail": workout_effective_thumbnail(record),
         "movements": _serialize_workout_movements(record.get("movements") or []),
