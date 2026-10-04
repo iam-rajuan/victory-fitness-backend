@@ -4,10 +4,16 @@ from datetime import date
 from fastapi import APIRouter, Query
 
 from ...core.legacy import *
+from ...dependencies import normalize_subscription_tier, user_has_active_gold_trial
 from ...services.beta_analytics import build_phase_one_beta_analytics_cached
 from ...utils.analytics import market_filter, parse_time_range
 
 router = APIRouter()
+
+
+class PhaseOneBetaTesterNotificationRequest(BaseModel):
+    title: str = Field(default="Your 21-Day Gold Beta is waiting", min_length=1, max_length=160)
+    message: str = Field(default="Open Victory Fitness and keep your beta progress moving today.", min_length=1, max_length=1000)
 
 
 def _matches_market(user: dict, market: str) -> bool:
@@ -236,3 +242,63 @@ async def admin_phase_one_beta_summary(
     _: dict = Depends(_require_admin_user),
 ) -> PhaseOneBetaSummaryResponse:
     return await build_phase_one_beta_analytics_cached(limit=limit)
+
+
+@router.post("/admin/trials/phase-one-beta/testers/{tester_id}/notify")
+async def admin_notify_phase_one_beta_tester(
+    tester_id: str,
+    payload: PhaseOneBetaTesterNotificationRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> dict[str, object]:
+    normalized_id = str(tester_id or "").strip()
+    user = None
+    if ObjectId.is_valid(normalized_id):
+        user = await users_collection.find_one({"_id": ObjectId(normalized_id), "is_admin": {"$ne": True}})
+    if not user:
+        user = await users_collection.find_one({"email": normalized_id.lower(), "is_admin": {"$ne": True}})
+    if not user:
+        raise HTTPException(status_code=404, detail="Beta tester not found")
+
+    tier = normalize_subscription_tier(user.get("subscription_tier") or user.get("subscription_role") or user.get("tier"))
+    is_beta_tester = bool(
+        user.get("isBetaTester")
+        or user.get("is_beta_tester")
+        or tier == "GOLD_BETA"
+        or user.get("subscription_purchase_source") == PHASE_ONE_BETA_SUBSCRIPTION_SOURCE
+        or user_has_active_gold_trial(user)
+    )
+    if not is_beta_tester:
+        raise HTTPException(status_code=400, detail="User is not in the beta tester cohort")
+
+    title = payload.title.strip()
+    message = payload.message.strip()
+    delivery = await notify_user(
+        users_collection,
+        user,
+        title,
+        message,
+        "phase_one_beta_outreach",
+        {
+            "type": "phase_one_beta_outreach",
+            "route": "/(tabs)/workout",
+            "source": "admin_beta_analytics",
+            "categoryLabel": "21-Day Gold Beta",
+            "actionLabel": "Open workouts",
+            "icon": "sparkles-outline",
+            "accent": "#C9943A",
+            "dedupeKey": "phase_one_beta_outreach",
+        },
+    )
+    await _record_admin_audit(
+        admin_user,
+        "phase_one_beta_tester_notified",
+        "user",
+        str(user["_id"]),
+        {"email": str(user.get("email") or ""), "deliveryStatus": delivery.get("status")},
+    )
+    return {
+        "status": delivery.get("status", "queued"),
+        "testerId": str(user["_id"]),
+        "email": str(user.get("email") or ""),
+        "delivery": delivery,
+    }

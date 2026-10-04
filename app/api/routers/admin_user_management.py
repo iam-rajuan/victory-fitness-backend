@@ -16,6 +16,8 @@ async def admin_user_management_overview(
 
     year: int | None = None,
 
+    status_scope: str | None = Query(default=None, alias="statusScope"),
+
     _: dict = Depends(_require_admin_user),
 
 ) -> AdminUserManagementOverviewResponse:
@@ -24,7 +26,7 @@ async def admin_user_management_overview(
 
         _build_admin_user_summary_response(year),
 
-        _build_admin_user_list_response(page=page, limit=limit, query=query),
+        _build_admin_user_list_response(page=page, limit=limit, query=query, status_scope=status_scope),
 
     )
 

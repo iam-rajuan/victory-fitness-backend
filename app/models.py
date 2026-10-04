@@ -1825,6 +1825,11 @@ class AdminUserListItem(BaseModel):
     neverActive: bool = False
     trialDaysRemaining: int = 0
     statusLabel: str = "Healthy"
+    isBlocked: bool = False
+    isDeleted: bool = False
+    blockedAt: datetime | None = None
+    deletedAt: datetime | None = None
+    blockedReason: str = ""
 
 
 class AdminUserDetailResponse(AdminUserListItem):
@@ -2052,6 +2057,10 @@ class PhaseOneBetaUserItem(BaseModel):
     price: float = 0
     currency: str = "EUR"
     paymentRequired: bool = False
+    isBlocked: bool = False
+    isDeleted: bool = False
+    blockedAt: datetime | None = None
+    deletedAt: datetime | None = None
     activity: PhaseOneBetaUserActivity = Field(default_factory=PhaseOneBetaUserActivity)
 
 
@@ -2160,7 +2169,7 @@ class AdminUserUpdateRequest(BaseModel):
     fullName: str | None = Field(default=None, min_length=2, max_length=100)
     email: EmailStr | None = None
     role: str | None = Field(default=None, min_length=1, max_length=50)
-    status: str | None = Field(default=None, pattern=r"^(ACTIVE|INACTIVE|PENDING)$")
+    status: str | None = Field(default=None, pattern=r"^(ACTIVE|INACTIVE|PENDING|BLOCKED)$")
     isVerified: bool | None = None
     contactNumber: str | None = Field(default=None, max_length=40)
     country: str | None = Field(default=None, max_length=80)

@@ -693,6 +693,10 @@ async def login(
 
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    if _is_auth_blocked_user(user):
+
+        raise HTTPException(status_code=403, detail="Account is blocked")
+
     if not user.get("is_verified"):
 
         raise HTTPException(status_code=403, detail="Email is not verified")
@@ -708,6 +712,10 @@ async def firebase_login(payload: FirebaseAuthRequest, response: Response) -> To
     profile = _verify_firebase_id_token(payload.id_token)
 
     user = await _upsert_firebase_user(profile)
+
+    if _is_auth_blocked_user(user):
+
+        raise HTTPException(status_code=403, detail="Account is blocked")
 
     logger.info("auth_firebase_login_success email=%s", str(profile.get("email") or "").lower())
 
@@ -732,6 +740,10 @@ async def google_login(
         user = await _upsert_google_user(profile)
 
     user = await _maybe_activate_phase_one_beta_subscription(user)
+
+    if _is_auth_blocked_user(user):
+
+        raise HTTPException(status_code=403, detail="Account is blocked")
 
     logger.info("auth_google_login_success provider=%s email=%s", provider, str(profile.get("email") or "").lower())
 
@@ -782,6 +794,10 @@ async def refresh(
     if not user:
 
         raise HTTPException(status_code=401, detail="Invalid session token")
+
+    if _is_auth_blocked_user(user):
+
+        raise HTTPException(status_code=401, detail="Session expired")
 
     if not _token_matches_auth_session(data, user):
 

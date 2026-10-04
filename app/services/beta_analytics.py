@@ -727,6 +727,12 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
                     )
                 ) else 0
 
+        raw_status = str(user.get("status") or "").strip().upper()
+        deleted_at = _as_utc_datetime(user.get("deleted_at") or user.get("soft_deleted_at"))
+        blocked_at = _as_utc_datetime(user.get("blocked_at"))
+        is_deleted = bool(deleted_at or raw_status == "DELETED")
+        is_blocked = bool(user.get("is_blocked") or raw_status in {"BLOCKED", "DELETED"} or is_deleted)
+
         users.append(
             PhaseOneBetaUserItem(
                 id=user_id,
@@ -744,6 +750,10 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
                 price=float(user.get("subscription_price_amount") or 0),
                 currency=str(((user.get("subscription") or {}).get("currency") or "EUR")).upper(),
                 paymentRequired=bool(((user.get("subscription") or {}).get("payment_required"))),
+                isBlocked=is_blocked,
+                isDeleted=is_deleted,
+                blockedAt=blocked_at,
+                deletedAt=deleted_at,
                 activity=PhaseOneBetaUserActivity(
                     aiConversations=accumulator.ai_conversation_count,
                     aiMessages=accumulator.ai_message_count,

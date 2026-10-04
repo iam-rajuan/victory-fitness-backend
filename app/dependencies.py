@@ -211,6 +211,16 @@ def _token_matches_auth_session(payload: dict, user: dict) -> bool:
     return token_version == _get_auth_session_version(user)
 
 
+def _is_auth_blocked_user(user: dict) -> bool:
+    status = str(user.get("status") or "").strip().upper()
+    return bool(
+        user.get("is_blocked")
+        or user.get("deleted_at")
+        or user.get("soft_deleted_at")
+        or status in {"BLOCKED", "DELETED"}
+    )
+
+
 async def get_verified_user(authorization: str | None) -> dict:
     token = (authorization or "").replace("Bearer ", "", 1).strip()
     if not token:
@@ -233,6 +243,8 @@ async def get_verified_user_from_access_token(token: str) -> dict:
     user = await users_collection.find_one({"_id": user_id, "is_verified": True})
     if not user:
         raise HTTPException(status_code=401, detail="Invalid access token")
+    if _is_auth_blocked_user(user):
+        raise HTTPException(status_code=401, detail="Session expired")
     if not _token_matches_auth_session(data, user):
         raise HTTPException(status_code=401, detail="Session expired")
 

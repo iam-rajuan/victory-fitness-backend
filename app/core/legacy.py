@@ -7468,6 +7468,11 @@ def _format_admin_relative_activity(dt: datetime | None, now: datetime | None = 
 
 def _admin_user_status_label(record: dict, last_active_at: datetime | None, now: datetime | None = None) -> tuple[str, str, bool, bool]:
     now = now or datetime.now(timezone.utc)
+    status = str(record.get("status") or "").strip().upper()
+    if record.get("deleted_at") or record.get("soft_deleted_at") or status == "DELETED":
+        return ("Deleted", "bad", False, True)
+    if record.get("is_blocked") or status == "BLOCKED":
+        return ("Blocked", "bad", False, True)
     trial = _trial_summary(record)
     is_beta = bool(trial.get("is_beta_tester"))
     days_remaining = int(trial.get("days_remaining") or 0)
@@ -7490,7 +7495,7 @@ async def _build_admin_user_summary_response(year: int | None = None) -> AdminUs
     next_year_start = datetime(selected_year + 1, 1, 1, tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
     week_start = now - timedelta(days=7)
-    base_filter = {"is_admin": {"$ne": True}}
+    base_filter = {"is_admin": {"$ne": True}, "deleted_at": {"$exists": False}}
     active_filter = {
         "$or": [
             {"is_verified": True},
@@ -7575,14 +7580,33 @@ async def _build_admin_user_list_response(
     page: int = 1,
     limit: int = 10,
     query: str | None = None,
+    status_scope: str | None = None,
 ) -> AdminUserListResponse:
     normalized_page = max(int(page or 1), 1)
     normalized_limit = max(min(int(limit or 10), 500), 1)
-    filter_doc: dict = {"is_admin": {"$ne": True}}
+    normalized_scope = str(status_scope or "active").strip().lower()
+    if normalized_scope in {"blocked", "recovery", "blocked_deleted"}:
+        filter_doc: dict = {
+            "is_admin": {"$ne": True},
+            "$or": [
+                {"is_blocked": True},
+                {"status": {"$in": ["BLOCKED", "DELETED"]}},
+                {"deleted_at": {"$exists": True}},
+                {"soft_deleted_at": {"$exists": True}},
+            ],
+        }
+    else:
+        filter_doc = {
+            "is_admin": {"$ne": True},
+            "is_blocked": {"$ne": True},
+            "status": {"$ne": "BLOCKED"},
+            "deleted_at": {"$exists": False},
+            "soft_deleted_at": {"$exists": False},
+        }
     search = (query or "").strip()
     if search:
         escaped = re.escape(search)
-        filter_doc["$or"] = [
+        search_filter = [
             {"name": {"$regex": escaped, "$options": "i"}},
             {"email": {"$regex": escaped, "$options": "i"}},
             {"country": {"$regex": escaped, "$options": "i"}},
@@ -7590,6 +7614,10 @@ async def _build_admin_user_list_response(
             {"role": {"$regex": escaped, "$options": "i"}},
             {"status": {"$regex": escaped, "$options": "i"}},
         ]
+        if "$or" in filter_doc:
+            filter_doc = {"$and": [filter_doc, {"$or": search_filter}]}
+        else:
+            filter_doc["$or"] = search_filter
     skip = (normalized_page - 1) * normalized_limit
     total, records = await asyncio.gather(
         users_collection.count_documents(filter_doc),
@@ -9175,6 +9203,17 @@ def _token_matches_auth_session(payload: dict[str, Any], user: dict) -> bool:
 
     return token_version == _get_auth_session_version(user)
 
+def _is_auth_blocked_user(user: dict) -> bool:
+
+    status = str(user.get("status") or "").strip().upper()
+
+    return bool(
+        user.get("is_blocked")
+        or user.get("deleted_at")
+        or user.get("soft_deleted_at")
+        or status in {"BLOCKED", "DELETED"}
+    )
+
 async def _consume_returning_user_recognition(user: dict) -> dict | None:
     """Return a one-time welcome-back prompt only for consented former trial users."""
     if not bool(user.get("marketing_consent")):
@@ -9211,6 +9250,10 @@ async def _consume_returning_user_recognition(user: dict) -> dict | None:
     }
 
 async def _issue_tokens(user: dict, response: Response | None, *, issue_cookies: bool = True) -> TokenResponse:
+
+    if _is_auth_blocked_user(user):
+
+        raise HTTPException(status_code=403, detail="Account is blocked")
 
     user_id = str(user["_id"])
 
@@ -9493,7 +9536,7 @@ def _normalize_admin_user_status(record: dict) -> str:
 
     status = str(record.get("status") or "").strip().upper()
 
-    if status in {"ACTIVE", "INACTIVE", "PENDING"}:
+    if status in {"ACTIVE", "INACTIVE", "PENDING", "BLOCKED", "DELETED"}:
 
         return status
 
@@ -10425,6 +10468,10 @@ def _serialize_admin_user_record(record: dict, activity_map: dict[str, datetime]
     user_id = str(record.get("_id") or "")
     last_active_at = (activity_map or {}).get(user_id) or _admin_user_last_activity_from_record(record)
     status_label, tone, never_active, is_at_risk = _admin_user_status_label(record, last_active_at)
+    blocked_at = _admin_activity_dt(record.get("blocked_at"))
+    deleted_at = _admin_activity_dt(record.get("deleted_at") or record.get("soft_deleted_at"))
+    is_blocked = bool(record.get("is_blocked") or _normalize_admin_user_status(record) == "BLOCKED")
+    is_deleted = bool(deleted_at or _normalize_admin_user_status(record) == "DELETED")
     normalized_tier = _normalize_subscription_tier(subscription_summary["tier"])
     tier_label = "BETA" if is_beta_tester and normalized_tier in {"NONE", "GOLD_BETA"} else normalized_tier
     if is_beta_tester and normalized_tier not in {"NONE", "GOLD_BETA"}:
@@ -10477,6 +10524,16 @@ def _serialize_admin_user_record(record: dict, activity_map: dict[str, datetime]
         "statusLabel": status_label,
 
         "tone": tone,
+
+        "isBlocked": is_blocked,
+
+        "isDeleted": is_deleted,
+
+        "blockedAt": blocked_at,
+
+        "deletedAt": deleted_at,
+
+        "blockedReason": str(record.get("blocked_reason") or ""),
 
         "subscription_tier": subscription_summary["tier"],
 

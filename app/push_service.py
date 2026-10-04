@@ -134,6 +134,12 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
     resolved_title, resolved_message, copy_variant = await resolve_notification_variant(user, notification_type, title, message)
     notification_data = {**data, "notificationId": notification_id, "copyVariant": copy_variant}
     notification = {"id": notification_id, "type": notification_type, "title": resolved_title, "message": resolved_message, "data": notification_data, "copy_variant": copy_variant, "created_at": datetime.now(timezone.utc), "read": False, "delivery": {"status": "queued", "providers": []}}
+    dedupe_key = str(data.get("dedupeKey") or data.get("dedupe_key") or "").strip()
+    if dedupe_key:
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$pull": {"app_notifications": {"data.dedupeKey": dedupe_key}}},
+        )
     await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
     await _emit_notification_event(str(user["_id"]), notification)
     await log_notification_event(str(user["_id"]), notification_id, notification_type, copy_variant, "queued")

@@ -35,11 +35,30 @@ async def admin_list_users(
 
     query: str | None = None,
 
+    status_scope: str | None = Query(default=None, alias="statusScope"),
+
     _: dict = Depends(_require_admin_user),
 
 ) -> AdminUserListResponse:
 
-    return await _build_admin_user_list_response(page=page, limit=limit, query=query)
+    return await _build_admin_user_list_response(page=page, limit=limit, query=query, status_scope=status_scope)
+
+
+async def _load_managed_user_or_404(user_id: str, admin_user: dict, *, include_deleted: bool = False) -> tuple[ObjectId, dict]:
+    try:
+        object_id = ObjectId(user_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid user id") from exc
+
+    query: dict = {"_id": object_id, "is_admin": {"$ne": True}}
+    if not include_deleted:
+        query["deleted_at"] = {"$exists": False}
+    record = await users_collection.find_one(query)
+    if not record:
+        raise HTTPException(status_code=404, detail="User not found")
+    if record["_id"] == admin_user["_id"]:
+        raise HTTPException(status_code=400, detail="You cannot manage your own account here")
+    return object_id, record
 
 
 @router.post("/admin/users", response_model=AdminUserDetailResponse, status_code=201)
@@ -195,6 +214,12 @@ async def admin_update_user(
         update_doc["status"] = normalized_status
 
         update_doc["is_verified"] = normalized_status == "ACTIVE"
+        if normalized_status == "BLOCKED":
+            update_doc["is_blocked"] = True
+            update_doc["blocked_at"] = datetime.now(timezone.utc)
+            update_doc["blocked_by_admin_id"] = str(admin_user["_id"])
+        elif normalized_status == "ACTIVE":
+            update_doc["is_blocked"] = False
 
     if payload.isVerified is not None:
 
@@ -206,9 +231,12 @@ async def admin_update_user(
 
         return AdminUserDetailResponse(**_serialize_admin_user_record(record))
 
-    update_doc["updated_at"] = datetime.now(timezone.utc)
-
-    await users_collection.update_one({"_id": object_id}, {"$set": update_doc})
+    now = datetime.now(timezone.utc)
+    update_doc["updated_at"] = now
+    update_ops: dict = {"$set": update_doc}
+    if payload.status is not None and payload.status.upper() == "BLOCKED":
+        update_ops["$inc"] = {"auth_session_version": 1}
+    await users_collection.update_one({"_id": object_id}, update_ops)
 
     updated_record = await users_collection.find_one({"_id": object_id})
 
@@ -216,6 +244,66 @@ async def admin_update_user(
 
         raise HTTPException(status_code=404, detail="User not found")
 
+    return AdminUserDetailResponse(**_serialize_admin_user_record(updated_record))
+
+
+@router.patch("/admin/users/{user_id}/block", response_model=AdminUserDetailResponse)
+async def admin_block_user(
+    user_id: str,
+    admin_user: dict = Depends(_require_admin_user),
+) -> AdminUserDetailResponse:
+    object_id, _ = await _load_managed_user_or_404(user_id, admin_user)
+    now = datetime.now(timezone.utc)
+    await users_collection.update_one(
+        {"_id": object_id, "is_admin": {"$ne": True}},
+        {
+            "$set": {
+                "status": "BLOCKED",
+                "is_verified": False,
+                "is_blocked": True,
+                "blocked_at": now,
+                "blocked_by_admin_id": str(admin_user["_id"]),
+                "updated_at": now,
+            },
+            "$inc": {"auth_session_version": 1},
+        },
+    )
+    updated_record = await users_collection.find_one({"_id": object_id})
+    await _record_admin_audit(admin_user, "user_blocked", "user", str(object_id))
+    return AdminUserDetailResponse(**_serialize_admin_user_record(updated_record))
+
+
+@router.patch("/admin/users/{user_id}/restore", response_model=AdminUserDetailResponse)
+async def admin_restore_user(
+    user_id: str,
+    admin_user: dict = Depends(_require_admin_user),
+) -> AdminUserDetailResponse:
+    object_id, _ = await _load_managed_user_or_404(user_id, admin_user, include_deleted=True)
+    now = datetime.now(timezone.utc)
+    await users_collection.update_one(
+        {"_id": object_id, "is_admin": {"$ne": True}},
+        {
+            "$set": {
+                "status": "ACTIVE",
+                "is_verified": True,
+                "is_blocked": False,
+                "restored_at": now,
+                "restored_by_admin_id": str(admin_user["_id"]),
+                "updated_at": now,
+            },
+            "$unset": {
+                "blocked_at": "",
+                "blocked_by_admin_id": "",
+                "blocked_reason": "",
+                "deleted_at": "",
+                "deleted_by_admin_id": "",
+                "soft_deleted_at": "",
+            },
+            "$inc": {"auth_session_version": 1},
+        },
+    )
+    updated_record = await users_collection.find_one({"_id": object_id})
+    await _record_admin_audit(admin_user, "user_restored", "user", str(object_id))
     return AdminUserDetailResponse(**_serialize_admin_user_record(updated_record))
 
 @router.delete("/admin/users/{user_id}")
@@ -228,28 +316,23 @@ async def admin_delete_user(
 
 ) -> dict[str, str]:
 
-    try:
-
-        object_id = ObjectId(user_id)
-
-    except Exception as exc:
-
-        raise HTTPException(status_code=400, detail="Invalid user id") from exc
-
-    record = await users_collection.find_one({"_id": object_id, "is_admin": {"$ne": True}})
-
-    if not record:
-
+    object_id, _ = await _load_managed_user_or_404(user_id, admin_user)
+    now = datetime.now(timezone.utc)
+    update_result = await users_collection.update_one(
+        {"_id": object_id, "is_admin": {"$ne": True}},
+        {
+            "$set": {
+                "status": "DELETED",
+                "is_verified": False,
+                "is_blocked": True,
+                "deleted_at": now,
+                "deleted_by_admin_id": str(admin_user["_id"]),
+                "updated_at": now,
+            },
+            "$inc": {"auth_session_version": 1},
+        },
+    )
+    if update_result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-
-    if record["_id"] == admin_user["_id"]:
-
-        raise HTTPException(status_code=400, detail="You cannot delete your own account")
-
-    delete_result = await users_collection.delete_one({"_id": object_id, "is_admin": {"$ne": True}})
-
-    if delete_result.deleted_count == 0:
-
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return {"status": "success", "message": "User deleted"}
+    await _record_admin_audit(admin_user, "user_soft_deleted", "user", str(object_id))
+    return {"status": "success", "message": "User deleted and session expired"}
