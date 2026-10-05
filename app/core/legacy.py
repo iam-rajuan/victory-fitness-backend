@@ -273,7 +273,6 @@ from ..models import (
 
     PhaseOneBetaCountryItem,
     PhaseOneBetaFeedbackReplyRequest,
-    PhaseOneBetaFeedbackTicketRequest,
 
     PhaseOneBetaSummaryResponse,
 

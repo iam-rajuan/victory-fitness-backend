@@ -1957,6 +1957,21 @@ class BetaFeedbackResponse(BaseModel):
     createdAt: datetime
 
 
+class PhaseOneBetaFeedbackEntryItem(BaseModel):
+    id: str = ""
+    userId: str = ""
+    userName: str = ""
+    userEmail: str = ""
+    country: str = ""
+    rating: int = 0
+    message: str = ""
+    wouldPay: bool | None = None
+    status: str = "OPEN"
+    adminReply: str = ""
+    createdAt: datetime | None = None
+    repliedAt: datetime | None = None
+
+
 class PhaseOneBetaFeedbackThemeItem(BaseModel):
     themeKey: str = ""
     c: int = 0
@@ -1966,7 +1981,7 @@ class PhaseOneBetaFeedbackThemeItem(BaseModel):
     quote: str = ""
     cta: str = "Reply to feedback"
     who: str = ""
-    drawer: str = "support"
+    drawer: str = "feedback"
     averageRating: float = 0
     latestFeedbackId: str = ""
     latestUserId: str = ""
@@ -1974,17 +1989,12 @@ class PhaseOneBetaFeedbackThemeItem(BaseModel):
     latestUserEmail: str = ""
     openCount: int = 0
     repliedCount: int = 0
-    devTicketStatus: str = ""
+    feedbacks: list[PhaseOneBetaFeedbackEntryItem] = Field(default_factory=list)
 
 
 class PhaseOneBetaFeedbackReplyRequest(BaseModel):
     message: str = Field(min_length=4, max_length=2000)
     mark_resolved: bool = False
-
-
-class PhaseOneBetaFeedbackTicketRequest(BaseModel):
-    note: str = Field(default="", max_length=2000)
-    status: str = Field(default="ASSIGNED", pattern=r"^(ASSIGNED|IN_BUILD)$")
 
 
 class PhaseOneBetaFeedbackInboxResponse(BaseModel):

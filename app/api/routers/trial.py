@@ -10,9 +10,8 @@ _BETA_FEEDBACK_THEMES = {
     "nutrition_logging",
     "coach_context",
     "video_playback",
-    "identity_statement",
-    "gold_value",
     "workout_plan",
+    "gold_value",
     "other",
 }
 

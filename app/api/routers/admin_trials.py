@@ -4,6 +4,7 @@ from datetime import date
 from fastapi import APIRouter, Query
 
 from ...core.legacy import *
+from ...database import beta_feedback_collection
 from ...dependencies import normalize_subscription_tier, user_has_active_gold_trial
 from ...services.beta_analytics import build_phase_one_beta_analytics_cached, clear_phase_one_beta_analytics_cache
 from ...utils.analytics import market_filter, parse_time_range
@@ -348,29 +349,58 @@ async def admin_reply_phase_one_beta_feedback(
     }
 
 
-@router.post("/admin/trials/phase-one-beta/feedback/{theme_key}/dev-ticket")
-async def admin_create_phase_one_beta_feedback_dev_ticket(
-    theme_key: str,
-    payload: PhaseOneBetaFeedbackTicketRequest,
+@router.post("/admin/trials/phase-one-beta/feedback-items/{feedback_id}/reply")
+async def admin_reply_phase_one_beta_feedback_item(
+    feedback_id: str,
+    payload: PhaseOneBetaFeedbackReplyRequest,
     admin_user: dict = Depends(_require_admin_user),
 ) -> dict[str, object]:
-    records = await _load_beta_feedback_records_for_theme(theme_key)
-    now = datetime.now(timezone.utc)
-    ticket_status = payload.status.strip().upper()
-    if ticket_status not in {"ASSIGNED", "IN_BUILD"}:
-        raise HTTPException(status_code=400, detail="Invalid ticket status")
+    message = payload.message.strip()
+    if len(message) < 4:
+        raise HTTPException(status_code=422, detail="Reply message is too short")
+    if not ObjectId.is_valid(str(feedback_id or "")):
+        raise HTTPException(status_code=400, detail="Invalid feedback id")
 
-    ticket_id = f"BETA-{_normalize_feedback_theme_key(theme_key).upper()}"
-    await beta_feedback_collection.update_many(
-        {"_id": {"$in": [record["_id"] for record in records]}},
+    record = await beta_feedback_collection.find_one({"_id": ObjectId(feedback_id)})
+    if not record:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+
+    user_id = str(record.get("user_id") or "").strip()
+    user = await users_collection.find_one({"_id": ObjectId(user_id), "is_admin": {"$ne": True}}) if ObjectId.is_valid(user_id) else None
+    if not user:
+        email = str(record.get("user_email") or "").strip().lower()
+        user = await users_collection.find_one({"email": email, "is_admin": {"$ne": True}}) if email else None
+    if not user:
+        raise HTTPException(status_code=404, detail="Feedback user not found")
+
+    now = datetime.now(timezone.utc)
+    delivery = await notify_user(
+        users_collection,
+        user,
+        "Victory Fitness replied to your feedback",
+        message,
+        "feedback_reply",
+        {
+            "type": "feedback_reply",
+            "route": "/notifications",
+            "source": "admin_feedback_inbox",
+            "feedbackId": str(record.get("_id") or ""),
+            "feedbackTheme": _normalize_feedback_theme_key(str(record.get("theme") or "")),
+            "categoryLabel": "Feedback reply",
+            "actionLabel": "View reply",
+            "icon": "chatbubble-ellipses-outline",
+            "accent": "#C9943A",
+        },
+    )
+    next_status = "RESOLVED" if payload.mark_resolved else "IN_PROGRESS"
+    await beta_feedback_collection.update_one(
+        {"_id": record["_id"]},
         {
             "$set": {
-                "status": ticket_status,
-                "dev_ticket_id": ticket_id,
-                "dev_ticket_status": ticket_status,
-                "dev_ticket_note": payload.note.strip(),
-                "dev_ticket_updated_at": now,
-                "dev_ticket_updated_by": str(admin_user.get("_id") or ""),
+                "status": next_status,
+                "admin_reply": message,
+                "admin_replied_at": now,
+                "admin_replied_by": str(admin_user.get("_id") or ""),
                 "updated_at": now,
             }
         },
@@ -378,16 +408,17 @@ async def admin_create_phase_one_beta_feedback_dev_ticket(
     clear_phase_one_beta_analytics_cache()
     await _record_admin_audit(
         admin_user,
-        "phase_one_beta_feedback_dev_ticket_updated",
-        "feedback_theme",
-        _normalize_feedback_theme_key(theme_key),
-        {"ticketId": ticket_id, "ticketStatus": ticket_status},
+        "phase_one_beta_feedback_item_replied",
+        "feedback",
+        str(record["_id"]),
+        {"userId": str(user.get("_id") or ""), "deliveryStatus": delivery.get("status"), "status": next_status},
     )
     return {
-        "themeKey": _normalize_feedback_theme_key(theme_key),
-        "ticketId": ticket_id,
-        "status": ticket_status,
-        "affectedFeedback": len(records),
+        "feedbackId": str(record["_id"]),
+        "userId": str(user.get("_id") or ""),
+        "email": str(user.get("email") or record.get("user_email") or ""),
+        "status": next_status,
+        "delivery": delivery,
     }
 
 

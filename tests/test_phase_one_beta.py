@@ -719,7 +719,7 @@ class BetaFeedbackAnalyticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(inbox.wouldPayCount, 1)
         self.assertEqual(inbox.themeCount, 1)
         self.assertEqual(inbox.themes[0].c, 2)
-        self.assertEqual(inbox.themes[0].t, "Workout plan needs adjustment")
+        self.assertEqual(inbox.themes[0].t, "Workout plan")
         self.assertEqual(inbox.themes[0].quote, "Workout plan fits my week.")
         self.assertIn("Ghana", inbox.themes[0].who)
 
@@ -757,7 +757,7 @@ class BetaFeedbackAnalyticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("created_at", captured_query)
         self.assertEqual(inbox.totalResponses, 1)
         self.assertEqual(inbox.wouldPayCount, 1)
-        self.assertEqual(inbox.themes[0].t, "Wanted the coach to know my injury")
+        self.assertEqual(inbox.themes[0].t, "AI coach")
 
 
 if __name__ == "__main__":

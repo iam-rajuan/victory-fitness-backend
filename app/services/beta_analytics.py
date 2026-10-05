@@ -37,6 +37,7 @@ from ..models import (
     PhaseOneBetaFeatureAdoptionMetric,
     PhaseOneBetaFeatureAdoptionResponse,
     PhaseOneBetaFeedbackInboxResponse,
+    PhaseOneBetaFeedbackEntryItem,
     PhaseOneBetaFeedbackThemeItem,
     PhaseOneBetaParticipationResponse,
     PhaseOneBetaSummaryResponse,
@@ -51,20 +52,21 @@ PHASE_ONE_BETA_CACHE_TTL_SECONDS = 15
 _phase_one_beta_cache: dict[int, tuple[float, PhaseOneBetaSummaryResponse]] = {}
 
 FEEDBACK_THEME_LABELS = {
-    "nutrition_logging": "Nutrition logging is too slow",
-    "coach_context": "Wanted the coach to know my injury",
-    "video_playback": "Videos buffer on mobile data",
-    "identity_statement": "Loved the identity statement",
-    "gold_value": "Did not understand what Gold included",
-    "workout_plan": "Workout plan needs adjustment",
-    "other": "General feedback",
+    "nutrition_logging": "Nutrition logging",
+    "coach_context": "AI coach",
+    "video_playback": "Videos",
+    "workout_plan": "Workout plan",
+    "gold_value": "Gold value",
+    "other": "Something else",
 }
 
 FEEDBACK_THEME_STATUS = {
-    "nutrition_logging": ("FIXED", "good", "Tell them it shipped"),
-    "coach_context": ("IN BUILD", "warn", "See the build ticket"),
-    "identity_statement": ("KEEP", "good", "Use as marketing copy"),
-    "other": ("OPEN", "bad", "Reply to feedback"),
+    "nutrition_logging": ("OPEN", "warn", "Reply to feedback"),
+    "coach_context": ("OPEN", "warn", "Reply to feedback"),
+    "video_playback": ("OPEN", "warn", "Reply to feedback"),
+    "workout_plan": ("OPEN", "warn", "Reply to feedback"),
+    "gold_value": ("OPEN", "warn", "Reply to feedback"),
+    "other": ("OPEN", "warn", "Reply to feedback"),
 }
 
 
@@ -115,13 +117,9 @@ def _feedback_user_id_query_values(user_ids: list[str]) -> list[Any]:
 
 
 def _feedback_theme_meta(theme: str, average_rating: float) -> tuple[str, str, str]:
-    if theme in FEEDBACK_THEME_STATUS:
-        return FEEDBACK_THEME_STATUS[theme]
-    if average_rating >= 4:
-        return ("KEEP", "good", "Use as marketing copy")
-    if average_rating >= 3:
-        return ("OPEN", "warn", "Reply to feedback")
-    return ("OPEN", "bad", "Assign to dev")
+    status, _tone, cta = FEEDBACK_THEME_STATUS.get(theme, ("OPEN", "warn", "Reply to feedback"))
+    tone = "good" if average_rating >= 4 else "warn" if average_rating >= 2.5 else "bad"
+    return status, tone, cta
 
 
 def _in_window(timestamp: datetime | None, start_at: datetime | None, end_at: datetime | None) -> bool:
@@ -266,13 +264,15 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
         query,
         projection={
             "user_id": 1,
+            "user_name": 1,
+            "user_email": 1,
             "rating": 1,
             "theme": 1,
             "message": 1,
             "would_pay": 1,
             "status": 1,
             "admin_reply": 1,
-            "dev_ticket_status": 1,
+            "admin_replied_at": 1,
             "created_at": 1,
             "country": 1,
             "country_code": 1,
@@ -304,27 +304,42 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
                 "feedback_ids": [],
                 "open_count": 0,
                 "replied_count": 0,
-                "ticket_statuses": [],
+                "feedbacks": [],
             },
         )
         bucket["count"] += 1
         bucket["ratings"].append(rating)
         bucket["feedback_ids"].append(str(record.get("_id") or ""))
         record_status = str(record.get("status") or "OPEN").strip().upper()
-        if record_status in {"OPEN", "IN_PROGRESS", "IN_BUILD", "ASSIGNED"}:
+        if record_status in {"IN_BUILD", "ASSIGNED"}:
+            record_status = "OPEN"
+        if record_status in {"OPEN", "IN_PROGRESS"}:
             bucket["open_count"] += 1
         if str(record.get("admin_reply") or "").strip():
             bucket["replied_count"] += 1
-        ticket_status = str(record.get("dev_ticket_status") or "").strip().upper()
-        if ticket_status:
-            bucket["ticket_statuses"].append(ticket_status)
+        user = users_by_id.get(user_id) or {}
+        country = str(record.get("country") or user.get("country") or record.get("country_code") or user.get("country_code") or "").strip()
+        bucket["feedbacks"].append(
+            PhaseOneBetaFeedbackEntryItem(
+                id=str(record.get("_id") or ""),
+                userId=user_id,
+                userName=str(record.get("user_name") or user.get("name") or record.get("user_email") or user.get("email") or "Member").strip(),
+                userEmail=str(record.get("user_email") or user.get("email") or "").strip(),
+                country=country,
+                rating=rating,
+                message=str(record.get("message") or "").strip(),
+                wouldPay=record.get("would_pay") if isinstance(record.get("would_pay"), bool) else None,
+                status=record_status or "OPEN",
+                adminReply=str(record.get("admin_reply") or "").strip(),
+                createdAt=_as_utc_datetime(record.get("created_at")),
+                repliedAt=_as_utc_datetime(record.get("admin_replied_at")),
+            )
+        )
         message = str(record.get("message") or "").strip()
         if message:
             bucket["messages"].append((record.get("created_at"), message, record))
         if user_id:
             bucket["users"].add(user_id)
-        user = users_by_id.get(user_id) or {}
-        country = str(record.get("country") or user.get("country") or record.get("country_code") or user.get("country_code") or "").strip()
         if country:
             bucket["countries"].add(country)
 
@@ -340,9 +355,11 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
         tester_count = len(bucket["users"]) or bucket["count"]
         countries = sorted(bucket["countries"])
         who_market = ", ".join(countries[:4]) if countries else "all markets"
-        ticket_statuses = bucket["ticket_statuses"]
-        dev_ticket_status = "IN_BUILD" if "IN_BUILD" in ticket_statuses else "ASSIGNED" if "ASSIGNED" in ticket_statuses else ""
-        status = dev_ticket_status or status
+        feedbacks = sorted(
+            bucket["feedbacks"],
+            key=lambda item: item.createdAt or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
         themes.append(
             PhaseOneBetaFeedbackThemeItem(
                 themeKey=theme,
@@ -361,7 +378,7 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
                 latestUserEmail=str(latest_record.get("user_email") or latest_user.get("email") or "").strip(),
                 openCount=int(bucket["open_count"]),
                 repliedCount=int(bucket["replied_count"]),
-                devTicketStatus=dev_ticket_status,
+                feedbacks=feedbacks,
             )
         )
 
