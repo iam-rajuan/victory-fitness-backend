@@ -5,7 +5,7 @@ from fastapi import APIRouter, Query
 
 from ...core.legacy import *
 from ...dependencies import normalize_subscription_tier, user_has_active_gold_trial
-from ...services.beta_analytics import build_phase_one_beta_analytics_cached
+from ...services.beta_analytics import build_phase_one_beta_analytics_cached, clear_phase_one_beta_analytics_cache
 from ...utils.analytics import market_filter, parse_time_range
 
 router = APIRouter()
@@ -14,6 +14,26 @@ router = APIRouter()
 class PhaseOneBetaTesterNotificationRequest(BaseModel):
     title: str = Field(default="Your 21-Day Gold Beta is waiting", min_length=1, max_length=160)
     message: str = Field(default="Open Victory Fitness and keep your beta progress moving today.", min_length=1, max_length=1000)
+
+
+def _normalize_feedback_theme_key(value: str) -> str:
+    normalized = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    return re.sub(r"[^a-z0-9_]+", "", normalized)
+
+
+async def _load_beta_feedback_records_for_theme(theme_key: str) -> list[dict]:
+    normalized_theme = _normalize_feedback_theme_key(theme_key)
+    if not normalized_theme:
+        raise HTTPException(status_code=400, detail="Feedback theme is required")
+
+    records = await beta_feedback_collection.find(
+        {"theme": normalized_theme},
+        sort=[("created_at", -1), ("_id", -1)],
+        limit=500,
+    ).to_list(length=500)
+    if not records:
+        raise HTTPException(status_code=404, detail="Feedback theme not found")
+    return records
 
 
 def _matches_market(user: dict, market: str) -> bool:
@@ -242,6 +262,133 @@ async def admin_phase_one_beta_summary(
     _: dict = Depends(_require_admin_user),
 ) -> PhaseOneBetaSummaryResponse:
     return await build_phase_one_beta_analytics_cached(limit=limit)
+
+
+@router.post("/admin/trials/phase-one-beta/feedback/{theme_key}/reply")
+async def admin_reply_phase_one_beta_feedback(
+    theme_key: str,
+    payload: PhaseOneBetaFeedbackReplyRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> dict[str, object]:
+    message = payload.message.strip()
+    if len(message) < 4:
+        raise HTTPException(status_code=422, detail="Reply message is too short")
+
+    records = await _load_beta_feedback_records_for_theme(theme_key)
+    now = datetime.now(timezone.utc)
+    target_user_ids = list(
+        dict.fromkeys(
+            str(record.get("user_id") or "").strip()
+            for record in records
+            if str(record.get("user_id") or "").strip()
+        )
+    )
+    if not target_user_ids:
+        raise HTTPException(status_code=404, detail="No users found for this feedback theme")
+
+    users = await users_collection.find({"_id": {"$in": [ObjectId(item) for item in target_user_ids if ObjectId.is_valid(item)]}}).to_list(length=500)
+    users_by_id = {str(user.get("_id")): user for user in users}
+    notified: list[dict[str, object]] = []
+    for user_id in target_user_ids:
+        user = users_by_id.get(user_id)
+        if not user:
+            continue
+        title = "Victory Fitness replied to your feedback"
+        delivery = await notify_user(
+            users_collection,
+            user,
+            title,
+            message,
+            "feedback_reply",
+            {
+                "type": "feedback_reply",
+                "route": "/notifications",
+                "source": "admin_feedback_inbox",
+                "feedbackTheme": _normalize_feedback_theme_key(theme_key),
+                "categoryLabel": "Feedback reply",
+                "actionLabel": "View reply",
+                "icon": "chatbubble-ellipses-outline",
+                "accent": "#C9943A",
+            },
+        )
+        notified.append(
+            {
+                "userId": user_id,
+                "email": str(user.get("email") or ""),
+                "status": delivery.get("status", "queued"),
+            }
+        )
+
+    next_status = "RESOLVED" if payload.mark_resolved else "IN_PROGRESS"
+    await beta_feedback_collection.update_many(
+        {"_id": {"$in": [record["_id"] for record in records]}},
+        {
+            "$set": {
+                "status": next_status,
+                "admin_reply": message,
+                "admin_replied_at": now,
+                "admin_replied_by": str(admin_user.get("_id") or ""),
+                "updated_at": now,
+            }
+        },
+    )
+    clear_phase_one_beta_analytics_cache()
+    await _record_admin_audit(
+        admin_user,
+        "phase_one_beta_feedback_replied",
+        "feedback_theme",
+        _normalize_feedback_theme_key(theme_key),
+        {"notified": len(notified), "status": next_status},
+    )
+    return {
+        "themeKey": _normalize_feedback_theme_key(theme_key),
+        "status": next_status,
+        "notified": notified,
+        "notifiedCount": len(notified),
+    }
+
+
+@router.post("/admin/trials/phase-one-beta/feedback/{theme_key}/dev-ticket")
+async def admin_create_phase_one_beta_feedback_dev_ticket(
+    theme_key: str,
+    payload: PhaseOneBetaFeedbackTicketRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> dict[str, object]:
+    records = await _load_beta_feedback_records_for_theme(theme_key)
+    now = datetime.now(timezone.utc)
+    ticket_status = payload.status.strip().upper()
+    if ticket_status not in {"ASSIGNED", "IN_BUILD"}:
+        raise HTTPException(status_code=400, detail="Invalid ticket status")
+
+    ticket_id = f"BETA-{_normalize_feedback_theme_key(theme_key).upper()}"
+    await beta_feedback_collection.update_many(
+        {"_id": {"$in": [record["_id"] for record in records]}},
+        {
+            "$set": {
+                "status": ticket_status,
+                "dev_ticket_id": ticket_id,
+                "dev_ticket_status": ticket_status,
+                "dev_ticket_note": payload.note.strip(),
+                "dev_ticket_updated_at": now,
+                "dev_ticket_updated_by": str(admin_user.get("_id") or ""),
+                "updated_at": now,
+            }
+        },
+    )
+    clear_phase_one_beta_analytics_cache()
+    await _record_admin_audit(
+        admin_user,
+        "phase_one_beta_feedback_dev_ticket_updated",
+        "feedback_theme",
+        _normalize_feedback_theme_key(theme_key),
+        {"ticketId": ticket_id, "ticketStatus": ticket_status},
+    )
+    return {
+        "themeKey": _normalize_feedback_theme_key(theme_key),
+        "ticketId": ticket_id,
+        "status": ticket_status,
+        "affectedFeedback": len(records),
+    }
 
 
 @router.post("/admin/trials/phase-one-beta/testers/{tester_id}/notify")

@@ -272,6 +272,8 @@ from ..models import (
     AdminTrialDropoutResponse,
 
     PhaseOneBetaCountryItem,
+    PhaseOneBetaFeedbackReplyRequest,
+    PhaseOneBetaFeedbackTicketRequest,
 
     PhaseOneBetaSummaryResponse,
 

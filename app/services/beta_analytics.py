@@ -270,6 +270,9 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
             "theme": 1,
             "message": 1,
             "would_pay": 1,
+            "status": 1,
+            "admin_reply": 1,
+            "dev_ticket_status": 1,
             "created_at": 1,
             "country": 1,
             "country_code": 1,
@@ -290,12 +293,34 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
         if bool(record.get("would_pay")):
             would_pay_count += 1
         user_id = _normalize_user_id(record.get("user_id"))
-        bucket = grouped.setdefault(theme, {"count": 0, "ratings": [], "messages": [], "users": set(), "countries": set()})
+        bucket = grouped.setdefault(
+            theme,
+            {
+                "count": 0,
+                "ratings": [],
+                "messages": [],
+                "users": set(),
+                "countries": set(),
+                "feedback_ids": [],
+                "open_count": 0,
+                "replied_count": 0,
+                "ticket_statuses": [],
+            },
+        )
         bucket["count"] += 1
         bucket["ratings"].append(rating)
+        bucket["feedback_ids"].append(str(record.get("_id") or ""))
+        record_status = str(record.get("status") or "OPEN").strip().upper()
+        if record_status in {"OPEN", "IN_PROGRESS", "IN_BUILD", "ASSIGNED"}:
+            bucket["open_count"] += 1
+        if str(record.get("admin_reply") or "").strip():
+            bucket["replied_count"] += 1
+        ticket_status = str(record.get("dev_ticket_status") or "").strip().upper()
+        if ticket_status:
+            bucket["ticket_statuses"].append(ticket_status)
         message = str(record.get("message") or "").strip()
         if message:
-            bucket["messages"].append((record.get("created_at"), message))
+            bucket["messages"].append((record.get("created_at"), message, record))
         if user_id:
             bucket["users"].add(user_id)
         user = users_by_id.get(user_id) or {}
@@ -309,11 +334,18 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
         average_rating = round(sum(ratings) / max(len(ratings), 1), 1)
         status, tone, cta = _feedback_theme_meta(theme, average_rating)
         messages = sorted(bucket["messages"], key=lambda item: _as_utc_datetime(item[0]) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        latest_record = messages[0][2] if messages else {}
+        latest_user_id = _normalize_user_id(latest_record.get("user_id"))
+        latest_user = users_by_id.get(latest_user_id) or {}
         tester_count = len(bucket["users"]) or bucket["count"]
         countries = sorted(bucket["countries"])
         who_market = ", ".join(countries[:4]) if countries else "all markets"
+        ticket_statuses = bucket["ticket_statuses"]
+        dev_ticket_status = "IN_BUILD" if "IN_BUILD" in ticket_statuses else "ASSIGNED" if "ASSIGNED" in ticket_statuses else ""
+        status = dev_ticket_status or status
         themes.append(
             PhaseOneBetaFeedbackThemeItem(
+                themeKey=theme,
                 c=int(bucket["count"]),
                 t=FEEDBACK_THEME_LABELS.get(theme, FEEDBACK_THEME_LABELS["other"]),
                 status=status,
@@ -321,8 +353,15 @@ async def _build_feedback_inbox(user_ids: list[str], users_by_id: dict[str, dict
                 quote=messages[0][1] if messages else "",
                 cta=cta,
                 who=f"{tester_count} tester{'s' if tester_count != 1 else ''} · {who_market}",
-                drawer="support",
+                drawer="feedback",
                 averageRating=average_rating,
+                latestFeedbackId=str(latest_record.get("_id") or ""),
+                latestUserId=latest_user_id,
+                latestUserName=str(latest_record.get("user_name") or latest_user.get("name") or latest_record.get("user_email") or latest_user.get("email") or "").strip(),
+                latestUserEmail=str(latest_record.get("user_email") or latest_user.get("email") or "").strip(),
+                openCount=int(bucket["open_count"]),
+                repliedCount=int(bucket["replied_count"]),
+                devTicketStatus=dev_ticket_status,
             )
         )
 
@@ -853,3 +892,7 @@ async def build_phase_one_beta_analytics_cached(limit: int = 300) -> PhaseOneBet
     summary = await build_phase_one_beta_analytics(limit=normalized_limit)
     _phase_one_beta_cache[normalized_limit] = (monotonic(), summary)
     return summary
+
+
+def clear_phase_one_beta_analytics_cache() -> None:
+    _phase_one_beta_cache.clear()

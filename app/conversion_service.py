@@ -81,6 +81,15 @@ DEFAULT_NOTIFICATION_TEMPLATES = [
         ],
     },
     {
+        "id": "feedback_reply",
+        "type": "feedback_reply",
+        "title": "Feedback reply",
+        "channels": ["push", "email"],
+        "audience": "system",
+        "frequencyCapHours": 0,
+        "variants": [],
+    },
+    {
         "id": "monthly_digest",
         "type": "monthly_digest",
         "title": "Monthly digest",

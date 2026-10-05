@@ -1958,6 +1958,7 @@ class BetaFeedbackResponse(BaseModel):
 
 
 class PhaseOneBetaFeedbackThemeItem(BaseModel):
+    themeKey: str = ""
     c: int = 0
     t: str = ""
     status: str = "OPEN"
@@ -1967,6 +1968,23 @@ class PhaseOneBetaFeedbackThemeItem(BaseModel):
     who: str = ""
     drawer: str = "support"
     averageRating: float = 0
+    latestFeedbackId: str = ""
+    latestUserId: str = ""
+    latestUserName: str = ""
+    latestUserEmail: str = ""
+    openCount: int = 0
+    repliedCount: int = 0
+    devTicketStatus: str = ""
+
+
+class PhaseOneBetaFeedbackReplyRequest(BaseModel):
+    message: str = Field(min_length=4, max_length=2000)
+    mark_resolved: bool = False
+
+
+class PhaseOneBetaFeedbackTicketRequest(BaseModel):
+    note: str = Field(default="", max_length=2000)
+    status: str = Field(default="ASSIGNED", pattern=r"^(ASSIGNED|IN_BUILD)$")
 
 
 class PhaseOneBetaFeedbackInboxResponse(BaseModel):
