@@ -63,6 +63,10 @@ def _get_csv_list(name: str, default: str = "") -> list[str]:
 
 
 DEFAULT_CORS_ORIGINS = [
+    "https://www.victoryfitnessapp.com",
+    "https://app.victoryfitnessapp.com",
+    "https://victoryfitnessapp.de",
+    "https://admin.victoryfitnessapp.com",
     "https://victory-fitness-dashboard.vercel.app",
     "https://victory-fitness-app.vercel.app",
     "https://victora-web-app.vercel.app",

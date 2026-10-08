@@ -17,6 +17,9 @@ class RegisterRequest(BaseModel):
     marketing_consent: bool = False
     signup_source: str = Field(default="organic", max_length=120)
     beta_access_code: str | None = Field(default=None, min_length=3, max_length=120)
+    country: str | None = Field(default=None, max_length=120)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
+    preferred_language: str | None = Field(default=None, max_length=10)
     inviter_id: str | None = None
     invite_id: str | None = None
     referral_code: str | None = None
@@ -44,6 +47,13 @@ class RegisterRequest(BaseModel):
         if not value.strip():
             raise ValueError("must not be blank")
         return value
+
+    @field_validator("country", "country_code", "preferred_language")
+    @classmethod
+    def strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip()
 
 
 class LoginRequest(BaseModel):

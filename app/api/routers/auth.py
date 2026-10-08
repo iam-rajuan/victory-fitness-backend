@@ -56,6 +56,9 @@ def _is_allowed_google_return_origin(origin: str) -> bool:
             "http://localhost:8081",
             "https://victory-fitness-app-one.vercel.app",
             "https://victoryfitnessapp.com",
+            "https://www.victoryfitnessapp.com",
+            "https://app.victoryfitnessapp.com",
+            "https://victoryfitnessapp.de",
         }
     )
     return normalized in allowed_origins
@@ -361,6 +364,9 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "last_name": last_name,
             "email": email,
             "contact_number": mobile,
+            "country": str(payload.country or "").strip(),
+            "country_code": str(payload.country_code or "").strip().upper() or None,
+            "preferred_language": str(payload.preferred_language or "").strip().lower(),
             "marketing_consent": payload.marketing_consent,
             "signup_source": payload.signup_source.strip() or "organic",
             "phase_one_beta_requested_code": normalized_beta_access_code or None,
