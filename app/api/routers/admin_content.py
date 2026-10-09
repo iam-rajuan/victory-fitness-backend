@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...models import LegalContentUploadRequest, LegalContentUploadResponse
 from ...repositories.content import update_content_pdf_metadata
 
 router = APIRouter()
