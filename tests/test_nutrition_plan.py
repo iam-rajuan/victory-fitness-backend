@@ -224,10 +224,54 @@ class NutritionPlanPersistenceRouteTests(unittest.TestCase):
         self.assertEqual(captured_payloads[-1]["country_code"], "GH")
         self.assertEqual(fake_users.updated_payloads[-1]["update"]["$set"]["nutrition_onboarding_profile"]["country"], "Ghana")
 
-    def test_generate_plan_rejects_fewer_than_three_favorite_meals(self) -> None:
+    def test_generate_plan_allows_specific_cuisine_without_three_favorite_meals(self) -> None:
+        fake_plans = _FakeNutritionPlansCollection()
+        fake_users = _FakeUsersCollection()
         payload = {
             "goal": "g2",
             "cuisine": "Bangladeshi",
+            "favorite_meal": "Lunch",
+            "favorite_meals": ["Lunch", "Dinner"],
+            "diet": "d2",
+            "allergies": "",
+            "activity_level": "a3",
+            "age": "25",
+            "gender": "Male",
+            "height": "180",
+            "weight": "75",
+            "health_conditions": [],
+        }
+        generated_data = nutrition_ai_module._build_fallback_nutrition_plan(payload)
+
+        with patch.object(nutrition_router_module, "nutrition_plans_collection", fake_plans), patch.object(
+            nutrition_router_module,
+            "users_collection",
+            fake_users,
+        ), patch.object(
+            nutrition_router_module,
+            "_enforce_nutrition_generation_limit",
+            AsyncMock(),
+        ), patch.object(
+            nutrition_router_module,
+            "_record_trial_engagement",
+            AsyncMock(),
+        ), patch.object(
+            nutrition_router_module,
+            "generate_nutrition_plan",
+            return_value=SimpleNamespace(data=generated_data),
+        ), patch.object(
+            nutrition_router_module,
+            "build_nutrition_plan_signature",
+            return_value="specific-cuisine-hash",
+        ):
+            response = self.client.post("/ai/nutrition/plan", json=payload)
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_generate_plan_rejects_missing_cuisine_and_fewer_than_three_favorite_meals(self) -> None:
+        payload = {
+            "goal": "g2",
+            "cuisine": "balanced",
             "favorite_meal": "Lunch",
             "favorite_meals": ["Lunch", "Dinner"],
             "diet": "d2",
@@ -243,7 +287,7 @@ class NutritionPlanPersistenceRouteTests(unittest.TestCase):
         response = self.client.post("/ai/nutrition/plan", json=payload)
 
         self.assertEqual(response.status_code, 422)
-        self.assertIn("At least 3 favourite meals", response.text)
+        self.assertIn("Choose at least one cuisine", response.text)
 
 
 class NutritionPlanFallbackTests(unittest.TestCase):

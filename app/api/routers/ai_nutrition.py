@@ -48,9 +48,14 @@ def _validate_nutrition_favorites_or_country_dataset(payload_data: dict) -> None
         meal = str(payload_data.get("favorite_meal")).strip()
         if meal.lower() not in {item.lower() for item in meals}:
             meals.insert(0, meal)
-    if len(meals) >= 3 or get_country_food_dataset(payload_data):
+    cuisine = str(payload_data.get("cuisine") or "").strip()
+    has_specific_cuisine = bool(cuisine) and cuisine.lower() not in {"balanced", "any", "mixed", "local"}
+    if len(meals) >= 3 or get_country_food_dataset(payload_data) or has_specific_cuisine:
         return
-    raise HTTPException(status_code=422, detail="At least 3 favourite meals are required to build your meal plan.")
+    raise HTTPException(
+        status_code=422,
+        detail="Choose at least one cuisine or add at least 3 favourite meals to build your meal plan.",
+    )
 
 
 @router.get("/ai/nutrition/meal-logs", response_model=NutritionMealLogListResponse)
