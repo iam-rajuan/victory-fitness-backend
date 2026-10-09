@@ -1,10 +1,59 @@
 from fastapi import APIRouter
 
 from ...core.legacy import *
+from ...repositories.content import update_content_pdf_metadata
 
 router = APIRouter()
 
 EU_COUNTRY_CODES = {"AT", "BE", "BG", "HR", "CY", "CZ", "DK", "EE", "FI", "FR", "DE", "GR", "HU", "IE", "IT", "LV", "LT", "LU", "MT", "NL", "PL", "PT", "RO", "SK", "SI", "ES", "SE"}
+
+LEGAL_DOCUMENT_KEYS = {
+    "privacy-policy": PRIVACY_POLICY_KEY,
+    "terms-condition": TERMS_CONDITION_KEY,
+    "about-us": ABOUT_US_KEY,
+}
+
+
+def _legal_content_key(document_key: str) -> str:
+    key = LEGAL_DOCUMENT_KEYS.get(str(document_key or "").strip().lower())
+    if not key:
+        raise HTTPException(status_code=404, detail="Legal content document not found")
+    return key
+
+
+def _safe_legal_filename(value: str | None, fallback: str) -> str:
+    name = re.sub(r"[^a-zA-Z0-9._ -]", "", str(value or "").strip()).strip()
+    return name[:180] or fallback
+
+
+async def _upload_legal_asset(
+    *,
+    payload: LegalContentUploadRequest,
+    admin_user: dict,
+    folder_name: str,
+    allowed_types: dict[str, str],
+    invalid_type_message: str,
+    max_size_bytes: int,
+    upload_log_label: str,
+) -> str:
+    try:
+        return await asyncio.to_thread(
+            _upload_binary_to_s3,
+            folder_name,
+            str(admin_user["_id"]),
+            payload.file_base64,
+            payload.mime_type,
+            payload.file_name,
+            allowed_types=allowed_types,
+            invalid_type_message=invalid_type_message,
+            invalid_payload_message=f"{upload_log_label.capitalize()} payload is not valid base64",
+            max_size_bytes=max_size_bytes,
+            upload_log_label=upload_log_label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Legal {upload_log_label} upload failed") from exc
 
 
 def _market_query(applies_to: list[str], notification_behavior: str) -> dict:
@@ -50,6 +99,65 @@ async def admin_get_privacy_policy(_: dict = Depends(_require_admin_user)) -> Pr
     record = await _ensure_privacy_policy_record()
     return _serialize_privacy_policy_record(record)
 
+
+@router.post("/admin/content/legal-image", response_model=LegalContentUploadResponse)
+async def admin_upload_legal_image(
+    payload: LegalContentUploadRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> LegalContentUploadResponse:
+    url = await _upload_legal_asset(
+        payload=payload,
+        admin_user=admin_user,
+        folder_name="legal-images",
+        allowed_types={
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+        },
+        invalid_type_message="Only JPEG, PNG, WEBP, and GIF images are supported",
+        max_size_bytes=8 * 1024 * 1024,
+        upload_log_label="image",
+    )
+    return LegalContentUploadResponse(
+        url=url,
+        filename=_safe_legal_filename(payload.file_name, "legal-image"),
+    )
+
+
+@router.post("/admin/content/{document_key}/pdf", response_model=LegalContentUploadResponse)
+async def admin_upload_legal_pdf(
+    document_key: str,
+    payload: LegalContentUploadRequest,
+    admin_user: dict = Depends(_require_admin_user),
+) -> LegalContentUploadResponse:
+    content_key = _legal_content_key(document_key)
+    normalized_mime = str(payload.mime_type or "").strip().lower()
+    if normalized_mime != "application/pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+    url = await _upload_legal_asset(
+        payload=payload,
+        admin_user=admin_user,
+        folder_name="legal-pdfs",
+        allowed_types={"application/pdf": ".pdf"},
+        invalid_type_message="Only PDF files are supported",
+        max_size_bytes=20 * 1024 * 1024,
+        upload_log_label="pdf",
+    )
+    filename = _safe_legal_filename(payload.file_name, "legal-document.pdf")
+    await update_content_pdf_metadata(key=content_key, pdf_url=url, pdf_filename=filename)
+    return LegalContentUploadResponse(url=url, filename=filename)
+
+
+@router.delete("/admin/content/{document_key}/pdf")
+async def admin_remove_legal_pdf(
+    document_key: str,
+    _: dict = Depends(_require_admin_user),
+) -> dict[str, bool]:
+    await update_content_pdf_metadata(key=_legal_content_key(document_key), pdf_url="", pdf_filename="")
+    return {"removed": True}
+
 @router.put("/admin/content/privacy-policy", response_model=PrivacyPolicyResponse)
 async def admin_update_privacy_policy(
     payload: UpdatePrivacyPolicyRequest,
@@ -60,6 +168,8 @@ async def admin_update_privacy_policy(
         title=payload.title,
         html_content=payload.html_content,
         filename=payload.filename,
+        pdf_url=payload.pdf_url,
+        pdf_filename=payload.pdf_filename,
         version=payload.version,
         applies_to=payload.applies_to,
         notification_behavior=payload.notification_behavior,
@@ -85,6 +195,8 @@ async def admin_update_terms_condition(
         title=payload.title,
         html_content=payload.html_content,
         filename=payload.filename,
+        pdf_url=payload.pdf_url,
+        pdf_filename=payload.pdf_filename,
         version=payload.version,
         applies_to=payload.applies_to,
         notification_behavior=payload.notification_behavior,
@@ -110,6 +222,8 @@ async def admin_update_about_us(
         title=payload.title,
         html_content=payload.html_content,
         filename=payload.filename,
+        pdf_url=payload.pdf_url,
+        pdf_filename=payload.pdf_filename,
         version=payload.version,
         applies_to=payload.applies_to,
         notification_behavior=payload.notification_behavior,

@@ -83,6 +83,8 @@ def _record_for_market(record: dict, market: str | None) -> dict:
     next_record["title"] = selected.get("title") or record.get("title")
     next_record["html_content"] = selected.get("html_content") or record.get("html_content")
     next_record["filename"] = selected.get("filename") or record.get("filename") or ""
+    next_record["pdf_url"] = selected.get("pdf_url") or record.get("pdf_url") or ""
+    next_record["pdf_filename"] = selected.get("pdf_filename") or record.get("pdf_filename") or ""
     next_record["applies_to"] = selected.get("applies_to") or ["ALL"]
     next_record["published_at"] = selected.get("published_at")
     next_record["effective_at"] = selected.get("effective_at")

@@ -31,6 +31,8 @@ def serialize_privacy_policy_record(
         notification_behavior=str(current.get("notification_behavior") or record.get("notification_behavior") or "silent"),
         published_at=as_utc(current.get("published_at")) if current.get("published_at") else updated_at,
         effective_at=as_utc(current.get("effective_at")) if current.get("effective_at") else updated_at,
+        pdf_url=str(current.get("pdf_url") or record.get("pdf_url") or ""),
+        pdf_filename=str(current.get("pdf_filename") or record.get("pdf_filename") or ""),
         versions=versions,
     )
 
@@ -61,6 +63,8 @@ def serialize_terms_condition_record(
         notification_behavior=str(current.get("notification_behavior") or record.get("notification_behavior") or "silent"),
         published_at=as_utc(current.get("published_at")) if current.get("published_at") else updated_at,
         effective_at=as_utc(current.get("effective_at")) if current.get("effective_at") else updated_at,
+        pdf_url=str(current.get("pdf_url") or record.get("pdf_url") or ""),
+        pdf_filename=str(current.get("pdf_filename") or record.get("pdf_filename") or ""),
         versions=versions,
     )
 
@@ -91,5 +95,7 @@ def serialize_about_us_record(
         notification_behavior=str(current.get("notification_behavior") or record.get("notification_behavior") or "silent"),
         published_at=as_utc(current.get("published_at")) if current.get("published_at") else updated_at,
         effective_at=as_utc(current.get("effective_at")) if current.get("effective_at") else updated_at,
+        pdf_url=str(current.get("pdf_url") or record.get("pdf_url") or ""),
+        pdf_filename=str(current.get("pdf_filename") or record.get("pdf_filename") or ""),
         versions=versions,
     )

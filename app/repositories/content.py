@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from ..database import app_content_collection
+from ..utils.html import sanitize_html_content
 
 
 APP_CONTENT_PROJECTION = {
@@ -14,6 +15,14 @@ APP_CONTENT_PROJECTION = {
     "versions": 1,
     "published_version_id": 1,
     "status": 1,
+    "filename": 1,
+    "version": 1,
+    "applies_to": 1,
+    "notification_behavior": 1,
+    "published_at": 1,
+    "effective_at": 1,
+    "pdf_url": 1,
+    "pdf_filename": 1,
 }
 
 ALLOWED_MARKETS = {"ALL", "EU", "DE", "GH", "IN"}
@@ -38,6 +47,8 @@ def _base_version_from_record(record: dict, *, now: datetime) -> dict:
         "title": str(record.get("title") or ""),
         "html_content": str(record.get("html_content") or ""),
         "filename": str(record.get("filename") or ""),
+        "pdf_url": str(record.get("pdf_url") or ""),
+        "pdf_filename": str(record.get("pdf_filename") or ""),
         "applies_to": _normalize_markets(record.get("applies_to") if isinstance(record.get("applies_to"), list) else ["ALL"]),
         "notification_behavior": str(record.get("notification_behavior") or "silent"),
         "status": str(record.get("status") or "Published"),
@@ -63,6 +74,8 @@ def ensure_content_versions(record: dict, *, default_title: str, default_html_co
     record["version"] = str(current.get("version") or record.get("version") or "v1")
     record["title"] = str(current.get("title") or record.get("title") or default_title)
     record["html_content"] = str(current.get("html_content") or record.get("html_content") or default_html_content)
+    record["pdf_url"] = str(current.get("pdf_url") or record.get("pdf_url") or "")
+    record["pdf_filename"] = str(current.get("pdf_filename") or record.get("pdf_filename") or "")
     record["updated_at"] = current.get("published_at") or record.get("updated_at") or now
     record["status"] = str(current.get("status") or record.get("status") or "Published")
     return record
@@ -89,6 +102,8 @@ async def ensure_content_record(
         "key": key,
         "title": default_title,
         "html_content": default_html_content,
+        "pdf_url": "",
+        "pdf_filename": "",
         "created_at": now,
         "updated_at": now,
         "status": "Published",
@@ -113,6 +128,8 @@ async def upsert_content_record(
     title: str,
     html_content: str,
     filename: str | None = None,
+    pdf_url: str | None = None,
+    pdf_filename: str | None = None,
     version: str | None = None,
     applies_to: list[str] | None = None,
     notification_behavior: str = "silent",
@@ -124,12 +141,15 @@ async def upsert_content_record(
 
     version_label = version.strip() if (version and str(version).strip()) else _version_label(len(versions) + 1)
 
+    sanitized_html = sanitize_html_content(html_content)
     version_item = {
         "id": uuid4().hex,
         "version": version_label,
         "title": title.strip(),
-        "html_content": html_content.strip(),
+        "html_content": sanitized_html,
         "filename": str(filename or "").strip(),
+        "pdf_url": str(pdf_url or "").strip(),
+        "pdf_filename": str(pdf_filename or "").strip(),
         "applies_to": _normalize_markets(applies_to),
         "notification_behavior": notification_behavior if notification_behavior in {"all", "eu", "silent"} else "silent",
         "status": "Published",
@@ -146,6 +166,8 @@ async def upsert_content_record(
                 "title": version_item["title"],
                 "html_content": version_item["html_content"],
                 "filename": version_item["filename"],
+                "pdf_url": version_item["pdf_url"],
+                "pdf_filename": version_item["pdf_filename"],
                 "version": version_item["version"],
                 "applies_to": version_item["applies_to"],
                 "notification_behavior": version_item["notification_behavior"],
@@ -161,5 +183,34 @@ async def upsert_content_record(
             },
         },
         upsert=True,
+    )
+    return await app_content_collection.find_one({"key": key}, projection=APP_CONTENT_PROJECTION)
+
+
+async def update_content_pdf_metadata(
+    *,
+    key: str,
+    pdf_url: str,
+    pdf_filename: str,
+) -> dict | None:
+    now = datetime.now(timezone.utc)
+    existing = await app_content_collection.find_one({"key": key}, projection=APP_CONTENT_PROJECTION) or {}
+    versions = [dict(item) for item in (existing.get("versions") or []) if isinstance(item, dict)]
+    published_id = str(existing.get("published_version_id") or "")
+    for item in versions:
+        if str(item.get("id") or "") == published_id:
+            item["pdf_url"] = str(pdf_url or "").strip()
+            item["pdf_filename"] = str(pdf_filename or "").strip()
+            break
+    await app_content_collection.update_one(
+        {"key": key},
+        {
+            "$set": {
+                "pdf_url": str(pdf_url or "").strip(),
+                "pdf_filename": str(pdf_filename or "").strip(),
+                "versions": versions,
+                "updated_at": now,
+            }
+        },
     )
     return await app_content_collection.find_one({"key": key}, projection=APP_CONTENT_PROJECTION)

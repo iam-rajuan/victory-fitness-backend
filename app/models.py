@@ -628,6 +628,8 @@ class PrivacyPolicyResponse(BaseModel):
     notification_behavior: str = "silent"
     published_at: datetime | None = None
     effective_at: datetime | None = None
+    pdf_url: str = ""
+    pdf_filename: str = ""
     versions: list[dict] = Field(default_factory=list)
 
 
@@ -639,6 +641,8 @@ class UpdatePrivacyPolicyRequest(BaseModel):
     applies_to: list[str] = Field(default_factory=lambda: ["ALL"])
     notification_behavior: str = Field(default="silent", pattern=r"^(all|eu|silent)$")
     effective_at: datetime | None = None
+    pdf_url: str | None = Field(default=None, max_length=1000)
+    pdf_filename: str | None = Field(default=None, max_length=255)
 
 
 class TermsConditionResponse(BaseModel):
@@ -655,6 +659,8 @@ class TermsConditionResponse(BaseModel):
     notification_behavior: str = "silent"
     published_at: datetime | None = None
     effective_at: datetime | None = None
+    pdf_url: str = ""
+    pdf_filename: str = ""
     versions: list[dict] = Field(default_factory=list)
 
 
@@ -666,6 +672,8 @@ class UpdateTermsConditionRequest(BaseModel):
     applies_to: list[str] = Field(default_factory=lambda: ["ALL"])
     notification_behavior: str = Field(default="silent", pattern=r"^(all|eu|silent)$")
     effective_at: datetime | None = None
+    pdf_url: str | None = Field(default=None, max_length=1000)
+    pdf_filename: str | None = Field(default=None, max_length=255)
 
 
 class AboutUsResponse(BaseModel):
@@ -682,6 +690,8 @@ class AboutUsResponse(BaseModel):
     notification_behavior: str = "silent"
     published_at: datetime | None = None
     effective_at: datetime | None = None
+    pdf_url: str = ""
+    pdf_filename: str = ""
     versions: list[dict] = Field(default_factory=list)
 
 
@@ -693,6 +703,19 @@ class UpdateAboutUsRequest(BaseModel):
     applies_to: list[str] = Field(default_factory=lambda: ["ALL"])
     notification_behavior: str = Field(default="silent", pattern=r"^(all|eu|silent)$")
     effective_at: datetime | None = None
+    pdf_url: str | None = Field(default=None, max_length=1000)
+    pdf_filename: str | None = Field(default=None, max_length=255)
+
+
+class LegalContentUploadRequest(BaseModel):
+    file_base64: str = Field(min_length=32, max_length=40000000)
+    mime_type: str = Field(max_length=120)
+    file_name: str | None = Field(default=None, max_length=255)
+
+
+class LegalContentUploadResponse(BaseModel):
+    url: str
+    filename: str = ""
 
 
 class OnboardingSlideResponse(BaseModel):
