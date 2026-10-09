@@ -2083,6 +2083,7 @@ class PhaseOneBetaUserItem(BaseModel):
     id: str
     fullName: str
     email: EmailStr
+    profileImage: str = ""
     country: str = ""
     countryCode: str | None = None
     plan: str = "GOLD"

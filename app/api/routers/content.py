@@ -389,7 +389,7 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
                     "_id": {"$in": [ObjectId(cid) for cid in connected_user_ids if ObjectId.is_valid(cid)]},
                     "share_activity_with_network": {"$ne": False},
                 },
-                projection={"_id": 1, "name": 1},
+                projection={"_id": 1, "name": 1, "profile_image": 1},
             ).to_list(length=len(connected_user_ids))
             allowed_by_id = {str(u["_id"]): u for u in allowed_users}
             if allowed_by_id:
@@ -419,6 +419,7 @@ async def get_network_activity(user: dict | None = Depends(_get_optional_auth_us
                             "action": f"completed {title}",
                             "time_ago": _time_ago_label(completed_at),
                             "avatar_color": _avatar_color_for_user(log_user_id),
+                            "profile_image": str(connected_user.get("profile_image") or ""),
                         }
                     )
         except Exception:

@@ -794,6 +794,7 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
                 id=user_id,
                 fullName=str(user.get("name") or "Unknown"),
                 email=str(user.get("email") or ""),
+                profileImage=str(user.get("profile_image") or ""),
                 country=country_label if country_label != "Unknown" else "",
                 countryCode=country_code,
                 plan=subscription["tier"],
