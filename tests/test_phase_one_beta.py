@@ -71,6 +71,7 @@ class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
             "email": "beta@example.com",
             "name": "Beta User",
             "phase_one_beta_requested_code": "BETA-001",
+            "onboarding_completed": True,
         }
         updated_user = {
             **user,
@@ -130,6 +131,7 @@ class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
         user = {
             "_id": "user-301",
             "phase_one_beta_requested_code": "BETA-001",
+            "onboarding_completed": True,
         }
         phase_one_beta_slots_collection = SimpleNamespace(
             find_one=AsyncMock(return_value=None),
@@ -151,6 +153,32 @@ class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
                 await backend_module._maybe_activate_phase_one_beta_subscription(user)
 
         self.assertIn("capacity", str(context.exception).lower())
+
+    async def test_pending_onboarding_does_not_start_beta_window(self) -> None:
+        user = {
+            "_id": "user-pending",
+            "phase_one_beta_requested_code": "BETA-001",
+            "onboarding_completed": False,
+        }
+        settings = SimpleNamespace(
+            phase_one_beta_enabled=True,
+            phase_one_beta_duration_days=21,
+            phase_one_beta_max_users=300,
+            phase_one_beta_access_codes=["BETA-001"],
+        )
+        phase_one_beta_slots_collection = SimpleNamespace(
+            find_one=AsyncMock(),
+            find_one_and_update=AsyncMock(),
+        )
+
+        with patch.object(backend_module, "settings", settings), patch.object(
+            backend_module, "phase_one_beta_slots_collection", phase_one_beta_slots_collection
+        ):
+            result = await backend_module._maybe_activate_phase_one_beta_subscription(user)
+
+        self.assertIs(result, user)
+        phase_one_beta_slots_collection.find_one.assert_not_awaited()
+        phase_one_beta_slots_collection.find_one_and_update.assert_not_awaited()
 
 
 class DependencyEntitlementTests(unittest.TestCase):

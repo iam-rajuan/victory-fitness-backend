@@ -407,8 +407,14 @@ async def update_me(
 
         update_doc["profile_image"] = payload.profileImage.strip()
 
+    completed_onboarding_now = (
+        payload.onboarding_completed is True
+        and not bool(user.get("onboarding_completed"))
+    )
     if payload.onboarding_completed is not None:
         update_doc["onboarding_completed"] = payload.onboarding_completed
+        if completed_onboarding_now:
+            update_doc["onboarding_completed_at"] = datetime.now(timezone.utc)
 
     if payload.share_activity_with_network is not None:
         update_doc["share_activity_with_network"] = bool(payload.share_activity_with_network)
@@ -426,6 +432,9 @@ async def update_me(
     if not updated_user:
 
         raise HTTPException(status_code=404, detail="User not found")
+
+    if completed_onboarding_now:
+        updated_user = await _maybe_activate_phase_one_beta_subscription(updated_user)
 
     await _sync_community_author_profile(updated_user)
 
@@ -516,9 +525,15 @@ async def update_me_onboarding(
     if payload.planPreview is not None:
         next_state["planPreview"] = payload.planPreview.model_dump()
 
+    completed_onboarding_now = (
+        payload.completed is True
+        and not bool(user.get("onboarding_completed"))
+    )
     if payload.completed is not None:
         update_doc["onboarding_completed"] = payload.completed
         next_state["completed"] = payload.completed
+        if completed_onboarding_now:
+            update_doc["onboarding_completed_at"] = datetime.now(timezone.utc)
 
     next_state["updatedAt"] = datetime.now(timezone.utc)
     update_doc["onboarding_state"] = {
@@ -543,6 +558,8 @@ async def update_me_onboarding(
     updated_user = await users_collection.find_one({"_id": user_id})
     if not updated_user:
         raise HTTPException(status_code=404, detail="User not found")
+    if completed_onboarding_now:
+        updated_user = await _maybe_activate_phase_one_beta_subscription(updated_user)
     return OnboardingStateResponse(**_serialize_onboarding_state(updated_user))
 
 @router.post("/me/profile-image", response_model=ProfileImageUploadResponse)

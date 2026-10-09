@@ -788,6 +788,8 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
         blocked_at = _as_utc_datetime(user.get("blocked_at"))
         is_deleted = bool(deleted_at or raw_status == "DELETED")
         is_blocked = bool(user.get("is_blocked") or raw_status in {"BLOCKED", "DELETED"} or is_deleted)
+        account_last_active_at = _as_utc_datetime(user.get("last_active_at") or user.get("last_login_at"))
+        display_last_active_at = accumulator.last_active_at or account_last_active_at
 
         users.append(
             PhaseOneBetaUserItem(
@@ -823,7 +825,7 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
                     communityPosts=accumulator.community_post_count,
                     communityComments=accumulator.community_comment_count,
                     communityReactions=accumulator.community_reaction_count,
-                    lastActiveAt=accumulator.last_active_at,
+                    lastActiveAt=display_last_active_at,
                     usedAiCoach=used_ai,
                     usedNutrition=used_nutrition,
                     usedWorkout=used_workout,

@@ -4656,6 +4656,8 @@ async def _maybe_activate_phase_one_beta_subscription(user: dict, *, requested_c
         return user
     if _is_phase_one_beta_user(user):
         return user
+    if not bool(user.get("onboarding_completed")):
+        return user
 
     candidate_code = requested_code if requested_code is not None else user.get("phase_one_beta_requested_code")
     if not _is_phase_one_beta_code_valid(candidate_code):
