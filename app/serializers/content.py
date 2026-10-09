@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from ..models import AboutUsResponse, PrivacyPolicyResponse, TermsConditionResponse
 from ..utils.datetime import as_utc
 from ..utils.html import html_to_plain_text
+from ..utils.storage_urls import canonicalize_s3_url, canonicalize_s3_urls_in_html
 
 
 def serialize_privacy_policy_record(
@@ -14,7 +15,7 @@ def serialize_privacy_policy_record(
     versions = [dict(item) for item in (record.get("versions") or []) if isinstance(item, dict)]
     published_id = str(record.get("published_version_id") or "")
     current = next((item for item in versions if str(item.get("id") or "") == published_id), None) or (versions[-1] if versions else {})
-    html_content = str(current.get("html_content") or record.get("html_content") or "")
+    html_content = canonicalize_s3_urls_in_html(current.get("html_content") or record.get("html_content") or "")
     plain_text = html_to_plain_text(html_content)
     updated_at = as_utc(current.get("published_at") or record.get("updated_at") or datetime.now(timezone.utc))
     return PrivacyPolicyResponse(
@@ -31,7 +32,7 @@ def serialize_privacy_policy_record(
         notification_behavior=str(current.get("notification_behavior") or record.get("notification_behavior") or "silent"),
         published_at=as_utc(current.get("published_at")) if current.get("published_at") else updated_at,
         effective_at=as_utc(current.get("effective_at")) if current.get("effective_at") else updated_at,
-        pdf_url=str(current.get("pdf_url") or record.get("pdf_url") or ""),
+        pdf_url=canonicalize_s3_url(current.get("pdf_url") or record.get("pdf_url") or ""),
         pdf_filename=str(current.get("pdf_filename") or record.get("pdf_filename") or ""),
         versions=versions,
     )
@@ -46,7 +47,7 @@ def serialize_terms_condition_record(
     versions = [dict(item) for item in (record.get("versions") or []) if isinstance(item, dict)]
     published_id = str(record.get("published_version_id") or "")
     current = next((item for item in versions if str(item.get("id") or "") == published_id), None) or (versions[-1] if versions else {})
-    html_content = str(current.get("html_content") or record.get("html_content") or "")
+    html_content = canonicalize_s3_urls_in_html(current.get("html_content") or record.get("html_content") or "")
     plain_text = html_to_plain_text(html_content)
     updated_at = as_utc(current.get("published_at") or record.get("updated_at") or datetime.now(timezone.utc))
     return TermsConditionResponse(
@@ -63,7 +64,7 @@ def serialize_terms_condition_record(
         notification_behavior=str(current.get("notification_behavior") or record.get("notification_behavior") or "silent"),
         published_at=as_utc(current.get("published_at")) if current.get("published_at") else updated_at,
         effective_at=as_utc(current.get("effective_at")) if current.get("effective_at") else updated_at,
-        pdf_url=str(current.get("pdf_url") or record.get("pdf_url") or ""),
+        pdf_url=canonicalize_s3_url(current.get("pdf_url") or record.get("pdf_url") or ""),
         pdf_filename=str(current.get("pdf_filename") or record.get("pdf_filename") or ""),
         versions=versions,
     )
@@ -78,7 +79,7 @@ def serialize_about_us_record(
     versions = [dict(item) for item in (record.get("versions") or []) if isinstance(item, dict)]
     published_id = str(record.get("published_version_id") or "")
     current = next((item for item in versions if str(item.get("id") or "") == published_id), None) or (versions[-1] if versions else {})
-    html_content = str(current.get("html_content") or record.get("html_content") or "")
+    html_content = canonicalize_s3_urls_in_html(current.get("html_content") or record.get("html_content") or "")
     plain_text = html_to_plain_text(html_content)
     updated_at = as_utc(current.get("published_at") or record.get("updated_at") or datetime.now(timezone.utc))
     return AboutUsResponse(
@@ -95,7 +96,7 @@ def serialize_about_us_record(
         notification_behavior=str(current.get("notification_behavior") or record.get("notification_behavior") or "silent"),
         published_at=as_utc(current.get("published_at")) if current.get("published_at") else updated_at,
         effective_at=as_utc(current.get("effective_at")) if current.get("effective_at") else updated_at,
-        pdf_url=str(current.get("pdf_url") or record.get("pdf_url") or ""),
+        pdf_url=canonicalize_s3_url(current.get("pdf_url") or record.get("pdf_url") or ""),
         pdf_filename=str(current.get("pdf_filename") or record.get("pdf_filename") or ""),
         versions=versions,
     )

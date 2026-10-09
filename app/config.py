@@ -158,6 +158,7 @@ class Settings:
         self.aws_access_key_id = _get_secret("AWS_ACCESS_KEY_ID")
         self.aws_secret_access_key = _get_secret("AWS_SECRET_ACCESS_KEY")
         self.aws_s3_bucket = _get_str("AWS_S3_BUCKET")
+        self.aws_s3_region = _get_str("AWS_S3_REGION", _get_str("AWS_S3_BUCKET_REGION", self.aws_region))
         self.aws_s3_prefix = _get_str("AWS_S3_PREFIX", "coach-archives").strip("/")
 
         self.admin_seed_enabled = _get_bool("ADMIN_SEED_ENABLED", True)

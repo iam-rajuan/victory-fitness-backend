@@ -82,6 +82,7 @@ from ..challenge_plan_ai import ChallengePlanGenerationInput, generate_challenge
 from ..coach_victor import generate_coach_victor_reply
 
 from ..config import settings
+from ..utils.storage_urls import build_s3_file_url, canonicalize_s3_url, get_s3_bucket_region
 
 from ..database import DatabaseNotConfiguredError, close_database_connection, ensure_indexes, users_collection
 
@@ -5767,7 +5768,7 @@ def _store_media_bytes_to_storage(
 
         "s3",
 
-        region_name=settings.aws_region,
+        region_name=get_s3_bucket_region() or settings.aws_region,
 
         aws_access_key_id=settings.aws_access_key_id,
 
@@ -5809,7 +5810,7 @@ def _store_media_bytes_to_storage(
 
         return _store_binary_locally(folder_name, user_id, payload, extension, file_name)
 
-    return f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
+    return build_s3_file_url(object_key)
 
 def _upload_binary_to_s3(
 
@@ -6158,15 +6159,15 @@ def _create_presigned_media_upload(
 
     object_key, _ = _build_storage_object_key(folder_name, user_id, extension, file_name)
 
-    file_url = f"https://{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{object_key}"
+    file_url = build_s3_file_url(object_key)
 
     client = boto3.client(
 
         "s3",
 
-        region_name=settings.aws_region,
+        region_name=get_s3_bucket_region() or settings.aws_region,
 
-        endpoint_url=f"https://s3.{settings.aws_region}.amazonaws.com",
+        endpoint_url=f"https://s3.{get_s3_bucket_region() or settings.aws_region}.amazonaws.com",
 
         aws_access_key_id=settings.aws_access_key_id,
 
@@ -6270,9 +6271,15 @@ def _delete_image_from_s3(image_url: str | None) -> None:
 
     parsed = urlparse(normalized_url)
 
-    expected_host = f"{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com".lower().strip()
+    expected_host = urlparse(build_s3_file_url("")).netloc.lower().strip()
 
-    if parsed.scheme not in {"http", "https"} or parsed.netloc.lower().strip() != expected_host:
+    if parsed.scheme not in {"http", "https"} or not expected_host:
+
+        return
+
+    canonical_parsed = urlparse(canonicalize_s3_url(normalized_url))
+
+    if canonical_parsed.netloc.lower().strip() != expected_host:
 
         return
 
@@ -6296,7 +6303,7 @@ def _delete_image_from_s3(image_url: str | None) -> None:
 
         "s3",
 
-        region_name=settings.aws_region,
+        region_name=get_s3_bucket_region() or settings.aws_region,
 
         aws_access_key_id=settings.aws_access_key_id,
 
@@ -6422,9 +6429,9 @@ def _is_owned_media_url(video_url: str) -> bool:
 
     host = parsed.netloc.lower().strip()
 
-    expected_host = f"{settings.aws_s3_bucket}.s3.{settings.aws_region}.amazonaws.com".lower().strip()
+    expected_host = urlparse(build_s3_file_url("")).netloc.lower().strip()
 
-    return bool(expected_host and host == expected_host)
+    return bool(expected_host and urlparse(canonicalize_s3_url(normalized_url)).netloc.lower().strip() == expected_host)
 
 def _looks_like_remote_media_url(video_url: str) -> bool:
 
