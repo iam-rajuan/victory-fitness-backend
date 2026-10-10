@@ -229,11 +229,15 @@ async def _collapse_health_snapshot_collection(collection, *, preserve_existing:
             snapshot["provider"] = merged_records[0].get("provider") or ""
             snapshot["metric_type"] = merged_records[0].get("metric_type") or ""
             snapshot["source_device"] = merged_records[0].get("source_device") or ""
-        if existing and existing.get("_id") is not None:
-            snapshot["_id"] = existing.get("_id")
-
-        await collection.delete_many({"user_id": user_id})
-        await collection.insert_one(snapshot)
+        # Each Uvicorn worker runs startup. Replacing the retained document by
+        # its existing id is atomic, while delete-then-insert with that id can
+        # race and fail with a duplicate-key error.
+        existing_id = existing.get("_id") if existing else None
+        if existing_id is not None:
+            await collection.delete_many({"user_id": user_id, "_id": {"$ne": existing_id}})
+            await collection.replace_one({"_id": existing_id}, snapshot, upsert=True)
+        else:
+            await collection.insert_one(snapshot)
         processed += 1
 
     return processed
