@@ -694,7 +694,7 @@ async def build_phase_one_beta_analytics(limit: int = 300) -> PhaseOneBetaSummar
                 ending_soon_users += 1
         else:
             expired += 1
-        if subscription["tier"] == "GOLD":
+        if subscription["tier"] == "GOLD_BETA":
             gold += 1
 
         used_ai = accumulator.ai_used()

@@ -31,18 +31,18 @@ class PhaseOneBetaEntitlementTests(unittest.TestCase):
             "trial_tier_granted": "gold",
             "trial_start_at": now - timedelta(days=1),
             "trial_end_at": now + timedelta(days=20),
-            "subscription_tier": "GOLD",
+            "subscription_tier": "GOLD_BETA",
             "subscription_purchase_source": "beta_trial",
             "subscription_access": ["home", "workout"],
         }
 
         summary = backend_module._build_subscription_summary(user)
 
-        self.assertEqual(summary["tier"], "GOLD")
+        self.assertEqual(summary["tier"], "GOLD_BETA")
         self.assertEqual(summary["status"], "ACTIVE")
         self.assertFalse(summary["is_purchased"])
-        self.assertIn("mealPlan", summary["access"])
-        self.assertTrue(backend_module._user_has_subscription_access(user, "mealPlan"))
+        self.assertEqual(summary["access"], ["home", "workout"])
+        self.assertFalse(backend_module._user_has_subscription_access(user, "mealPlan"))
 
     def test_expired_beta_user_loses_gold_access(self) -> None:
         now = _utc_now()
@@ -99,12 +99,14 @@ class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
             backend_module, "phase_one_beta_slots_collection", phase_one_beta_slots_collection
         ), patch.object(
             backend_module, "settings", settings
+        ), patch.object(
+            backend_module, "_get_dashboard_subscription_plan_items", AsyncMock(return_value=[])
         ):
             result = await backend_module._maybe_activate_phase_one_beta_subscription(user)
 
         self.assertEqual(result["subscription_purchase_source"], "beta_trial")
         update_doc = users_collection.update_one.await_args.args[1]["$set"]
-        self.assertEqual(update_doc["subscription_tier"], "GOLD")
+        self.assertEqual(update_doc["subscription_tier"], "GOLD_BETA")
         self.assertEqual(update_doc["subscription_price_amount"], 0)
         self.assertFalse(update_doc["subscription_is_purchased"])
         self.assertEqual(update_doc["subscription"]["currency"], "EUR")
@@ -477,7 +479,7 @@ class PhaseOneBetaAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
                 "trial_tier_granted": "gold",
                 "trial_start_at": now - timedelta(days=8),
                 "trial_end_at": now + timedelta(days=13),
-                "subscription_tier": "GOLD",
+                "subscription_tier": "GOLD_BETA",
                 "subscription_status": "ACTIVE",
                 "subscription_purchase_source": "beta_trial",
                 "subscription_price_amount": 0,
@@ -492,7 +494,7 @@ class PhaseOneBetaAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
                 "trial_tier_granted": "gold",
                 "trial_start_at": now - timedelta(days=25),
                 "trial_end_at": now - timedelta(days=1),
-                "subscription_tier": "GOLD",
+                "subscription_tier": "GOLD_BETA",
                 "subscription_status": "ACTIVE",
                 "subscription_purchase_source": "beta_trial",
                 "subscription_price_amount": 0,
@@ -507,7 +509,7 @@ class PhaseOneBetaAdminSummaryTests(unittest.IsolatedAsyncioTestCase):
                 "trial_tier_granted": "gold",
                 "trial_start_at": now - timedelta(days=2),
                 "trial_end_at": now + timedelta(days=19),
-                "subscription_tier": "GOLD",
+                "subscription_tier": "GOLD_BETA",
                 "subscription_status": "ACTIVE",
                 "subscription_purchase_source": "beta_trial",
                 "subscription_price_amount": 0,

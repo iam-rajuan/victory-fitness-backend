@@ -10,7 +10,7 @@ legacy_module = importlib.import_module("app.core.legacy")
 
 class PhaseOneBetaEntitlementTests(unittest.TestCase):
     def test_beta_users_honor_configured_subscription_access(self) -> None:
-        now = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         user = {
             "subscription_purchase_source": "beta_trial",
             "trial_start_at": now - timedelta(days=2),
@@ -39,7 +39,7 @@ class PhaseOneBetaEntitlementTests(unittest.TestCase):
         self.assertFalse(legacy_module._user_has_subscription_access(expired_user, "coach_victor"))
 
     def test_beta_subscription_summary_preserves_configured_access_and_beta_tier(self) -> None:
-        now = datetime(2026, 8, 26, 12, 0, tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
         summary = legacy_module._build_subscription_summary(
             {
                 "subscription_tier": "GOLD_BETA",
