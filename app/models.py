@@ -1716,6 +1716,49 @@ class AdminSubscriptionPlanListResponse(BaseModel):
     items: list[AdminSubscriptionPlanItem] = Field(default_factory=list)
 
 
+class AdminSubscriptionOverviewStat(BaseModel):
+    key: str
+    value: str
+    note: str = ""
+
+
+class AdminSubscriptionOverviewRow(BaseModel):
+    id: str
+    planId: str | None = None
+    tier: str = ""
+    label: str
+    priceYearly: str
+    priceMonthly: str
+    subscribers: int = 0
+    subscriberLabel: str = "0"
+    activeSubscribers: int = 0
+    payingSubscribers: int = 0
+    shareOfMrr: float = 0
+    shareOfMrrLabel: str = "0%"
+    mrr: float = 0
+    tone: str = "warn"
+    isTrial: bool = False
+    rawPlan: AdminSubscriptionPlanItem | None = None
+
+
+class AdminSubscriptionMarketWarning(BaseModel):
+    message: str = ""
+    actionLabel: str = "Review payments"
+    market: str = ""
+    registeredUsers: int = 0
+    completedPayments: int = 0
+
+
+class AdminSubscriptionOverviewResponse(BaseModel):
+    plans: list[AdminSubscriptionPlanItem] = Field(default_factory=list)
+    rows: list[AdminSubscriptionOverviewRow] = Field(default_factory=list)
+    stats: list[AdminSubscriptionOverviewStat] = Field(default_factory=list)
+    warning: AdminSubscriptionMarketWarning | None = None
+    summary: str = ""
+    totalMrr: float = 0
+    payingSubscribers: int = 0
+
+
 class AdminSubscriptionFeatureItem(BaseModel):
     key: str
     label: str
