@@ -89,8 +89,8 @@ def _validate_minimum_supported_age(age_value: str | None) -> None:
         age = int(float(normalized))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Age must be a valid number") from exc
-    if age < 16:
-        raise HTTPException(status_code=400, detail="You must be at least 16 years old to use Victory Fitness")
+    if age < 14:
+        raise HTTPException(status_code=400, detail="You must be at least 14 years old to use Victory Fitness")
 
 
 def _login_streak_today_key(user: dict, now: datetime | None = None) -> str:
