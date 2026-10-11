@@ -7227,6 +7227,10 @@ def _get_subscription_feature_catalog() -> list[dict[str, object]]:
 def _serialize_admin_subscription_plan_item(item: dict) -> dict:
 
     discount_percentage, discount_start_date, discount_end_date = _normalize_subscription_discount_fields(item)
+    is_coming_soon = bool(item.get("isComingSoon") or item.get("is_coming_soon"))
+    is_application_only = bool(item.get("isApplicationOnly", False))
+    price_monthly = None if is_application_only or is_coming_soon else item.get("priceMonthly")
+    price_yearly = None if is_application_only or is_coming_soon else item.get("priceYearly")
 
     return {
 
@@ -7236,9 +7240,9 @@ def _serialize_admin_subscription_plan_item(item: dict) -> dict:
 
         "description": str(item.get("description") or "").strip(),
 
-        "priceMonthly": item.get("priceMonthly"),
+        "priceMonthly": price_monthly,
 
-        "priceYearly": item.get("priceYearly"),
+        "priceYearly": price_yearly,
 
         "discountPercentage": discount_percentage,
 
@@ -7246,7 +7250,9 @@ def _serialize_admin_subscription_plan_item(item: dict) -> dict:
 
         "discountEndDate": discount_end_date,
 
-        "isApplicationOnly": bool(item.get("isApplicationOnly", False)),
+        "isApplicationOnly": is_application_only,
+
+        "isComingSoon": is_coming_soon,
 
         "isMostPopular": bool(item.get("isMostPopular", False)),
 
@@ -7315,6 +7321,8 @@ def _serialize_app_subscription_plan_item(item: dict, now: datetime | None = Non
         "isDiscountActive": discount_active,
 
         "isApplicationOnly": normalized["isApplicationOnly"],
+
+        "isComingSoon": normalized["isComingSoon"],
 
         "isMostPopular": normalized["isMostPopular"],
 
@@ -9928,6 +9936,10 @@ async def _resolve_subscription_checkout_plan(
         raise HTTPException(status_code=400, detail="Selected plan does not match the requested subscription tier")
 
     plan = _serialize_app_subscription_plan_item(matched)
+
+    if plan["isComingSoon"]:
+
+        raise HTTPException(status_code=409, detail="This subscription plan is coming soon")
 
     if plan["isApplicationOnly"]:
 

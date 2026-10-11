@@ -1706,6 +1706,7 @@ class AdminSubscriptionPlanItem(BaseModel):
     discountStartDate: datetime | None = None
     discountEndDate: datetime | None = None
     isApplicationOnly: bool = False
+    isComingSoon: bool = False
     isMostPopular: bool = False
     iconType: str = ""
     features: list[str] = Field(default_factory=list)
@@ -1781,6 +1782,7 @@ class AdminSubscriptionPlanRequest(BaseModel):
     discountStartDate: datetime | None = None
     discountEndDate: datetime | None = None
     isApplicationOnly: bool = False
+    isComingSoon: bool = False
     isMostPopular: bool = False
     iconType: str = Field(default="", max_length=80)
     features: list[str] = Field(default_factory=list)
@@ -1790,7 +1792,7 @@ class AdminSubscriptionPlanRequest(BaseModel):
     def validate_discount_window(self):
         if self.discountStartDate and self.discountEndDate and self.discountEndDate < self.discountStartDate:
             raise ValueError("discountEndDate must be after discountStartDate")
-        if self.isApplicationOnly:
+        if self.isApplicationOnly or self.isComingSoon:
             self.priceMonthly = None
             self.priceYearly = None
         return self
@@ -1810,6 +1812,7 @@ class AppSubscriptionPlanItem(BaseModel):
     discountEndDate: datetime | None = None
     isDiscountActive: bool = False
     isApplicationOnly: bool = False
+    isComingSoon: bool = False
     isMostPopular: bool = False
     iconType: str = ""
     features: list[str] = Field(default_factory=list)

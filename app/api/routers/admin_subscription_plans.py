@@ -178,8 +178,13 @@ async def _build_subscription_plan_overview() -> AdminSubscriptionOverviewRespon
         mrr = round(mrr_by_tier.get(tier_key, 0.0), 2)
         share = round((mrr / total_mrr) * 100, 1) if total_mrr > 0 else 0.0
         is_free_plan = (plan.get("priceYearly") == 0) and (plan.get("priceMonthly") == 0)
-        price_yearly = "Application" if plan.get("isApplicationOnly") else _subscription_overview_price_label(plan.get("priceYearly"))
-        price_monthly = "—" if plan.get("isApplicationOnly") or is_free_plan else _subscription_overview_price_label(plan.get("priceMonthly"), empty_label="—")
+        is_coming_soon = bool(plan.get("isComingSoon"))
+        if is_coming_soon:
+            price_yearly = "Coming soon"
+            price_monthly = "Coming soon"
+        else:
+            price_yearly = "Application" if plan.get("isApplicationOnly") else _subscription_overview_price_label(plan.get("priceYearly"))
+            price_monthly = "—" if plan.get("isApplicationOnly") or is_free_plan else _subscription_overview_price_label(plan.get("priceMonthly"), empty_label="—")
         rows.append(
             AdminSubscriptionOverviewRow(
                 id=plan_id,
@@ -248,7 +253,13 @@ async def _build_subscription_plan_overview() -> AdminSubscriptionOverviewRespon
     if top_tier[0] and total_mrr > 0:
         stats[1].note = f"{_subscription_overview_tier_label(top_tier[0])} is {round((top_tier[1] / total_mrr) * 100):g}% of MRR"
 
-    paid_plans = [plan for plan in plans if not plan.get("isApplicationOnly") and (plan.get("priceYearly") or plan.get("priceMonthly"))]
+    paid_plans = [
+        plan
+        for plan in plans
+        if not plan.get("isApplicationOnly")
+        and not plan.get("isComingSoon")
+        and (plan.get("priceYearly") or plan.get("priceMonthly"))
+    ]
     plan_count = len(plans)
     market_count = len(
         {
