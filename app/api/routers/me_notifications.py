@@ -121,6 +121,13 @@ async def update_notification_preferences(
     user: dict = Depends(_require_access_user),
 ) -> dict:
     update_doc: dict[str, object] = {}
+    next_push_enabled = bool(user.get("notification_push_enabled", True)) if payload.pushEnabled is None else bool(payload.pushEnabled)
+    next_whatsapp_enabled = bool(user.get("notification_whatsapp_enabled", False)) if payload.whatsappEnabled is None else bool(payload.whatsappEnabled)
+    next_email_enabled = bool(user.get("notification_email_enabled", False)) if payload.emailEnabled is None else bool(payload.emailEnabled)
+    if not any([next_push_enabled, next_whatsapp_enabled, next_email_enabled]):
+        raise HTTPException(status_code=400, detail="Keep at least one reminder channel enabled")
+    if next_whatsapp_enabled and not str(user.get("contact_number") or "").strip():
+        raise HTTPException(status_code=400, detail="Add a phone number before enabling WhatsApp reminders")
     if payload.pushEnabled is not None:
         update_doc["notification_push_enabled"] = bool(payload.pushEnabled)
     if payload.whatsappEnabled is not None:

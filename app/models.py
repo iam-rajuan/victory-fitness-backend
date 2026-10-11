@@ -286,10 +286,12 @@ class OnboardingPreferencesResponse(BaseModel):
     paymentMethodIndex: int = 0
     paymentMethodName: str = ""
     nudgeChannels: list[str] = Field(default_factory=list)
+    nudgeTime: str = Field(default="20:30", pattern=r"^\d{2}:\d{2}$")
     dialCode: str = ""
     dialNumber: str = ""
     contactNumber: str = ""
     selectedKit: list[str] = Field(default_factory=list)
+    numbersConfirmed: bool = False
 
 
 class OnboardingCalculationsResponse(BaseModel):

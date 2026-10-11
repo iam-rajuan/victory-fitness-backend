@@ -3566,6 +3566,11 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
                 for item in preferences.get("nudgeChannels", [])
                 if str(item).strip()
             ],
+            "nudgeTime": (
+                str(preferences.get("nudgeTime") or record.get("notification_nudge_time") or "20:30").strip()
+                if re.fullmatch(r"\d{2}:\d{2}", str(preferences.get("nudgeTime") or record.get("notification_nudge_time") or "").strip())
+                else "20:30"
+            ),
             "dialCode": str(preferences.get("dialCode") or "").strip(),
             "dialNumber": str(preferences.get("dialNumber") or "").strip(),
             "contactNumber": str(preferences.get("contactNumber") or record.get("contact_number") or "").strip(),
@@ -3574,6 +3579,7 @@ def _serialize_onboarding_state(record: dict) -> dict[str, Any]:
                 for item in preferences.get("selectedKit", [])
                 if str(item).strip()
             ],
+            "numbersConfirmed": bool(preferences.get("numbersConfirmed", False)),
         },
         "calculations": {
             "proteinGrams": int(calculations.get("proteinGrams") or 0),

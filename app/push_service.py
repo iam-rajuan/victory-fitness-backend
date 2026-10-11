@@ -143,19 +143,8 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
     await users_collection.update_one({"_id": user["_id"]}, {"$push": {"app_notifications": {"$each": [notification], "$slice": -50}}})
     await _emit_notification_event(str(user["_id"]), notification)
     await log_notification_event(str(user["_id"]), notification_id, notification_type, copy_variant, "queued")
-    push_enabled = bool(user.get("notification_push_enabled", True))
-    expo_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if push_enabled and isinstance(item, dict) and str(item.get("platform") or "").lower() != "web" and str(item.get("token") or "").startswith("ExponentPushToken[")]
-    web_tokens = [str(item.get("token")) for item in (user.get("push_tokens") or []) if push_enabled and isinstance(item, dict) and str(item.get("platform") or "").lower() == "web" and str(item.get("token") or "").strip()]
     tasks = []
     providers = []
-    if "push" in template_channels and expo_tokens:
-        providers.append("expo")
-        tasks.append(asyncio.to_thread(_send_expo_push, list(dict.fromkeys(expo_tokens)), resolved_title, resolved_message, notification_data))
-    if "push" in template_channels and web_tokens and _has_firebase_web_push_credentials():
-        providers.append("firebase")
-        tasks.append(asyncio.to_thread(_send_firebase_web_push, list(dict.fromkeys(web_tokens)), resolved_title, resolved_message, notification_data))
-    elif "push" in template_channels and web_tokens:
-        logger.info("Skipping Firebase web push delivery because service-account credentials are not configured")
     email = str(user.get("email") or "").strip()
     if "email" in template_channels and user.get("notification_email_enabled") and email:
         providers.append("email")
@@ -167,6 +156,10 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
             body=resolved_message,
             flow=f"notification_{notification_type}",
         ))
+    contact_number = _normalize_whatsapp_number(user.get("contact_number"))
+    if "whatsapp" in template_channels and user.get("notification_whatsapp_enabled") and contact_number and _has_whatsapp_credentials():
+        providers.append("whatsapp")
+        tasks.append(asyncio.to_thread(_send_whatsapp_notification, contact_number, resolved_title, resolved_message))
     delivery_status = "inbox_only" if not tasks else "sent"
     failed_providers = []
     if tasks:
@@ -188,6 +181,58 @@ async def notify_user(users_collection, user: dict, title: str, message: str, no
     )
     await log_notification_event(str(user["_id"]), notification_id, notification_type, copy_variant, delivery_status)
     return delivery
+
+
+def _has_whatsapp_credentials() -> bool:
+    return bool(settings.whatsapp_cloud_access_token and settings.whatsapp_phone_number_id)
+
+
+def _normalize_whatsapp_number(value: object) -> str:
+    normalized = "".join(ch for ch in str(value or "") if ch.isdigit() or ch == "+")
+    if normalized.startswith("+"):
+        normalized = normalized[1:]
+    return normalized if normalized.isdigit() and 8 <= len(normalized) <= 15 else ""
+
+
+def _send_whatsapp_notification(to_number: str, title: str, body: str) -> None:
+    if not _has_whatsapp_credentials() or not to_number:
+        return
+    api_version = str(settings.whatsapp_graph_api_version or "v20.0").strip().lstrip("/") or "v20.0"
+    url = f"https://graph.facebook.com/{api_version}/{settings.whatsapp_phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {settings.whatsapp_cloud_access_token}",
+        "Content-Type": "application/json",
+    }
+    template_name = str(settings.whatsapp_template_name or "").strip()
+    if template_name:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "template",
+            "template": {
+                "name": template_name,
+                "language": {"code": str(settings.whatsapp_template_language or "en_US").strip() or "en_US"},
+                "components": [
+                    {
+                        "type": "body",
+                        "parameters": [
+                            {"type": "text", "text": str(title or "Victory Fitness")},
+                            {"type": "text", "text": str(body or "")[:900]},
+                        ],
+                    }
+                ],
+            },
+        }
+    else:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "text",
+            "text": {"preview_url": False, "body": f"{title}\n\n{body}".strip()[:4000]},
+        }
+    request = Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
+    with urlopen(request, timeout=15) as response:
+        response.read()
 
 
 def _send_expo_push(tokens: list[str], title: str, body: str, data: dict) -> None:

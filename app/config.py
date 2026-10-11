@@ -128,6 +128,11 @@ class Settings:
 
         self.resend_api_key = _get_secret("RESEND_API_KEY")
         self.resend_from_email = _get_str("RESEND_FROM_EMAIL", "Victory Fitness <noreply@victoryfitness.de>")
+        self.whatsapp_cloud_access_token = _get_secret("WHATSAPP_CLOUD_ACCESS_TOKEN")
+        self.whatsapp_phone_number_id = _get_secret("WHATSAPP_PHONE_NUMBER_ID")
+        self.whatsapp_graph_api_version = _get_str("WHATSAPP_GRAPH_API_VERSION", "v20.0")
+        self.whatsapp_template_name = _get_str("WHATSAPP_TEMPLATE_NAME")
+        self.whatsapp_template_language = _get_str("WHATSAPP_TEMPLATE_LANGUAGE", "en_US")
 
         self.openai_api_key = _get_secret("OPENAI_API_KEY")
         self.openai_model = _get_str("OPENAI_MODEL", "gpt-5.5")
