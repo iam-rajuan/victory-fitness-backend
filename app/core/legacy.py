@@ -8921,6 +8921,8 @@ def _standard_nutrition_filter(user_id: str, profile_hash: str | None = None) ->
     filter_doc: dict = {
 
         "user_id": user_id,
+        "cleared": {"$ne": True},
+        "profile_hash": {"$ne": "starter_baseline"},
 
         "$or": [
 
