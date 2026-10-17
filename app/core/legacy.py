@@ -3451,7 +3451,13 @@ def _build_strength_workout_completion_png(
     row_y = 680
     for entry in entries or ["Keep building your strength."]:
         draw.ellipse((154, row_y + 5, 168, row_y + 19), fill=cyan)
-        draw.text((190, row_y), entry, font=body_font, fill=white if entries else muted)
+        display_entry = str(entry).strip()
+        max_entry_w = width - 240
+        if draw.textbbox((0, 0), display_entry, font=body_font)[2] > max_entry_w:
+            while len(display_entry) > 1 and draw.textbbox((0, 0), display_entry + "…", font=body_font)[2] > max_entry_w:
+                display_entry = display_entry[:-1]
+            display_entry = display_entry.strip() + "…"
+        draw.text((190, row_y), display_entry, font=body_font, fill=white if entries else muted)
         row_y += 34
     stat_items = [
         ("PLAN DAYS", f"{completed_days}/{total_days}", cyan),
