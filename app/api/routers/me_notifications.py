@@ -149,6 +149,53 @@ async def update_notification_preferences(
     updated_user = await users_collection.find_one({"_id": user["_id"]}) or {**user, **update_doc}
     return await get_notification_preferences(updated_user)
 
+class NotificationBatchDeleteRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+    clear_all: bool = False
+
+
+class NotificationBatchDeleteResponse(BaseModel):
+    deleted: bool
+    count: int = 0
+
+
+@router.post("/me/notifications/delete-batch", response_model=NotificationBatchDeleteResponse)
+@router.delete("/me/notifications/batch", response_model=NotificationBatchDeleteResponse)
+async def delete_app_notifications_batch(
+    payload: NotificationBatchDeleteRequest,
+    user: dict = Depends(_require_access_user),
+) -> NotificationBatchDeleteResponse:
+    if payload.clear_all:
+        existing = user.get("app_notifications") or []
+        await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"app_notifications": []}},
+        )
+        return NotificationBatchDeleteResponse(deleted=True, count=len(existing))
+
+    cleaned_ids = [str(item).strip() for item in payload.ids if str(item).strip()]
+    if not cleaned_ids:
+        return NotificationBatchDeleteResponse(deleted=False, count=0)
+
+    result = await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$pull": {"app_notifications": {"id": {"$in": cleaned_ids}}}},
+    )
+    return NotificationBatchDeleteResponse(deleted=bool(result.modified_count), count=len(cleaned_ids))
+
+
+@router.delete("/me/notifications/all", response_model=NotificationBatchDeleteResponse)
+async def clear_all_app_notifications(
+    user: dict = Depends(_require_access_user),
+) -> NotificationBatchDeleteResponse:
+    existing = user.get("app_notifications") or []
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"app_notifications": []}},
+    )
+    return NotificationBatchDeleteResponse(deleted=True, count=len(existing))
+
+
 @router.delete("/me/notifications/{notification_id}")
 async def delete_app_notification(
     notification_id: str,
@@ -206,6 +253,22 @@ async def list_dismissed_activity_notifications(
             if str(item).strip()
         ]
     }
+
+@router.post("/me/activity-notifications/delete-batch", response_model=NotificationBatchDeleteResponse)
+@router.delete("/me/activity-notifications/batch", response_model=NotificationBatchDeleteResponse)
+async def delete_activity_notifications_batch(
+    payload: NotificationBatchDeleteRequest,
+    user: dict = Depends(_require_access_user),
+) -> NotificationBatchDeleteResponse:
+    cleaned_ids = [str(item).strip() for item in payload.ids if str(item).strip()]
+    if not cleaned_ids:
+        return NotificationBatchDeleteResponse(deleted=False, count=0)
+    await users_collection.update_one(
+        {"_id": user["_id"]},
+        {"$addToSet": {"dismissed_activity_notification_ids": {"$each": cleaned_ids}}},
+    )
+    return NotificationBatchDeleteResponse(deleted=True, count=len(cleaned_ids))
+
 
 @router.delete("/me/activity-notifications/{notification_id}")
 async def delete_activity_notification(
