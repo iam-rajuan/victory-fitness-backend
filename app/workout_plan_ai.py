@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from urllib import error, request
 
 from .config import settings
+from .workout_terminology import canonicalize_strength_plan_dict
 
 
 DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -192,9 +193,10 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
     ai_plan = _generate_strength_workout_plan_with_ai(input_data)
     if _looks_like_strength_plan(ai_plan):
         sanitized = _sanitize_plan_injuries(ai_plan, getattr(input_data, "injury_flags", []))
-        return _validate_and_correct_strength_plan(sanitized, input_data)
+        corrected = _validate_and_correct_strength_plan(sanitized, input_data)
+        return canonicalize_strength_plan_dict(corrected)
 
-    return _build_strength_workout_plan(input_data)
+    return canonicalize_strength_plan_dict(_build_strength_workout_plan(input_data))
 
 
 def _build_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
@@ -364,7 +366,16 @@ def _looks_like_strength_plan(plan: dict | None) -> bool:
 
 def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
     lang = getattr(input_data, "language", "en") or "en"
-    lang_line = f"- Language: Write the summary, day titles, and exercise notes in {lang}. Keep day keys as Mon, Tue, etc.\n" if lang not in ("en", "en-gh") else ""
+    lang_line = (
+        f"- Language: Write the plan summary in {lang}. Keep day keys as Mon, Tue, etc.\n"
+        if lang not in ("en", "en-gh")
+        else ""
+    )
+    canonical_rule = (
+        "- CRITICAL CLIENT REQUIREMENT: All workout titles (e.g. 'Upper Body Strength', 'Lower Body Power', 'Full Body Hypertrophy', 'Push Strength', 'Pull Strength'), "
+        "day session titles, and exercise names (e.g. 'Bench Press', 'Barbell Back Squat', 'Lat Pulldown', 'Deadlift', 'Romanian Deadlift', 'Push-Up', 'Pull-Up', 'Dumbbell Row') "
+        "MUST ALWAYS remain in English regardless of the user's language. NEVER translate workout titles, session titles, or exercise names into German or any other language.\n"
+    )
     injury_list = [str(item).lower() for item in getattr(input_data, "injury_flags", []) if str(item).strip()]
     injury_line = ""
     if "knee" in injury_list:
@@ -392,6 +403,7 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- If equipment is 'home gym' or 'dumbbells', use only dumbbells and bodyweight. NEVER prescribe barbells or cable machines.\n"
         f"{injury_line}"
         "- Keep exercise ids stable and machine-friendly.\n"
+        f"{canonical_rule}"
         f"{lang_line}"
         f"User inputs: {json.dumps(input_data.__dict__, ensure_ascii=False)}"
     )

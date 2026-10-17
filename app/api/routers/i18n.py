@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException
 from ...config import settings
 from ...database import app_content_collection
 from ...models import TranslationBatchRequest, TranslationBatchResponse
+from ...workout_terminology import is_canonical_fitness_text, canonicalize_fitness_text
 
 router = APIRouter()
 
@@ -91,7 +92,8 @@ def _openai_translate(target_language: str, texts: list[str]) -> dict[str, str]:
                 "content": (
                     "Translate Victory Fitness app UI copy from English into the requested target language. "
                     "Return only valid JSON object mapping each exact source string to its translation. "
-                    "Preserve placeholders like {name}, numbers, punctuation intent, product names, and short button tone."
+                    "Preserve placeholders like {name}, numbers, punctuation intent, product names, and short button tone. "
+                    "CRITICAL: Keep all workout titles (e.g. Upper Body, Lower Body, Full Body), exercise names (e.g. Bench Press, Squat, Deadlift, Lat Pulldown), and gym movement terminology in English without translating them."
                 ),
             },
             {
@@ -151,12 +153,19 @@ async def translate_batch(payload: TranslationBatchRequest) -> TranslationBatchR
         return TranslationBatchResponse(target_language=target_language, translations={text: text for text in texts})
 
     cached = await _read_cached_translations(target_language, texts)
-    missing = [text for text in texts if text not in cached]
+    missing = [text for text in texts if text not in cached and not is_canonical_fitness_text(text)]
     translated = await asyncio.to_thread(_openai_translate, target_language, missing) if missing else {}
     if translated:
         await _write_cached_translations(target_language, translated)
 
+    result_translations: dict[str, str] = {}
+    for text in texts:
+        if is_canonical_fitness_text(text):
+            result_translations[text] = canonicalize_fitness_text(text)
+        else:
+            result_translations[text] = cached.get(text) or translated.get(text) or text
+
     return TranslationBatchResponse(
         target_language=target_language,
-        translations={text: cached.get(text) or translated.get(text) or text for text in texts},
+        translations=result_translations,
     )

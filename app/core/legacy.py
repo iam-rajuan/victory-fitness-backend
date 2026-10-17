@@ -3216,8 +3216,8 @@ async def shutdown() -> None:
     logger.info("shutdown_complete")
 
 def _serialize_strength_workout_plan_record(record: dict) -> StrengthWorkoutPlanResponse:
-
-    plan_data = dict(record.get("plan") or {})
+    from ..workout_terminology import canonicalize_strength_plan_dict
+    plan_data = canonicalize_strength_plan_dict(dict(record.get("plan") or {}))
 
     normalized_days: list[dict[str, Any]] = []
 

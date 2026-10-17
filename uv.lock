@@ -879,6 +879,19 @@ wheels = [
 ]
 
 [[package]]
+name = "resend"
+version = "2.39.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/07/c7/b026919dfc6aedf0fd1645261022943b6570207fe5008044a8c871e3a2da/resend-2.39.0.tar.gz", hash = "sha256:be03c28cfb29956621fe8135e223c11dc69abc0a330e243b4f1968b97c41d4aa", size = 56114, upload-time = "2026-08-21T12:54:47.97Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a9/6d/e00e9988c6d2f1d29f32511702ff74f76e0847fd9c4a3ac748186ee48073/resend-2.39.0-py2.py3-none-any.whl", hash = "sha256:60aa241b8a38eafa7198aa407a5151fd05349b704e72d5bbfe29901e62431300", size = 87979, upload-time = "2026-08-21T12:54:46.74Z" },
+]
+
+[[package]]
 name = "rsa"
 version = "4.9.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1096,6 +1109,7 @@ dependencies = [
     { name = "python-dotenv" },
     { name = "python-jose", extra = ["cryptography"] },
     { name = "python-multipart" },
+    { name = "resend" },
     { name = "stripe" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1123,6 +1137,7 @@ requires-dist = [
     { name = "python-dotenv", specifier = "==1.0.1" },
     { name = "python-jose", extras = ["cryptography"], specifier = "==3.3.0" },
     { name = "python-multipart", specifier = "==0.0.20" },
+    { name = "resend", specifier = "==2.39.0" },
     { name = "stripe", specifier = "==12.5.1" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.34.0" },
 ]
