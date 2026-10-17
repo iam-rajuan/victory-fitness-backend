@@ -207,6 +207,32 @@ async def delete_app_notification(
     )
     return {"deleted": bool(result.modified_count)}
 
+class NotificationBatchReadRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
+@router.patch("/me/notifications/read-all")
+@router.post("/me/notifications/read-all")
+async def mark_all_app_notifications_read(
+    payload: NotificationBatchReadRequest | None = None,
+    user: dict = Depends(_require_access_user),
+) -> dict[str, bool | int]:
+    cleaned_ids = [str(item).strip() for item in (payload.ids if payload else []) if str(item).strip()]
+    if cleaned_ids:
+        result = await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"app_notifications.$[elem].read": True}},
+            array_filters=[{"elem.id": {"$in": cleaned_ids}, "elem.read": {"$ne": True}}],
+        )
+    else:
+        result = await users_collection.update_one(
+            {"_id": user["_id"]},
+            {"$set": {"app_notifications.$[elem].read": True}},
+            array_filters=[{"elem.read": {"$ne": True}}],
+        )
+    return {"read": True, "count": int(result.modified_count)}
+
+
 @router.patch("/me/notifications/{notification_id}/read")
 async def mark_app_notification_read(
     notification_id: str,

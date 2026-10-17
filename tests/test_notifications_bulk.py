@@ -148,6 +148,31 @@ class NotificationBulkManagementTests(unittest.TestCase):
             filter_arg, update_arg = mock_update.call_args[0]
             self.assertEqual(filter_arg, {"_id": "user-test-2"})
             self.assertNotEqual(filter_arg["_id"], self.mock_user_1["_id"])
+    def test_mark_all_notifications_read(self):
+        app.dependency_overrides[_require_access_user] = lambda: self.mock_user_1
+        client = TestClient(app)
+
+        with patch("app.api.routers.me_notifications.users_collection.update_one", new_callable=AsyncMock) as mock_update:
+            mock_update.return_value.modified_count = 2
+            # Test PATCH /me/notifications/read-all
+            response = client.patch("/me/notifications/read-all")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"read": True, "count": 2})
+
+            filter_arg, update_arg = mock_update.call_args[0]
+            self.assertEqual(filter_arg, {"_id": "user-test-1"})
+            self.assertEqual(update_arg, {"$set": {"app_notifications.$[elem].read": True}})
+            array_filters = mock_update.call_args[1].get("array_filters")
+            self.assertEqual(array_filters, [{"elem.read": {"$ne": True}}])
+
+            # Test POST with specific IDs
+            mock_update.reset_mock()
+            mock_update.return_value.modified_count = 1
+            res_batch = client.post("/me/notifications/read-all", json={"ids": ["notif-1"]})
+            self.assertEqual(res_batch.status_code, 200)
+            self.assertEqual(res_batch.json(), {"read": True, "count": 1})
+            array_filters_batch = mock_update.call_args[1].get("array_filters")
+            self.assertEqual(array_filters_batch, [{"elem.id": {"$in": ["notif-1"]}, "elem.read": {"$ne": True}}])
         app.dependency_overrides.clear()
 
 
