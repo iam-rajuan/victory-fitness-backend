@@ -20,11 +20,16 @@ class _FakeNutritionPlansCollection:
     async def find_one(self, query, sort=None):
         user_id = query.get("user_id")
         profile_hash = query.get("profile_hash")
-        matching = [
-            record
-            for record in self.records
-            if record.get("user_id") == user_id and (profile_hash is None or record.get("profile_hash") == profile_hash)
-        ]
+        matching = []
+        for record in self.records:
+            if record.get("user_id") != user_id:
+                continue
+            if isinstance(profile_hash, dict) and "$ne" in profile_hash:
+                if record.get("profile_hash") == profile_hash["$ne"]:
+                    continue
+            elif profile_hash is not None and record.get("profile_hash") != profile_hash:
+                continue
+            matching.append(record)
         if not matching:
             return None
         return matching[-1]
@@ -397,3 +402,97 @@ class NutritionPlanFallbackTests(unittest.TestCase):
         self.assertEqual(result.data["days"][0]["day"], "Mon")
         self.assertIn("Tofu and chickpeas", result.data["days"][0]["lunch"]["ingredients"])
         self.assertTrue(result.data["shopping_list"])
+
+    def test_concise_nutrition_summary_across_goals_and_countries(self) -> None:
+        """Validate dynamic concise structured summary with different goals, countries, and allergies."""
+        build_summary = nutrition_ai_module.build_concise_nutrition_summary
+
+        # 1. Ghanaian maintenance plan with nut allergy
+        ghana_days = [
+            {
+                "day": "Mon",
+                "breakfast": {"name": "Waakye", "kcal": 450, "p": 25},
+                "lunch": {"name": "Red Red", "kcal": 700, "p": 40},
+                "dinner": {"name": "Grilled Tilapia with Banku", "kcal": 650, "p": 35},
+                "pre_workout": {"name": "Banana", "kcal": 150, "p": 2},
+                "post_workout": {"name": "Protein Shake", "kcal": 150, "p": 10},
+            }
+        ]
+        ghana_summary = build_summary(
+            {
+                "days": ghana_days,
+                "goal_label": "Maintenance",
+                "daily_protein_target": 112,
+            },
+            payload={
+                "country": "Ghana",
+                "cuisine": "Ghanaian",
+                "goal": "g3",
+                "allergies": "nut",
+            },
+        )
+        self.assertIn("7-day Ghanaian maintenance plan", ghana_summary)
+        self.assertIn("~2,100 kcal/day", ghana_summary)
+        self.assertIn("112g protein/day", ghana_summary)
+        self.assertIn("Nut allergy respected", ghana_summary)
+        self.assertIn("Meals prioritize authentic Ghanaian options and your stated preferences", ghana_summary)
+        self.assertNotIn("This tailored 7-day plan supports", ghana_summary)
+
+        # 2. German muscle building plan
+        german_days = [
+            {
+                "day": "Mon",
+                "breakfast": {"name": "Quark with Berries", "kcal": 550, "p": 45},
+                "lunch": {"name": "Chicken and Potatoes", "kcal": 850, "p": 55},
+                "dinner": {"name": "Salmon and Vegetables", "kcal": 800, "p": 50},
+                "pre_workout": {"name": "Oat Bar", "kcal": 200, "p": 5},
+                "post_workout": {"name": "Whey Shake", "kcal": 200, "p": 25},
+            }
+        ]
+        german_summary = build_summary(
+            {
+                "days": german_days,
+                "goal_label": "Muscle Building",
+                "daily_protein_target": 180,
+            },
+            payload={
+                "country": "Germany",
+                "cuisine": "German",
+                "goal": "g2",
+                "allergies": "",
+            },
+        )
+        self.assertIn("7-day German muscle building plan", german_summary)
+        self.assertIn("~2,600 kcal/day", german_summary)
+        self.assertIn("180g protein/day", german_summary)
+        self.assertIn("Meals prioritize authentic German options and your stated preferences", german_summary)
+
+        # 3. Italian weight loss plan with lactose allergy
+        italian_days = [
+            {
+                "day": "Mon",
+                "breakfast": {"name": "Eggs and Fruit", "kcal": 380, "p": 30},
+                "lunch": {"name": "Tuna Salad", "kcal": 550, "p": 45},
+                "dinner": {"name": "Chicken Breast with Spinach", "kcal": 520, "p": 40},
+                "pre_workout": {"name": "Apple", "kcal": 100, "p": 1},
+                "post_workout": {"name": "Isolate Shake", "kcal": 150, "p": 24},
+            }
+        ]
+        italian_summary = build_summary(
+            {
+                "days": italian_days,
+                "goal_label": "Weight Loss",
+                "daily_protein_target": 140,
+            },
+            payload={
+                "country": "Italy",
+                "cuisine": "Italian",
+                "goal": "g1",
+                "allergies": "lactose",
+            },
+        )
+        self.assertIn("7-day Italian weight loss plan", italian_summary)
+        self.assertIn("~1,700 kcal/day", italian_summary)
+        self.assertIn("140g protein/day", italian_summary)
+        self.assertIn("Lactose allergy respected", italian_summary)
+        self.assertIn("Meals prioritize authentic Italian options and your stated preferences", italian_summary)
