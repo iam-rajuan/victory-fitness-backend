@@ -1463,6 +1463,21 @@ class NutritionShoppingSection(BaseModel):
     items: list[NutritionMealItem] = Field(default_factory=list)
 
 
+def build_meal_specific_prep_steps(name: str | None, ingredients: list[str] | None = None) -> list[str]:
+    clean_name = str(name or "Meal").strip() or "Meal"
+    clean_ingredients = [str(i).strip() for i in (ingredients or []) if str(i).strip()]
+    if clean_ingredients:
+        ing_sample = ", ".join(clean_ingredients[:3])
+        step_1 = f"Prepare and portion ingredients ({ing_sample})."
+    else:
+        step_1 = f"Prepare and chop all fresh ingredients for {clean_name}."
+
+    step_2 = f"Cook the main ingredients of {clean_name} thoroughly using your preferred low-oil method."
+    step_3 = "Add seasoning, herbs, or sauce to taste according to your plan preferences."
+    step_4 = "Portion and serve immediately according to your daily meal targets."
+    return [step_1, step_2, step_3, step_4]
+
+
 class NutritionMealEntry(BaseModel):
     name: str = Field(min_length=1, max_length=140)
     desc: str = Field(min_length=1, max_length=300)
@@ -1472,7 +1487,18 @@ class NutritionMealEntry(BaseModel):
     f: int = Field(ge=0, le=200)
     ingredients: list[str] = Field(default_factory=list)
     instructions: list[str] = Field(default_factory=list)
+    preparation_steps: list[str] = Field(default_factory=list)
     timing: str | None = None
+
+    @model_validator(mode="after")
+    def sync_preparation_fields(self) -> "NutritionMealEntry":
+        raw = self.preparation_steps or self.instructions or []
+        valid_steps = [str(s).strip() for s in raw if str(s).strip()]
+        if not valid_steps or (len(valid_steps) == 1 and "prepare the ingredients and portion" in valid_steps[0].lower()):
+            valid_steps = build_meal_specific_prep_steps(self.name, self.ingredients)
+        self.instructions = valid_steps
+        self.preparation_steps = valid_steps
+        return self
 
 
 class NutritionDayPlan(BaseModel):

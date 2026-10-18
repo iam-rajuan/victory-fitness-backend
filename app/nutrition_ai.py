@@ -18,7 +18,7 @@ from .country_food_data import (
     country_food_dataset_version,
     get_country_food_dataset,
 )
-from .models import NutritionPlanResponse
+from .models import NutritionPlanResponse, build_meal_specific_prep_steps
 
 
 NUTRITION_PLAN_SYSTEM_PROMPT = (
@@ -279,6 +279,7 @@ class StructuredNutritionMealEntry(BaseModel):
     f: int = Field(description="Approximate fat grams for the meal")
     ingredients: list[str] = Field(description="List of ingredients used for the meal")
     instructions: list[str] = Field(description="Short ordered preparation steps")
+    preparation_steps: list[str] = Field(default_factory=list, description="Short ordered preparation steps")
 
 
 class StructuredNutritionDayPlan(BaseModel):
@@ -2194,17 +2195,17 @@ def _normalize_day_plan(day: dict) -> dict:
 
 def _normalize_meal_entry(entry: dict) -> dict:
     ingredients = entry.get("ingredients", [])
-    instructions = entry.get("instructions", [])
+    raw_instructions = entry.get("preparation_steps") or entry.get("instructions") or entry.get("prep_steps") or []
     normalized_name = _normalize_text(entry.get("name"), "Balanced Meal")
     normalized_desc = _normalize_text(entry.get("desc"), "A practical meal tailored to your plan.")
     normalized_ingredients = _normalize_string_list(ingredients)
-    normalized_instructions = _normalize_string_list(instructions)
+    normalized_instructions = _normalize_string_list(raw_instructions)
 
     if not normalized_ingredients:
         normalized_ingredients = ["Ingredients tailored to your nutrition goal."]
 
-    if not normalized_instructions:
-        normalized_instructions = ["Prepare the ingredients and portion the meal to match your plan."]
+    if not normalized_instructions or (len(normalized_instructions) == 1 and "prepare the ingredients and portion" in normalized_instructions[0].lower()):
+        normalized_instructions = build_meal_specific_prep_steps(normalized_name, normalized_ingredients)
 
     return {
         "name": normalized_name,
@@ -2215,6 +2216,7 @@ def _normalize_meal_entry(entry: dict) -> dict:
         "f": _normalize_int(entry.get("f"), 15, 0, 200),
         "ingredients": normalized_ingredients,
         "instructions": normalized_instructions,
+        "preparation_steps": normalized_instructions,
     }
 
 
@@ -2422,6 +2424,8 @@ def _default_day_plan(day_name: str) -> dict:
 
 
 def _default_meal_entry(name: str) -> dict:
+    default_ingredients = ["Ingredients tailored to your nutrition goal."]
+    prep_steps = build_meal_specific_prep_steps(name, default_ingredients)
     return {
         "name": name,
         "desc": "A balanced meal placeholder used to complete your weekly plan.",
@@ -2429,8 +2433,9 @@ def _default_meal_entry(name: str) -> dict:
         "p": 30,
         "c": 35,
         "f": 15,
-        "ingredients": ["Ingredients tailored to your nutrition goal."],
-        "instructions": ["Prepare the ingredients and portion the meal to match your plan."],
+        "ingredients": default_ingredients,
+        "instructions": prep_steps,
+        "preparation_steps": prep_steps,
     }
 
 

@@ -496,3 +496,52 @@ class NutritionPlanFallbackTests(unittest.TestCase):
         self.assertIn("140g protein/day", italian_summary)
         self.assertIn("Lactose allergy respected", italian_summary)
         self.assertIn("Meals prioritize authentic Italian options and your stated preferences", italian_summary)
+
+    def test_meal_entry_preparation_steps_sync_and_fallback(self) -> None:
+        from app.models import NutritionMealEntry
+
+        # 1. Existing instructions populates preparation_steps
+        meal1 = NutritionMealEntry(
+            name="Grilled Chicken",
+            desc="Healthy chicken",
+            kcal=400,
+            p=40,
+            c=10,
+            f=8,
+            ingredients=["200g chicken", "Olive oil"],
+            instructions=["Season chicken", "Grill for 12 mins", "Rest and serve"],
+        )
+        self.assertEqual(meal1.preparation_steps, ["Season chicken", "Grill for 12 mins", "Rest and serve"])
+        self.assertEqual(meal1.instructions, meal1.preparation_steps)
+
+        # 2. Existing preparation_steps populates instructions
+        meal2 = NutritionMealEntry(
+            name="Oats Bowl",
+            desc="Warm oats",
+            kcal=350,
+            p=25,
+            c=45,
+            f=6,
+            ingredients=["Oats", "Whey"],
+            preparation_steps=["Boil water", "Add oats", "Stir in whey"],
+        )
+        self.assertEqual(meal2.instructions, ["Boil water", "Add oats", "Stir in whey"])
+        self.assertEqual(meal2.preparation_steps, meal2.instructions)
+
+        # 3. Missing preparation steps generates structured 4-step meal-specific fallback
+        meal3 = NutritionMealEntry(
+            name="Jollof Rice with Chicken",
+            desc="Spicy rice dish",
+            kcal=650,
+            p=45,
+            c=70,
+            f=15,
+            ingredients=["Chicken breast", "Jasmine rice", "Tomatoes"],
+        )
+        self.assertEqual(len(meal3.preparation_steps), 4)
+        self.assertEqual(meal3.instructions, meal3.preparation_steps)
+        self.assertIn("Chicken breast, Jasmine rice, Tomatoes", meal3.preparation_steps[0])
+        self.assertIn("Jollof Rice with Chicken", meal3.preparation_steps[1])
+        self.assertIn("seasoning", meal3.preparation_steps[2].lower())
+        self.assertIn("serve", meal3.preparation_steps[3].lower())
+
