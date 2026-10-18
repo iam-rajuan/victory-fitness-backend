@@ -2578,11 +2578,12 @@ class WorkoutLibraryResponse(BaseModel):
 class StrengthWorkoutExercise(BaseModel):
     id: str
     name: str
-    sets: int = Field(ge=1, le=10)
+    sets: int = Field(ge=1, le=20)
     reps: str
     rest: str
     weight: str = ""
     type: str
+    notes: str = ""
 
 
 class StrengthWorkoutSection(BaseModel):
@@ -2600,6 +2601,34 @@ class StrengthWorkoutDay(BaseModel):
     intensity: str
     sections: list[StrengthWorkoutSection] = Field(default_factory=list)
     exercises: list[StrengthWorkoutExercise] = Field(default_factory=list)
+
+
+class CustomWorkoutExercise(BaseModel):
+    exercise_name: str
+    sets: int = Field(default=3, ge=1, le=20)
+    reps: str = Field(default="8-12")
+    weight: str = Field(default="")
+    rest: str = Field(default="90s")
+    notes: str = Field(default="")
+    type: str = Field(default="Compound")
+
+
+class CustomWorkoutDay(BaseModel):
+    day_name: str
+    day_key: str = Field(default="Mon")
+    expected_duration: int = Field(default=90, ge=1, le=300)
+    equipment: list[str] = Field(default_factory=list)
+    exercises: list[CustomWorkoutExercise] = Field(default_factory=list)
+
+
+class CustomWorkoutPlan(BaseModel):
+    plan_name: str = Field(default="Custom Workout Plan")
+    expected_duration: int = Field(default=90, ge=1, le=300)
+    equipment: list[str] = Field(default_factory=list)
+    days: list[CustomWorkoutDay] = Field(default_factory=list)
+    parsing_uncertainty: list[str] = Field(default_factory=list)
+    is_valid: bool = True
+    error_message: str | None = None
 
 
 class StrengthWorkoutPlanRequest(BaseModel):

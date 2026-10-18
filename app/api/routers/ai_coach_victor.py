@@ -17,6 +17,11 @@ from ...coach_victor import (
 )
 from .ai_workout_plan import _hydrate_strength_plan_input
 from ...workout_plan_ai import sanitize_workout_plan_for_injuries
+from ...workout_import import (
+    is_custom_workout_import_request,
+    parse_custom_workout,
+    convert_custom_plan_to_strength_plan_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +91,25 @@ def _looks_like_home_plan_change_request(message: str) -> bool:
 
 
 def _coach_plan_action_from_message(message: str, user_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    if is_custom_workout_import_request(message):
+        parsed_custom = parse_custom_workout(message, user_context)
+        if parsed_custom.is_valid and len(parsed_custom.days) >= 1:
+            day_count = len(parsed_custom.days)
+            duration_mins = parsed_custom.expected_duration or 90
+            day_keys = [d.day_key for d in parsed_custom.days]
+            return {
+                "type": "custom_workout_import",
+                "source_prompt": str(message or "").strip(),
+                "scope": "full_plan",
+                "target_days": day_keys,
+                "target_minutes": duration_mins,
+                "day_count": day_count,
+                "plan_name": parsed_custom.plan_name,
+                "summary": f"Import {day_count}-Day Custom Routine ({duration_mins} min/session)",
+                "button_label": f"Import {day_count}-Day Plan",
+                "preview": parsed_custom.model_dump(),
+            }
+
     if not _looks_like_home_plan_change_request(message):
         return None
     target_days = _extract_target_days(message)
@@ -235,6 +259,39 @@ async def _apply_coach_workout_plan_action(
 ) -> dict:
     user_id = str(user["_id"])
     now = datetime.now(timezone.utc)
+
+    if is_custom_workout_import_request(source_prompt):
+        parsed_custom = parse_custom_workout(source_prompt)
+        if parsed_custom.is_valid and len(parsed_custom.days) >= 1:
+            plan_data = convert_custom_plan_to_strength_plan_dict(parsed_custom, user)
+            day_keys = [d.day_key for d in parsed_custom.days]
+            insert_doc = {
+                "user_id": user_id,
+                "input": {
+                    "goal": "Custom Routine",
+                    "level": "Intermediate",
+                    "split": parsed_custom.plan_name,
+                    "muscle_group": "Full Body",
+                    "duration_minutes": str(parsed_custom.expected_duration or 90),
+                    "equipment": parsed_custom.equipment or ["Gym", "Barbell", "Dumbbells"],
+                    "frequency": str(len(parsed_custom.days)),
+                    "days": day_keys,
+                    "source": "coach_custom_import",
+                    "coach_message": str(source_prompt or "")[:4000],
+                },
+                "plan": plan_data,
+                "progress": [],
+                "created_at": now,
+                "updated_at": now,
+            }
+            insert_result = await strength_workout_plans_collection.insert_one(insert_doc)
+            return {
+                "_id": insert_result.inserted_id,
+                "plan": plan_data,
+                "progress": [],
+                "created_at": now,
+            }
+
     clean_days = [day for day in (target_days or []) if day in DAY_ORDER]
     prompt_with_constraints = source_prompt
     if target_minutes:
