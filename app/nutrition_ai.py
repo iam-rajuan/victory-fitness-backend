@@ -22,18 +22,24 @@ from .models import NutritionPlanResponse, build_meal_specific_prep_steps
 
 
 NUTRITION_PLAN_SYSTEM_PROMPT = (
-    "You are the senior nutrition coach inside the Victory Fitness app. "
-    "Create accurate, practical, realistic nutrition plans that match the user's goal, body data, preferences, dietary pattern, allergies, activity level, and health context. "
-    "The plan must feel like something a real person could actually buy, cook, and follow for a full week. "
-    "Use foods and portions that are believable, balanced, and aligned with the goal. "
-    "Make the meals specific, varied, and easy to understand. "
-    "Each meal should include a clear meal name, a short useful description, realistic calories and macros, ingredients that match the meal, and concise step-by-step instructions. "
-    "Keep the plan safe and moderate. "
-    "Do not use extreme calorie restriction, extreme bulking, fake foods, impossible macros, or medically risky advice. "
-    "If the user has allergies or health conditions, respect them carefully and avoid unsafe ingredients. "
-    "If the user input is incomplete, infer a sensible practical plan instead of failing. "
-    "The weekly summary should clearly describe the plan focus and how it supports the user's goal. "
-    "The shopping list should be grouped logically and should match the actual meals in the plan. "
+    "You are the senior professional nutrition coach inside the Victory Fitness app. "
+    "You behave like an experienced nutrition coach who designs personalized, balanced, safe 7-day meal plans. "
+    "Meal-plan generation must strictly follow this priority order (favourite foods must NEVER outrank safety, goals, or targets):\n"
+    "1. Allergies / safety / dietary restrictions (HARD SAFETY EXCEPTION: If a favourite food conflicts with an allergy or medical restriction, it must NEVER be recommended).\n"
+    "2. User fitness goal (weight loss calorie deficit, muscle building surplus/recovery, or maintenance).\n"
+    "3. Calorie target.\n"
+    "4. Macro and protein requirements (strictly meet the calculated protein target: ~1.6g/kg for maintenance, ~2.0-2.2g/kg for muscle gain/weight reduction).\n"
+    "5. Country-approved / culturally appropriate foods (prioritize approved country dataset when active; country priority does NOT mean repeating one dish every day).\n"
+    "6. Nutritional quality.\n"
+    "7. Weekly meal variety (diverse meals across the week; avoid repetitive meals across consecutive days).\n"
+    "8. Favourite-food health/suitability preference ('Healthy for me' vs 'Not healthy for me' are personal user contexts, not medical diagnoses):\n"
+    "   - Favourite + 'Not healthy for me': User loves it but wants it limited. Allow occasionally (approximately 1–3 meals across the 7-day plan, ~1–2 for weight loss, ~2–3 for maintenance/muscle gain). NEVER recommend it daily. Control portions, choose better pairings, and offer healthier variety on other days.\n"
+    "   - Favourite + 'Healthy for me': User loves and considers it suitable. Prioritize more regularly when appropriate, but STILL maintain weekly variety and nutritional targets. Do not recommend it every day.\n"
+    "   - Favourite + unspecified: Treat as general preference; include occasionally (approx 2–3 meals/week) when fitting macros; do not repeat daily.\n"
+    "9. Favourite-food preference (a preference, NOT something that appears every day).\n"
+    "10. Budget / preparation time / practical preferences.\n"
+    "Each meal must include: name, desc, kcal, p, c, f, ingredients, instructions. "
+    "Kcal must equal (p * 4) + (c * 4) + (f * 9) within ±5 kcal. "
     "Return only valid JSON that matches the required schema exactly, with no markdown, no commentary, and no extra keys."
 )
 
@@ -405,6 +411,16 @@ def build_nutrition_plan_signature(payload: dict) -> str:
         for item in (payload.get("favorite_meals") or payload.get("favorite_meals_json") or [])
         if str(item).strip()
     ]
+    fav_prefs = payload.get("favorite_meals_preferences") or {}
+    if not fav_prefs and payload.get("favorite_foods_details"):
+        fav_prefs = {
+            item.get("name"): item.get("health_preference", "unspecified")
+            for item in payload.get("favorite_foods_details")
+            if isinstance(item, dict) and item.get("name")
+        }
+    normalized_prefs = sorted(
+        [(str(k).strip().lower(), str(v).strip().lower()) for k, v in fav_prefs.items()]
+    )
     normalized_profile = {
         "provider": "openai" if settings.openai_api_key else "anthropic" if settings.anthropic_api_key else "none",
         "openai_model": settings.openai_model,
@@ -416,6 +432,7 @@ def build_nutrition_plan_signature(payload: dict) -> str:
         "country_food_dataset_version": country_food_dataset_version(payload),
         "favorite_meal": _normalize_text(payload.get("favorite_meal"), ""),
         "favorite_meals": favorite_meals,
+        "favorite_meals_preferences": normalized_prefs,
         "diet": _normalize_text(payload.get("diet"), ""),
         "allergies": _normalize_text(payload.get("allergies"), ""),
         "activity_level": _normalize_text(payload.get("activity_level"), ""),
@@ -458,7 +475,11 @@ def _parse_weight_kg(weight: Any) -> float:
 def calculate_protein_target(weight: Any, goal: str | None = None) -> tuple[int, float]:
     weight_kg = _parse_weight_kg(weight)
     goal_code = str(goal or "").strip().lower()
-    if goal_code in {"g2", "muscle building", "muscle_building"}:
+    if goal_code in {"weight reduction", "weight_reduction"}:
+        multiplier = 2.2
+    elif goal_code in {"muscle gain", "muscle_gain"}:
+        multiplier = 2.2
+    elif goal_code in {"g2", "muscle building", "muscle_building"}:
         multiplier = 2.0
     else:
         multiplier = 1.6
@@ -477,23 +498,71 @@ def _favorite_meals_instruction(payload: dict) -> str:
         if fav not in favorite_meals:
             favorite_meals.insert(0, fav)
 
+    fav_prefs = payload.get("favorite_meals_preferences") or {}
+    if not fav_prefs and payload.get("favorite_foods_details"):
+        fav_prefs = {
+            item.get("name"): item.get("health_preference", "unspecified")
+            for item in payload.get("favorite_foods_details")
+            if isinstance(item, dict) and item.get("name")
+        }
+
     cuisine = str(payload.get("cuisine") or "").strip()
     country_dataset = get_country_food_dataset(payload)
 
     instructions = [
         "CRITICAL FAVOURITE MEALS & CULINARY MANDATE:",
-        "- The 7-day meal plan MUST strongly honor the user's declared favourite meals and cuisine preferences.",
+        "- The 7-day meal plan must balance the user's declared favourite meals with professional nutrition coaching.",
+        "- STRICT HIERARCHY OF PRIORITIES:",
+        "  1. Allergies / safety / dietary restrictions. HARD SAFETY EXCEPTION: If a favourite food conflicts with an allergy or medical restriction, it must NEVER appear.",
+        "  2. User fitness goal (calorie deficit for weight loss, surplus/protein for muscle gain, maintenance).",
+        "  3. Calorie target.",
+        "  4. Macro and protein requirements (strictly meet protein target).",
+        "  5. Country-approved / culturally appropriate foods.",
+        "  6. Nutritional quality.",
+        "  7. Weekly meal variety (diverse dishes, no identical meals on consecutive days).",
+        "  8. Favourite-food health/suitability preference.",
+        "  9. Favourite-food preference (a preference, NOT something that appears every day).",
+        "  10. Budget / prep time / practical preferences.",
     ]
+
     if country_dataset:
         instructions.append(
-            f"- The approved {country_dataset['country']} food dataset is active. Prioritize its dishes and combinations unless a stated preference, allergy, dietary restriction, or goal makes a specific dish unsuitable."
+            f"- Approved {country_dataset['country']} Food Dataset is ACTIVE. Prioritize authentic dishes from this approved dataset. Country priority does NOT mean repeating one favourite dish every day. Provide variety across the week."
         )
     else:
         instructions.append(
             "- STRICTLY FORBIDDEN: NEVER fall back to or introduce country-of-origin, geographic, or regional defaults when favourite meals or cuisine are specified. For example, if a user is located in or from Ghana but lists Italian cuisine and favourites such as pasta, pizza, or risotto, every main meal must stay Italian or inspired by those favourites."
         )
+
     if favorite_meals:
-        instructions.append(f"- User's Explicit Favourite Meals: {', '.join(favorite_meals)}. Prioritize and feature these dishes across lunches and dinners.")
+        instructions.append(f"- User's Explicit Favourite Meals: {', '.join(favorite_meals)}.")
+        instructions.append("- USER DECLARED FAVOURITE FOODS AND SPECIFIC FREQUENCY INSTRUCTIONS:")
+        for meal in favorite_meals:
+            pref = fav_prefs.get(meal) or fav_prefs.get(meal.lower()) or "unspecified"
+            pref = str(pref).strip().lower()
+            if pref == "not_healthy_for_me":
+                instructions.append(
+                    f"  * Favourite Food: '{meal}'\n"
+                    f"    - User status: Favourite, marked 'Not healthy for me'.\n"
+                    f"    - Coaching interpretation: The user enjoys this food, but it should be limited.\n"
+                    f"    - Frequency constraint: Include it approximately 1–3 meals across the 7-day plan (normally 1–2 meals for weight loss, 2–3 for maintenance/muscle gain). ONLY when compatible with calories, macros, and restrictions.\n"
+                    f"    - STRICT COACHING RULES: Do NOT recommend it every day. Do NOT recommend on consecutive days. Control portions, choose better pairings, and recommend healthier alternatives across the rest of the week."
+                )
+            elif pref == "healthy_for_me":
+                instructions.append(
+                    f"  * Favourite Food: '{meal}'\n"
+                    f"    - User status: Favourite, marked 'Healthy for me'.\n"
+                    f"    - Coaching interpretation: Preferred and suitable food.\n"
+                    f"    - Frequency constraint: May be recommended more regularly where appropriate (e.g. 3–4 meals/week), while STILL maintaining weekly meal variety, macro balance, and country-food diversity. Do not recommend it every day."
+                )
+            else:
+                instructions.append(
+                    f"  * Favourite Food: '{meal}'\n"
+                    f"    - User status: Favourite (health preference unspecified / unknown).\n"
+                    f"    - Coaching interpretation: General preference.\n"
+                    f"    - Frequency constraint: Include occasionally (approx 2–3 meals/week) when compatible with calorie and protein targets. Do not recommend every day."
+                )
+
     if cuisine:
         instructions.append(f"- User's Target Cuisine: {cuisine}. Keep all meal recipes authentic to this cuisine style.")
     return "\n".join(instructions) + "\n"
@@ -517,10 +586,11 @@ def _workout_nutrient_timing_instruction(payload: dict) -> str:
 def _protein_target_instruction(payload: dict) -> str:
     weight_val = payload.get("weight")
     weight_kg = _parse_weight_kg(weight_val)
-    target_protein = int(round(weight_kg * 1.6))
+    goal = payload.get("goal")
+    target_protein, multiplier = calculate_protein_target(weight_kg, goal)
     return (
-        f"PROTEIN ACCURACY TARGET: Daily protein across the 7-day plan must hit approximately {target_protein}g (1.6g/kg ±5g, tolerance range {target_protein - 5}g–{target_protein + 5}g). "
-        f"For this {weight_kg}kg user, ensure the daily total across all 5 meals (breakfast, lunch, pre_workout, post_workout, dinner) strictly hits approximately {target_protein}g/day (~128g/day for an 80kg user). "
+        f"PROTEIN ACCURACY TARGET: Daily protein across the 7-day plan must hit approximately {target_protein}g ({multiplier}g/kg ±5g, tolerance range {target_protein - 5}g–{target_protein + 5}g). "
+        f"For this {weight_kg}kg user, ensure the daily total across all 5 meals (breakfast, lunch, pre_workout, post_workout, dinner) strictly hits approximately {target_protein}g/day. "
         f"Distribute across all 5 meals: ~{int(target_protein * 0.20)}g breakfast, ~{int(target_protein * 0.25)}g lunch, ~{int(target_protein * 0.15)}g pre_workout, ~{int(target_protein * 0.25)}g post_workout, ~{int(target_protein * 0.15)}g dinner. "
         "Strict Macro Math: For each meal, kcal must equal (p * 4) + (c * 4) + (f * 9) within ±5 kcal. All meals must sum accurately to the daily calorie and protein totals.\n"
     )
@@ -790,13 +860,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
     display_cuisine = cuisine if cuisine else ("Italian" if any("pasta" in f.lower() or "pizza" in f.lower() or "risotto" in f.lower() for f in favorite_meals) else "balanced")
 
     weight_kg = _parse_weight_kg(payload.get("weight"))
-    # Total protein target: 1.6g/kg (e.g. 80kg -> 128g/day)
-    # Check if goal specifically dictates otherwise, but maintain 1.6g/kg ±5g default
     daily_protein, multiplier = calculate_protein_target(payload.get("weight"), goal_code)
-    # If standard 1.6g/kg requested or weight specified:
-    if goal_code not in {"g2", "muscle building", "muscle_building"}:
-        daily_protein = max(int(round(weight_kg * 1.6)), 60)
-        multiplier = 1.6
 
     breakfast_p = max(int(round(daily_protein * 0.20)), 12)
     lunch_p = max(int(round(daily_protein * 0.25)), 18)
@@ -806,6 +870,46 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
 
     is_low_carb = diet_code in {"d4", "keto / low-carb", "keto", "low-carb"} or goal_code == "g1"
     base_carb = 24 if is_low_carb else 42
+
+    fav_prefs = payload.get("favorite_meals_preferences") or {}
+    if not fav_prefs and payload.get("favorite_foods_details"):
+        fav_prefs = {
+            item.get("name"): item.get("health_preference", "unspecified")
+            for item in payload.get("favorite_foods_details")
+            if isinstance(item, dict) and item.get("name")
+        }
+
+    safe_favs: list[tuple[str, str]] = []
+    for f in favorite_meals:
+        f_norm = f.strip().lower()
+        if ("nut" in allergies or "peanut" in allergies) and ("peanut" in f_norm or "groundnut" in f_norm or "nut" in f_norm):
+            continue
+        if ("shellfish" in allergies or "shrimp" in allergies) and ("shrimp" in f_norm or "prawn" in f_norm or "crab" in f_norm or "lobster" in f_norm):
+            continue
+        p_val = fav_prefs.get(f) or fav_prefs.get(f.lower()) or "unspecified"
+        safe_favs.append((f, str(p_val).lower()))
+
+    # Filter ghanaian_meals by allergies to avoid unsafe defaults
+    if ghanaian_meals:
+        safe_ghana_dinners = []
+        for d in ghanaian_meals["dinner"]:
+            d_str = str(d).lower()
+            if ("nut" in allergies or "peanut" in allergies) and ("groundnut" in d_str or "peanut" in d_str):
+                continue
+            if ("shellfish" in allergies or "shrimp" in allergies) and ("crab" in d_str or "shrimp" in d_str or "prawn" in d_str):
+                continue
+            safe_ghana_dinners.append(d)
+        if not safe_ghana_dinners:
+            safe_ghana_dinners = ghanaian_meals["dinner"]
+
+        non_fufu_dinners = [d for d in safe_ghana_dinners if "fufu" not in str(d).lower()]
+        fufu_dinners = [d for d in safe_ghana_dinners if "fufu" in str(d).lower()]
+        if not non_fufu_dinners:
+            non_fufu_dinners = safe_ghana_dinners
+    else:
+        safe_ghana_dinners = []
+        non_fufu_dinners = []
+        fufu_dinners = []
 
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     days: list[dict] = []
@@ -817,26 +921,63 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         if ghanaian_meals:
             breakfast_name = ghanaian_meals["breakfast"][index % len(ghanaian_meals["breakfast"])]
             lunch_dish = ghanaian_meals["lunch"][index % len(ghanaian_meals["lunch"])]
-            dinner_dish = ghanaian_meals["dinner"][index % len(ghanaian_meals["dinner"])]
-        elif has_explicit_favs:
-            lunch_dish = favorite_meals[index % len(favorite_meals)]
-            dinner_dish = favorite_meals[(index + 1) % len(favorite_meals)]
+            # Default to diverse authentic Ghanaian dinners (avoid repeating Fufu every day)
+            dinner_dish = non_fufu_dinners[index % len(non_fufu_dinners)]
+
+            if safe_favs:
+                top_fav, top_pref = safe_favs[0]
+                if top_pref == "not_healthy_for_me":
+                    if goal_code in {"g1", "weight loss", "weight_loss", "fat loss", "fat_loss", "weight reduction"}:
+                        if index == 1:
+                            lunch_dish = top_fav
+                    else:
+                        if index == 1:
+                            lunch_dish = top_fav
+                        elif index == 4:
+                            dinner_dish = top_fav
+                elif top_pref == "healthy_for_me":
+                    if index == 0:
+                        lunch_dish = top_fav
+                    elif index == 2:
+                        dinner_dish = top_fav
+                    elif index == 5:
+                        lunch_dish = top_fav
+                else:
+                    if index == 1:
+                        lunch_dish = top_fav
+                    elif index == 4:
+                        dinner_dish = top_fav
+            else:
+                if index == 1 and len(fufu_dinners) > 1:
+                    dinner_dish = fufu_dinners[1]
+                elif index == 4 and fufu_dinners:
+                    dinner_dish = fufu_dinners[0]
+        elif safe_favs:
             breakfast_name = f"{display_cuisine.capitalize()} Protein Breakfast Bowl" if index % 2 == 0 else f"{display_cuisine.capitalize()} Scrambled Eggs & Toast"
+            top_fav, top_pref = safe_favs[0]
+            if top_pref == "not_healthy_for_me":
+                if goal_code in {"g1", "weight loss", "weight_loss", "fat loss", "fat_loss", "weight reduction"}:
+                    lunch_dish = top_fav if index == 1 else f"{display_cuisine.capitalize()} Grilled Chicken & Rice"
+                    dinner_dish = f"Herb Roasted {protein_name} & Vegetables" if index != 1 else f"Baked Fish & Steamed Greens"
+                else:
+                    lunch_dish = top_fav if index == 1 else (f"{display_cuisine.capitalize()} Grilled Salmon Plate" if index == 3 else f"{display_cuisine.capitalize()} Chicken Bowl")
+                    dinner_dish = top_fav if index == 4 else f"Roasted {protein_name} & Vegetables"
+            elif top_pref == "healthy_for_me":
+                lunch_dish = top_fav if index in {0, 5} else f"{display_cuisine.capitalize()} Grilled Chicken & Rice"
+                dinner_dish = top_fav if index == 2 else f"Herb Roasted {protein_name} & Vegetables"
+            else:
+                lunch_dish = top_fav if index == 1 else f"{display_cuisine.capitalize()} Grilled Chicken & Rice"
+                dinner_dish = top_fav if index == 4 else f"Roasted {protein_name} & Vegetables"
         else:
             lunch_dish = f"{display_cuisine.capitalize()} Rice & Protein Plate"
             dinner_dish = f"Roasted {protein_name} & Vegetables"
             breakfast_name = "Protein Oats Bowl" if index % 2 == 0 else "Egg & Toast Plate"
 
-        # Separate Pre-workout (60-90m before, carb-forward) and Post-workout (within 45m, protein-forward)
         pre_workout_timing = f"Scheduled 60–90 mins before {workout_time} workout (e.g. 16:00)"
         post_workout_timing = "Scheduled within 45 mins after workout (e.g. 18:45)"
 
-        if ghanaian_meals:
-            pre_dish = ghanaian_meals["breakfast"][(index + 3) % len(ghanaian_meals["breakfast"])]
-            post_dish = ghanaian_meals["lunch"][(index + 4) % len(ghanaian_meals["lunch"])]
-        else:
-            pre_dish = favorite_meals[(index + 1) % len(favorite_meals)] if has_explicit_favs else f"{display_cuisine.capitalize()} Energy Bowl"
-            post_dish = favorite_meals[(index + 2) % len(favorite_meals)] if has_explicit_favs else f"Roasted {protein_name} Recovery Plate"
+        pre_dish = "Rolled Oats & Banana Energy Fuel" if ghanaian_meals else f"{display_cuisine.capitalize()} Energy Oats Bowl"
+        post_dish = "Grilled Chicken Breast with White Rice" if ghanaian_meals else f"Roasted {protein_name} Recovery Plate"
 
         lunch_c = max(carb_target + 10, 52)
         pre_c = max(carb_target + 18, 55)
@@ -1040,7 +1181,7 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
         payload=payload,
     )
 
-    return _validate_nutrition_plan(
+    return _normalize_nutrition_plan(
         {
             "summary": summary,
             "goal_label": goal_label,
@@ -1049,7 +1190,8 @@ def _build_fallback_nutrition_plan(payload: dict) -> dict:
             "baseline_weight": weight_kg,
             "days": days,
             "shopping_list": shopping_list,
-        }
+        },
+        payload=payload,
     )
 
 
@@ -1956,8 +2098,204 @@ def _parse_json_object(text: str) -> dict:
     raise json.JSONDecodeError("No valid JSON object found", cleaned, 0)
 
 
+def _enforce_variety_and_safety(
+    days: list[dict],
+    payload: dict | None = None,
+    profile: dict | None = None,
+) -> list[dict]:
+    ctx = {**(profile if isinstance(profile, dict) else {}), **(payload if isinstance(payload, dict) else {})}
+    allergies_text = str(ctx.get("allergies") or "").lower()
+    goal = str(ctx.get("goal") or "").lower()
+    is_weight_loss = goal in {"g1", "weight loss", "weight_loss", "fat loss", "fat_loss", "weight reduction"}
+    cuisine = str(ctx.get("cuisine") or "").lower()
+    country_code = str(ctx.get("country_code") or ctx.get("countryCode") or "").upper()
+    is_ghana = country_code == "GH" or "ghana" in cuisine or "ghanaian" in cuisine
+
+    # Extract favorites and preferences
+    fav_list = [
+        str(item).strip()
+        for item in (ctx.get("favorite_meals") or ctx.get("favorite_meals_json") or [])
+        if str(item).strip()
+    ]
+    if ctx.get("favorite_meal") and str(ctx.get("favorite_meal")).strip():
+        fav_single = str(ctx.get("favorite_meal")).strip()
+        if fav_single not in fav_list:
+            fav_list.insert(0, fav_single)
+
+    fav_prefs: dict[str, str] = {}
+    if ctx.get("favorite_meals_preferences") and isinstance(ctx.get("favorite_meals_preferences"), dict):
+        for k, v in ctx["favorite_meals_preferences"].items():
+            fav_prefs[str(k).strip().lower()] = str(v).strip().lower()
+    if ctx.get("favorite_foods_details") and isinstance(ctx.get("favorite_foods_details"), list):
+        for item in ctx["favorite_foods_details"]:
+            if isinstance(item, dict) and item.get("name"):
+                name_key = str(item["name"]).strip().lower()
+                pref_val = str(item.get("health_preference") or "unspecified").strip().lower()
+                if name_key not in fav_prefs or fav_prefs[name_key] == "unspecified":
+                    fav_prefs[name_key] = pref_val
+
+    # Allergen detection triggers
+    allergen_rules: list[tuple[str, list[str]]] = []
+    if "nut" in allergies_text or "peanut" in allergies_text:
+        allergen_rules.append(("nut/peanut", ["peanut", "groundnut", "peanut butter", "groundnut soup", "cashew", "almond", "walnut", "hazelnut"]))
+    if "shellfish" in allergies_text or "shrimp" in allergies_text:
+        allergen_rules.append(("shellfish", ["shellfish", "shrimp", "prawn", "crab", "lobster", "crawfish"]))
+    if "pork" in allergies_text:
+        allergen_rules.append(("pork", ["pork", "bacon", "ham", "prosciutto", "pork sausage", "pork rib"]))
+    if "lactose" in allergies_text or "dairy" in allergies_text:
+        allergen_rules.append(("dairy", ["cheese", "cow milk", "dairy milk", "heavy cream", "sour cream"]))
+
+    ghana_lunch_pool = [
+        ("Waakye with Boiled Egg, Grilled Fish & Shito", ["Rice and beans", "Boiled egg", "Grilled fish", "Shito pepper sauce"]),
+        ("Banku with Grilled Tilapia & Fresh Hot Pepper", ["Fermented corn & cassava dough", "Fresh grilled tilapia", "Tomato pepper salsa"]),
+        ("Boiled Yam with Kontomire Stew & Smoked Fish", ["Pona yam slices", "Spinach/cocoyam leaves", "Smoked mackerel", "Egg"]),
+        ("Red Red with Boiled Plantain & Grilled Fish", ["Black-eyed pea stew", "Steamed ripe plantain", "Grilled fish fillet"]),
+        ("Jollof Rice with Roasted Chicken Breast", ["Aromatic tomato spiced rice", "Skinless chicken breast", "Steamed greens"]),
+        ("Omo Tuo with Light Fish Soup", ["Mashed rice balls", "Light tomato ginger soup", "Fresh white fish"]),
+    ]
+    ghana_dinner_pool = [
+        ("Chicken Light Soup with Steamed Plantain", ["Tomato garden egg light soup", "Skinless chicken", "Steamed green plantain"]),
+        ("Grilled Mackerel with Fresh Vegetable Salad", ["Grilled Atlantic mackerel", "Cabbage, carrots, tomatoes", "Olive oil dressing"]),
+        ("Steamed Brown Rice with Lean Beef Stew", ["Brown rice", "Lean beef pieces", "Rich tomato stew", "Steamed spinach"]),
+        ("Grilled Tilapia with Mixed Green Salad", ["Whole spiced tilapia", "Lettuce, cucumber, sweet pepper", "Lemon dressing"]),
+    ]
+    continental_lunch_pool = [
+        ("Grilled Herb Chicken Breast & Quinoa Bowl", ["Skinless chicken breast", "Fluffy quinoa", "Steamed broccoli", "Olive oil"]),
+        ("Pan-Seared Salmon with Steamed Brown Rice & Asparagus", ["Wild salmon fillet", "Brown rice", "Tender asparagus spears"]),
+        ("Turkey Breast Sweet Potato Power Plate", ["Sliced roasted turkey breast", "Baked sweet potato", "Green beans"]),
+        ("Lentil & Mediterranean Vegetable Bowl", ["Brown lentils", "Roasted bell peppers, zucchini", "Fresh herbs"]),
+    ]
+    continental_dinner_pool = [
+        ("Baked Lemon Herb Cod with Roasted Root Vegetables", ["Atlantic cod fillet", "Carrots, parsnips, baby potatoes", "Fresh dill"]),
+        ("Grilled Lean Beef Steak with Tossed Salad", ["Lean sirloin steak", "Mixed greens, cherry tomatoes, cucumbers", "Balsamic"]),
+        ("Roasted Chicken Thigh with Steamed Greens & Rice", ["Skinless roasted chicken", "Steamed kale & green beans", "Brown rice"]),
+    ]
+
+    lunch_pool = ghana_lunch_pool if is_ghana else continental_lunch_pool
+    dinner_pool = ghana_dinner_pool if is_ghana else continental_dinner_pool
+
+    # Step A: Enforce allergy check on every meal slot
+    for day in days:
+        for slot in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner"):
+            meal = day.get(slot)
+            if not isinstance(meal, dict):
+                continue
+            meal_name = str(meal.get("name") or "").lower()
+            ingredients = [str(i).lower() for i in meal.get("ingredients") or []]
+            has_allergen = False
+            for _, trigger_words in allergen_rules:
+                if any(w in meal_name for w in trigger_words) or any(any(w in ing for w in trigger_words) for ing in ingredients):
+                    has_allergen = True
+                    break
+            if has_allergen:
+                if slot == "breakfast":
+                    meal["name"] = "Oatmeal with Sliced Berries & Chia Seeds"
+                    meal["desc"] = "Allergen-free energy breakfast rich in fiber and antioxidants"
+                    meal["ingredients"] = ["Rolled oats", "Almond/oat milk", "Blueberries", "Chia seeds"]
+                    meal["instructions"] = ["Cook oats in plant milk", "Top with berries and chia seeds", "Serve warm"]
+                elif slot == "lunch":
+                    safe_name, safe_ing = lunch_pool[0]
+                    meal["name"] = safe_name
+                    meal["desc"] = "Allergen-safe balanced lunch prepared with fresh, clean ingredients"
+                    meal["ingredients"] = safe_ing
+                    meal["instructions"] = ["Cook staple grains", "Grill protein thoroughly", "Assemble with vegetables"]
+                elif slot == "dinner":
+                    safe_name, safe_ing = dinner_pool[0]
+                    meal["name"] = safe_name
+                    meal["desc"] = "Allergen-safe lean dinner supporting evening recovery"
+                    meal["ingredients"] = safe_ing
+                    meal["instructions"] = ["Simmer soup/sauce", "Grill or steam protein", "Serve portion-controlled"]
+                elif slot == "pre_workout":
+                    meal["name"] = "Steamed Sweet Potato & Banana Energy Fuel"
+                    meal["desc"] = "Clean allergen-free pre-workout fuel scheduled 60-90m before training"
+                    meal["ingredients"] = ["Steamed sweet potato slices", "Fresh ripe banana"]
+                    meal["instructions"] = ["Slice banana and sweet potato", "Enjoy 60-90 minutes before workout"]
+                elif slot == "post_workout":
+                    meal["name"] = "Grilled Chicken Breast & White Rice Recovery"
+                    meal["desc"] = "Rapid recovery protein and glycogen replenishment within 45m after workout"
+                    meal["ingredients"] = ["Grilled lean chicken breast", "Steamed jasmine rice"]
+                    meal["instructions"] = ["Grill chicken seasoned with herbs", "Serve with steamed rice"]
+
+    # Step B: Nutrient Timing Validation: Pre/post workout should never be heavy swallows
+    heavy_swallows = ["fufu", "pounded yam", "eba", "banku", "omo tuo", "amala"]
+    for day in days:
+        for slot in ("pre_workout", "post_workout"):
+            meal = day.get(slot)
+            if not isinstance(meal, dict):
+                continue
+            name_lower = str(meal.get("name") or "").lower()
+            if any(sw in name_lower for sw in heavy_swallows):
+                if slot == "pre_workout":
+                    meal["name"] = "Rolled Oats & Sliced Banana Energy Bowl"
+                    meal["desc"] = "Carb-forward pre-workout fuel 60–90m before workout"
+                    meal["ingredients"] = ["Rolled oats", "Water or unsweetened almond milk", "1 sliced banana", "Drizzle of pure honey"]
+                    meal["instructions"] = ["Simmer oats in liquid for 5 mins", "Top with sliced banana and honey", "Consume 60–90 mins before training"]
+                else:
+                    meal["name"] = "Grilled Chicken Strips with Steamed Rice Recovery Bowl"
+                    meal["desc"] = "Protein-forward recovery within 45m post workout"
+                    meal["ingredients"] = ["Lean chicken breast strips", "Steamed white rice", "Pinch of salt and herbs"]
+                    meal["instructions"] = ["Sear chicken strips in pan", "Serve over warm steamed rice", "Eat within 45 mins after workout"]
+
+    # Step C: Favourite Foods Frequency & Variety Validation
+    for fav in fav_list:
+        fav_norm = fav.strip().lower()
+        if not fav_norm:
+            continue
+        pref = fav_prefs.get(fav_norm, "unspecified")
+        if pref not in {"healthy_for_me", "not_healthy_for_me"}:
+            pref = "unspecified"
+
+        if pref == "not_healthy_for_me":
+            max_allowed = 2 if is_weight_loss else 3
+        elif pref == "healthy_for_me":
+            max_allowed = 4
+        else:
+            max_allowed = 3
+
+        occurrences: list[tuple[int, str]] = []
+        for day_idx, day in enumerate(days):
+            for slot in ("lunch", "dinner"):
+                meal = day.get(slot)
+                if isinstance(meal, dict):
+                    m_name = str(meal.get("name") or "").lower()
+                    if fav_norm in m_name or any(word in m_name for word in fav_norm.split() if len(word) > 3):
+                        occurrences.append((day_idx, slot))
+
+        if len(occurrences) > max_allowed:
+            excess = occurrences[max_allowed:]
+            alt_idx = 0
+            for day_idx, slot in excess:
+                meal = days[day_idx][slot]
+                pool = lunch_pool if slot == "lunch" else dinner_pool
+                replacement_name, replacement_ing = pool[alt_idx % len(pool)]
+                alt_idx += 1
+                meal["name"] = replacement_name
+                meal["desc"] = f"Nutrient-dense, balanced {slot} providing variety and supporting your fitness goal."
+                meal["ingredients"] = replacement_ing
+                meal["instructions"] = ["Prepare ingredients fresh", "Cook to optimal tenderness", "Serve portion-controlled"]
+
+    # Step D: Consecutive Day Duplicate Protection
+    for slot in ("lunch", "dinner"):
+        for day_idx in range(1, len(days)):
+            prev_name = str(days[day_idx - 1].get(slot, {}).get("name") or "").strip().lower()
+            curr_name = str(days[day_idx].get(slot, {}).get("name") or "").strip().lower()
+            if prev_name and curr_name and prev_name == curr_name:
+                pool = lunch_pool if slot == "lunch" else dinner_pool
+                for candidate_name, candidate_ing in pool:
+                    if candidate_name.strip().lower() != curr_name and candidate_name.strip().lower() != prev_name:
+                        meal = days[day_idx][slot]
+                        meal["name"] = candidate_name
+                        meal["desc"] = f"Varied balanced {slot} preserving daily nutritional diversity."
+                        meal["ingredients"] = candidate_ing
+                        meal["instructions"] = ["Prepare ingredients fresh", "Cook to optimal tenderness", "Serve portion-controlled"]
+                        break
+
+    return days
+
+
 def _normalize_nutrition_plan(plan: dict, payload: dict | None = None) -> dict:
     normalized_days = _normalize_plan_days(plan.get("days", []))
+    normalized_days = _enforce_variety_and_safety(normalized_days, payload=payload, profile=plan.get("profile"))
     shopping_list = plan.get("shopping_list", [])
     daily_protein = plan.get("daily_protein_target")
 

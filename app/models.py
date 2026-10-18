@@ -1511,6 +1511,15 @@ class NutritionDayPlan(BaseModel):
     snacks: list[NutritionMealEntry] = Field(default_factory=list)
 
 
+class FavoriteFoodPreference(BaseModel):
+    name: str
+    is_favourite: bool = True
+    health_preference: str = Field(
+        default="unspecified",
+        description="'healthy_for_me' | 'not_healthy_for_me' | 'unspecified'",
+    )
+
+
 class NutritionPlanRequest(BaseModel):
     goal: str | None = None
     cuisine: str | None = None
@@ -1519,6 +1528,8 @@ class NutritionPlanRequest(BaseModel):
     favorite_meal: str | None = None
     favorite_meals: list[str] = Field(default_factory=list)
     favorite_meals_json: list[str] = Field(default_factory=list)
+    favorite_foods_details: list[FavoriteFoodPreference] = Field(default_factory=list)
+    favorite_meals_preferences: dict[str, str] = Field(default_factory=dict)
     diet: str | None = None
     allergies: str | None = None
     activity_level: str | None = None
@@ -1536,14 +1547,68 @@ class NutritionPlanRequest(BaseModel):
 
     @model_validator(mode="after")
     def normalize_favorite_meals(self) -> "NutritionPlanRequest":
+        details_map: dict[str, FavoriteFoodPreference] = {}
+        for detail in self.favorite_foods_details:
+            name_norm = str(detail.name or "").strip()
+            if name_norm:
+                pref = str(detail.health_preference or "unspecified").strip().lower()
+                if pref not in {"healthy_for_me", "not_healthy_for_me"}:
+                    pref = "unspecified"
+                details_map[name_norm.lower()] = FavoriteFoodPreference(
+                    name=name_norm,
+                    is_favourite=detail.is_favourite,
+                    health_preference=pref,
+                )
+
+        for meal_name, pref_val in self.favorite_meals_preferences.items():
+            name_norm = str(meal_name or "").strip()
+            if not name_norm:
+                continue
+            norm_key = name_norm.lower()
+            pref = str(pref_val or "unspecified").strip().lower()
+            if pref not in {"healthy_for_me", "not_healthy_for_me"}:
+                pref = "unspecified"
+            if norm_key in details_map:
+                if details_map[norm_key].health_preference == "unspecified" and pref != "unspecified":
+                    details_map[norm_key].health_preference = pref
+            else:
+                details_map[norm_key] = FavoriteFoodPreference(
+                    name=name_norm,
+                    is_favourite=True,
+                    health_preference=pref,
+                )
+
         meals: list[str] = []
+        for detail in self.favorite_foods_details:
+            name_norm = str(detail.name or "").strip()
+            if name_norm and name_norm.lower() not in {item.lower() for item in meals}:
+                meals.append(name_norm)
+
         for meal in [self.favorite_meal, *self.favorite_meals, *self.favorite_meals_json]:
             normalized = str(meal or "").strip()
             if normalized and normalized.lower() not in {item.lower() for item in meals}:
                 meals.append(normalized)
+
         self.favorite_meals = meals[:8]
         self.favorite_meals_json = self.favorite_meals
         self.favorite_meal = self.favorite_meals[0] if self.favorite_meals else None
+
+        final_details: list[FavoriteFoodPreference] = []
+        final_prefs: dict[str, str] = {}
+        for meal in self.favorite_meals:
+            key = meal.lower()
+            pref = details_map[key].health_preference if key in details_map else "unspecified"
+            final_details.append(
+                FavoriteFoodPreference(
+                    name=meal,
+                    is_favourite=True,
+                    health_preference=pref,
+                )
+            )
+            final_prefs[meal] = pref
+
+        self.favorite_foods_details = final_details
+        self.favorite_meals_preferences = final_prefs
         return self
 
 
