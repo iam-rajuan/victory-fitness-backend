@@ -219,3 +219,22 @@ async def test_apply_coach_workout_plan_action_preserves_five_days_and_ninety_mi
     day_1 = saved_plan["days"][0]
     bench = next(ex for ex in day_1["exercises"] if "Bench Press" in ex["name"])
     assert "80kg" in bench["weight"].replace(" ", "")
+
+    # The Home insertion flow must import the displayed coach reply, rather
+    # than regenerate a different plan from the broad original request.
+    await coach_router._apply_coach_workout_plan_action(
+        fake_user,
+        source_prompt="Create a five-day plan for me",
+        generated_reply=VICTOR_FIVE_DAY_INPUT,
+        scope="full_plan",
+    )
+
+    generated_saved_doc = fake_inserted[1]
+    assert generated_saved_doc["input"]["source"] == "coach_generated_import"
+    assert len(generated_saved_doc["plan"]["days"]) == 5
+    generated_bench = next(
+        ex
+        for ex in generated_saved_doc["plan"]["days"][0]["exercises"]
+        if "Bench Press" in ex["name"]
+    )
+    assert "80kg" in generated_bench["weight"].replace(" ", "")

@@ -285,6 +285,7 @@ async def _apply_coach_workout_plan_action(
     user: dict,
     *,
     source_prompt: str,
+    generated_reply: str = "",
     scope: str,
     target_days: list[str] | None = None,
     target_minutes: int | None = None,
@@ -292,8 +293,12 @@ async def _apply_coach_workout_plan_action(
     user_id = str(user["_id"])
     now = datetime.now(timezone.utc)
 
-    if is_custom_workout_import_request(source_prompt) or classify_workout_message_intent(source_prompt) == WorkoutIntent.IMPORT_EXISTING:
-        parsed_custom = parse_custom_workout(source_prompt, user_context=user)
+    generated_plan_text = str(generated_reply or "").strip()
+    import_text = generated_plan_text or source_prompt
+    should_import_exact_plan = bool(generated_plan_text) or is_custom_workout_import_request(source_prompt) or classify_workout_message_intent(source_prompt) == WorkoutIntent.IMPORT_EXISTING
+
+    if should_import_exact_plan:
+        parsed_custom = parse_custom_workout(import_text, user_context=user)
         if parsed_custom.is_valid and len(parsed_custom.days) >= 1:
             plan_data = convert_custom_plan_to_strength_plan_dict(parsed_custom, user)
             is_valid, validation_errors = validate_strength_plan_structure(
@@ -321,8 +326,9 @@ async def _apply_coach_workout_plan_action(
                     "equipment": parsed_custom.equipment or ["Gym", "Barbell", "Dumbbells"],
                     "frequency": str(len(parsed_custom.days)),
                     "days": day_keys,
-                    "source": "coach_custom_import",
+                    "source": "coach_generated_import" if generated_plan_text else "coach_custom_import",
                     "coach_message": str(source_prompt or "")[:4000],
+                    "coach_generated_reply": generated_plan_text[:20000],
                 },
                 "plan": plan_data,
                 "progress": [],
@@ -336,6 +342,14 @@ async def _apply_coach_workout_plan_action(
                 "progress": [],
                 "created_at": now,
             }
+        if generated_plan_text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": "The generated coach plan could not be imported exactly.",
+                    "errors": parsed_custom.parsing_uncertainty or [parsed_custom.error_message or "No complete workout days were detected."],
+                },
+            )
 
     clean_days = [day for day in (target_days or []) if day in DAY_ORDER]
     prompt_with_constraints = source_prompt
@@ -955,6 +969,7 @@ async def apply_coach_workout_plan_action(
     record = await _apply_coach_workout_plan_action(
         user,
         source_prompt=payload.source_prompt,
+        generated_reply=payload.generated_reply,
         scope=payload.scope,
         target_days=payload.target_days,
         target_minutes=payload.target_minutes,

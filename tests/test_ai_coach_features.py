@@ -3,6 +3,7 @@ import json
 import unittest
 
 from app.coach_victor import (
+    COACH_VICTOR_MAX_TOKENS,
     build_coach_victor_system_prompt,
     generate_coach_victor_reply,
     generate_coach_victor_stream,
@@ -14,6 +15,9 @@ from app.coach_victor import (
 
 
 class AICoachFeatureTests(unittest.IsolatedAsyncioTestCase):
+    def test_coach_output_budget_supports_detailed_multi_day_plans(self) -> None:
+        self.assertGreaterEqual(COACH_VICTOR_MAX_TOKENS, 4000)
+
     def test_favorite_meals_priority_over_country_defaults(self) -> None:
         """Ghana user with German favorites -> AI recommends German food."""
         user_context = {

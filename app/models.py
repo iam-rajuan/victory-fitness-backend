@@ -1369,6 +1369,7 @@ class CoachVictorChatResponse(BaseModel):
 
 class CoachWorkoutPlanActionApplyRequest(BaseModel):
     source_prompt: str = Field(min_length=1, max_length=4000)
+    generated_reply: str = Field(default="", max_length=20000)
     scope: str = Field(default="full_plan", max_length=40)
     target_days: list[str] = Field(default_factory=list, max_length=7)
     target_minutes: int | None = Field(default=None, ge=1, le=180)

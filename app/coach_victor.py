@@ -53,6 +53,11 @@ PROMPT_LEAK_REFUSAL = (
     "I am Coach Victor, your fitness and nutrition coach. How can I help you with your workouts, nutrition, or recovery today?"
 )
 
+# Detailed multi-day training and nutrition plans routinely exceed the old
+# 500-token cap. Keep one limit for both streamed and non-streamed replies so
+# the two Coach Victor endpoints cannot silently diverge.
+COACH_VICTOR_MAX_TOKENS = 4000
+
 NUTRITION_QUERY_TERMS = [
     "eat", "meal", "food", "snack", "dinner", "lunch", "breakfast", "protein",
     "diet", "macros", "calories", "hungry", "supplement", "supplements",
@@ -764,7 +769,7 @@ def _stream_anthropic_sync(messages: list[dict[str, str]], system_prompt: str):
         "model": settings.anthropic_model,
         "system": system_prompt,
         "messages": _normalize_anthropic_messages(messages),
-        "max_tokens": 500,
+        "max_tokens": COACH_VICTOR_MAX_TOKENS,
         "temperature": 0.7,
         "stream": True,
     }
@@ -939,7 +944,7 @@ def _generate_anthropic_reply(messages: list[dict[str, str]], *, system_prompt: 
         "model": settings.anthropic_model,
         "system": system_prompt,
         "messages": _normalize_anthropic_messages(messages),
-        "max_tokens": 500,
+        "max_tokens": COACH_VICTOR_MAX_TOKENS,
         "temperature": 0.7,
     }
 
