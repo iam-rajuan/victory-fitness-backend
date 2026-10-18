@@ -24,6 +24,7 @@ Architecture:
 
 from __future__ import annotations
 
+from enum import Enum
 import json
 import logging
 import math
@@ -90,6 +91,24 @@ CORE_KEYWORDS = {
 }
 
 
+PAIN_MAPPINGS = {
+    "knee": ["knee", "knees", "patella", "meniscus"],
+    "shoulder": ["shoulder", "shoulders", "rotator cuff", "deltoid"],
+    "lower_back": ["lower back", "lumbar", "back pain", "herniated", "spine"],
+    "elbow": ["elbow", "tennis elbow", "golfers elbow"],
+    "wrist": ["wrist"],
+    "hip": ["hip", "hips", "groin"],
+    "ankle": ["ankle", "achilles"],
+}
+
+
+class WorkoutIntent(str, Enum):
+    IMPORT_EXISTING = "import_existing"  # Intent B: Experienced user supplying existing routine; preserve verbatim
+    CREATE_NEW = "create_new"            # Intent A: User asks AI to build/create/recommend a new workout
+    ADJUST_CURRENT = "adjust_current"    # User asks to tweak active routine / session
+    GENERAL_QUERY = "general_query"      # Non-workout or general coaching inquiry
+
+
 def is_custom_workout_import_request(message: str) -> bool:
     """Detects if the user's message contains an existing/custom workout routine to import."""
     text = str(message or "").strip()
@@ -104,6 +123,7 @@ def is_custom_workout_import_request(message: str) -> bool:
         "here's my workout", "here's my routine", "my current routine", "my workout routine",
         "my 5-day", "my 4-day", "my 3-day", "my 6-day", "save my workout", "add my routine",
         "custom routine", "custom workout", "save this workout", "import that workout",
+        "use my existing", "use my workout", "use this routine", "use my routine",
     )
     if any(phrase in lowered for phrase in explicit_import_phrases):
         return True
@@ -131,6 +151,53 @@ def is_custom_workout_import_request(message: str) -> bool:
         return True
 
     return False
+
+
+def classify_workout_message_intent(message: str, user_context: dict[str, Any] | None = None) -> WorkoutIntent:
+    """Classifies user intent distinguishing between CREATE_NEW, IMPORT_EXISTING, ADJUST_CURRENT, and GENERAL_QUERY.
+
+    Guarantees strict separation:
+    - Intent A (CREATE_NEW): AI creates a new evidence-based program.
+    - Intent B (IMPORT_EXISTING): AI preserves existing routine verbatim.
+    Never mixes these two intents.
+    """
+    text = str(message or "").strip()
+    if not text:
+        return WorkoutIntent.GENERAL_QUERY
+    lowered = text.lower()
+
+    # 1. Intent B (IMPORT_EXISTING) takes priority when routine content or import intent is supplied
+    if is_custom_workout_import_request(text):
+        return WorkoutIntent.IMPORT_EXISTING
+
+    # 2. Check for Intent A (CREATE_NEW): User asks to create/build/make a new workout/plan/program
+    create_terms = (
+        "create", "build", "generate", "make", "design", "recommend", "give me",
+        "start", "set up", "write", "plan a", "put together"
+    )
+    plan_terms = (
+        "workout plan", "training plan", "workout program", "training program",
+        "workout routine", "training routine", "routine", "split", "program",
+        "strength plan", "hypertrophy plan", "strength routine", "gym plan",
+        "home plan", "bodyweight plan", "workout for"
+    )
+    has_create_term = any(term in lowered for term in create_terms)
+    has_plan_term = any(term in lowered for term in plan_terms)
+    split_requests = bool(re.search(r"\b([1-7])[\s-]*(?:day|days)[\s-]*(?:split|routine|plan|program|workout)\b", lowered))
+    beginner_requests = bool(re.search(r"\b(?:beginner|intermediate|advanced)[\s-]*(?:workout|routine|plan|program)\b", lowered))
+
+    if (has_create_term and has_plan_term) or split_requests or (has_create_term and beginner_requests):
+        return WorkoutIntent.CREATE_NEW
+
+    # 3. Check for ADJUST_CURRENT: User asks to modify active workout / session
+    adjust_terms = ("adjust", "tweak", "swap", "modify", "shorten", "change today", "tonight", "current session", "tight", "hurts", "sore")
+    if any(term in lowered for term in adjust_terms) and any(p in lowered for p in ("workout", "session", "exercise", "routine", "minutes", "min")):
+        return WorkoutIntent.ADJUST_CURRENT
+
+    if "build my plan" in lowered or "create my plan" in lowered or "make my plan" in lowered:
+        return WorkoutIntent.CREATE_NEW
+
+    return WorkoutIntent.GENERAL_QUERY
 
 
 def count_expected_days_in_input(text: str) -> int:
@@ -497,6 +564,266 @@ def validate_parsed_workout_plan(plan: CustomWorkoutPlan, raw_input: str) -> tup
 
     is_valid = len(plan.days) >= 1 and (expected_days == 0 or len(plan.days) >= expected_days)
     return is_valid, uncertainties
+
+
+def validate_strength_plan_structure(
+    plan: dict[str, Any],
+    expected_days: int | None = None,
+    min_duration_minutes: int | None = None,
+    required_weights: list[str] | None = None,
+    *,
+    expected_days_count: int | None = None,
+) -> tuple[bool, list[str]]:
+    """Strictly validates a generated or imported strength plan before saving."""
+    errors: list[str] = []
+    target_days_count = expected_days if expected_days is not None else expected_days_count
+    if not isinstance(plan, dict):
+        return False, ["Plan payload must be a JSON object"]
+
+    days = plan.get("days")
+    if not isinstance(days, list) or not days:
+        return False, ["Plan must contain a non-empty list of days"]
+
+    if target_days_count and len(days) < target_days_count:
+        errors.append(f"Plan contains only {len(days)} days, expected {target_days_count} days.")
+
+    all_weights_text: list[str] = []
+
+    for idx, day in enumerate(days):
+        if not isinstance(day, dict):
+            errors.append(f"Day {idx + 1} is not a valid dictionary object.")
+            continue
+        day_key = str(day.get("day") or "").strip()
+        day_title = str(day.get("title") or day.get("day_name") or "").strip()
+        if not day_title:
+            errors.append(f"Day {idx + 1} ({day_key}) is missing a title.")
+
+        est_time = str(day.get("est_time") or "").strip().lower()
+        if not est_time:
+            errors.append(f"Day {idx + 1} ({day_key}) is missing an estimated session duration.")
+        elif min_duration_minutes and min_duration_minutes >= 60:
+            m = re.search(r"(\d+)", est_time)
+            dur_val = int(m.group(1)) if m else 0
+            if dur_val < min_duration_minutes - 15:
+                errors.append(
+                    f"Day {idx + 1} duration '{est_time}' is significantly lower than requested {min_duration_minutes} min."
+                )
+
+        exercises = day.get("exercises")
+        if not isinstance(exercises, list) or len(exercises) < 2:
+            errors.append(f"Day {idx + 1} ({day_key}) must have at least 2 structured exercises.")
+            continue
+
+        for ex_idx, ex in enumerate(exercises):
+            if not isinstance(ex, dict):
+                errors.append(f"Day {idx + 1} Exercise {ex_idx + 1} is invalid.")
+                continue
+            name = str(ex.get("name") or ex.get("exercise_name") or "").strip()
+            if len(name) < 2:
+                errors.append(f"Day {idx + 1} Exercise {ex_idx + 1} has an invalid name.")
+            sets = ex.get("sets")
+            try:
+                if int(sets) < 1:
+                    errors.append(f"Day {idx + 1} Exercise '{name}' has invalid sets count: {sets}")
+            except Exception:
+                errors.append(f"Day {idx + 1} Exercise '{name}' sets count must be an integer: {sets}")
+
+            w_val = str(ex.get("weight") or "").strip()
+            if w_val:
+                all_weights_text.append(w_val.lower().replace(" ", ""))
+
+    if required_weights:
+        joined_weights = " ".join(all_weights_text)
+        for rw in required_weights:
+            clean_rw = rw.lower().replace(" ", "")
+            if clean_rw not in joined_weights:
+                errors.append(f"Required load '{rw}' was not found in the plan exercises.")
+
+    is_valid = len(errors) == 0
+    return is_valid, errors
+
+
+def assemble_deterministic_workout_context(
+    user: dict | None = None,
+    user_context: dict[str, Any] | None = None,
+    message: str = "",
+) -> dict[str, Any]:
+    """Assembles complete deterministic training context for workout generation and coaching.
+
+    Ensures all 10 context dimensions are deterministic and unambiguous before AI generation:
+    1. user goal
+    2. experience level
+    3. age
+    4. equipment
+    5. injuries/restrictions
+    6. training days
+    7. expected workout duration
+    8. existing routine when supplied
+    9. known weights/reps
+    10. recent plan/session information
+    """
+    context = dict(user_context or {})
+    u = dict(user or {})
+    onboarding = dict(context.get("onboarding") or u.get("onboarding") or {})
+    anamnese = dict(onboarding.get("anamnese") or {})
+    personal_profile = dict(onboarding.get("personalProfile") or {})
+    progress = dict(context.get("progress") or {})
+    medical = dict(context.get("medical") or {})
+
+    lowered = str(message or "").lower()
+    intent = classify_workout_message_intent(message, user_context)
+
+    # 1. User Goal
+    goal = ""
+    if any(term in lowered for term in ("lose weight", "fat loss", "cut", "recomp", "tone")):
+        goal = "Body Recomp"
+    elif any(term in lowered for term in ("pure strength", "heavy strength", "powerlift", "strength")):
+        goal = "Pure Strength"
+    elif any(term in lowered for term in ("power & speed", "power and speed", "athletic", "speed", "stamina", "endurance")):
+        goal = "Power & Speed"
+    elif any(term in lowered for term in ("hypertrophy", "build muscle", "muscle", "mass", "bulk")):
+        goal = "Hypertrophy"
+    if not goal:
+        raw_goal = str(anamnese.get("primaryGoal") or u.get("fitness_goal") or "").strip().lower()
+        if any(w in raw_goal for w in ["muscle", "hypertrophy", "build"]):
+            goal = "Hypertrophy"
+        elif any(w in raw_goal for w in ["fat", "lose", "weight loss", "recomp", "tone"]):
+            goal = "Body Recomp"
+        elif any(w in raw_goal for w in ["strength", "powerlift"]):
+            goal = "Pure Strength"
+        elif any(w in raw_goal for w in ["speed", "athletic", "endurance"]):
+            goal = "Power & Speed"
+        else:
+            goal = "Hypertrophy"
+
+    # 2. Experience Level
+    level = ""
+    if any(w in lowered for w in ("beginner", "novice", "new to lifting", "starting out")):
+        level = "Beginner"
+    elif any(w in lowered for w in ("advanced", "experienced", "athlete", "competitive")):
+        level = "Advanced"
+    elif any(w in lowered for w in ("intermediate", "moderate")):
+        level = "Intermediate"
+    if not level:
+        raw_level = str(anamnese.get("activityLevel") or u.get("fitness_level") or "").strip().lower()
+        if any(w in raw_level for w in ["sedentary", "light", "beginner"]):
+            level = "Beginner"
+        elif any(w in raw_level for w in ["very", "advanced", "athlete"]):
+            level = "Advanced"
+        else:
+            level = "Intermediate"
+
+    # 3. Age
+    age = str(personal_profile.get("age") or u.get("age") or "28").strip()
+
+    # 4. Equipment
+    equipment: list[str] = []
+    if any(term in lowered for term in ("no equipment", "bodyweight only", "bodyweight", "nothing at all", "calisthenics")):
+        equipment = ["No equipment"]
+    elif any(term in lowered for term in ("home gym", "dumbbells only", "dumbbell", "dumbbells", "bands")):
+        equipment = ["Dumbbells", "Bands"]
+    elif any(term in lowered for term in ("full gym", "gym", "barbell", "squat rack", "cables")):
+        equipment = ["Gym", "Barbell", "Dumbbells", "Cables", "Machines"]
+    if not equipment:
+        raw_equip = str(anamnese.get("equipmentAccess") or u.get("equipmentAccess") or "").strip().lower()
+        if any(w in raw_equip for w in ["no equipment", "none", "bodyweight", "outdoors", "outdoor"]):
+            equipment = ["No equipment"]
+        elif any(w in raw_equip for w in ["dumbbells", "kettlebells", "home gym", "bands"]):
+            equipment = ["Dumbbells", "Bands"]
+        elif any(w in raw_equip for w in ["gym", "full gym", "barbell"]):
+            equipment = ["Gym", "Barbell", "Dumbbells", "Cables", "Machines"]
+        else:
+            equipment = ["Gym", "Barbell", "Dumbbells", "Cables", "Machines"]
+
+    # 5. Injuries / Restrictions
+    injury_flags: list[str] = []
+    for flag in list(u.get("injury_flags") or []):
+        if str(flag).strip() and str(flag).strip().lower() not in injury_flags:
+            injury_flags.append(str(flag).strip().lower())
+    for injury_key, needles in PAIN_MAPPINGS.items():
+        if any(needle in lowered for needle in needles) and injury_key not in injury_flags:
+            injury_flags.append(injury_key)
+    health_notes = str(medical.get("health_notes") or (anamnese.get("healthNotes") or "")).strip()
+    app_injury = str(medical.get("injury") or "").strip()
+
+    # 6. Training Days & Frequency
+    frequency = count_expected_days_in_input(message) or None
+    if not frequency:
+        raw_days = str(anamnese.get("daysPerWeek") or "").strip()
+        m = re.search(r"(\d+)", raw_days)
+        frequency = int(m.group(1)) if m else 4
+    frequency = max(1, min(frequency, 7))
+
+    day_aliases = [
+        ("monday", "Mon"), ("mon", "Mon"),
+        ("tuesday", "Tue"), ("tue", "Tue"),
+        ("wednesday", "Wed"), ("wed", "Wed"),
+        ("thursday", "Thu"), ("thu", "Thu"),
+        ("friday", "Fri"), ("fri", "Fri"),
+        ("saturday", "Sat"), ("sat", "Sat"),
+        ("sunday", "Sun"), ("sun", "Sun"),
+    ]
+    explicit_days = []
+    for needle, day in day_aliases:
+        if re.search(rf"\b{re.escape(needle)}\b", lowered) and day not in explicit_days:
+            explicit_days.append(day)
+    default_days_map = {
+        1: ["Mon"],
+        2: ["Mon", "Thu"],
+        3: ["Mon", "Wed", "Fri"],
+        4: ["Mon", "Tue", "Thu", "Fri"],
+        5: ["Mon", "Tue", "Wed", "Fri", "Sat"],
+        6: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+        7: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    }
+    days = explicit_days if len(explicit_days) == frequency else default_days_map.get(frequency, ["Mon", "Tue", "Thu", "Fri"])
+
+    # 7. Expected Workout Duration (NEVER collapse 90 to 25!)
+    expected_duration = extract_expected_duration_minutes(message)
+    if not expected_duration:
+        raw_time = str(anamnese.get("timePerSession") or "").strip()
+        m_time = re.search(r"(\d+)", raw_time)
+        expected_duration = int(m_time.group(1)) if m_time else 45
+    expected_duration = max(15, min(expected_duration, 240))
+
+    # 8. Known Weights / PRs
+    bench = str(personal_profile.get("bench") or u.get("bench") or "").strip()
+    squat = str(personal_profile.get("squat") or u.get("squat") or "").strip()
+    deadlift = str(personal_profile.get("deadlift") or u.get("deadlift") or "").strip()
+    user_weight = str(personal_profile.get("weight") or u.get("weight") or "75").strip()
+
+    # 9. Existing Routine when supplied (Intent B)
+    existing_routine: CustomWorkoutPlan | None = None
+    if intent == WorkoutIntent.IMPORT_EXISTING:
+        existing_routine = parse_custom_workout(message, user_context)
+
+    # 10. Recent Plan / Session Information
+    current_plan = dict(progress.get("current_home_workout_plan") or {})
+    recent_plan_summary = str(current_plan.get("summary") or progress.get("latest_workout_feedback_summary") or "").strip()
+
+    return {
+        "intent": intent,
+        "goal": goal,
+        "experience_level": level,
+        "age": age,
+        "gender": str(personal_profile.get("gender") or u.get("gender") or "Other").strip(),
+        "weight_kg": user_weight,
+        "equipment": equipment,
+        "injuries_restrictions": injury_flags,
+        "health_notes": health_notes,
+        "application_injury": app_injury,
+        "training_days": days,
+        "frequency": frequency,
+        "expected_duration_minutes": expected_duration,
+        "known_weights": {
+            "bench": bench,
+            "squat": squat,
+            "deadlift": deadlift,
+            "bodyweight": user_weight,
+        },
+        "existing_routine": existing_routine,
+        "recent_plan_summary": recent_plan_summary,
+    }
 
 
 def parse_custom_workout(text: str, user_context: dict[str, Any] | None = None) -> CustomWorkoutPlan:

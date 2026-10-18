@@ -7,6 +7,17 @@ from typing import AsyncIterator
 from urllib import error, request
 
 from .config import settings
+from .workout_import import (
+    WorkoutIntent,
+    assemble_deterministic_workout_context,
+    classify_workout_message_intent,
+    is_custom_workout_import_request,
+    parse_custom_workout,
+)
+from .workout_plan_ai import (
+    StrengthWorkoutPlanInput,
+    _build_strength_workout_plan,
+)
 
 DEFAULT_COUNTRY_NOTES = {
     "DE": "Use European metric conventions and food examples that fit Germany when relevant.",
@@ -344,12 +355,76 @@ def build_coach_victor_system_prompt(
             "The user's preferred language is English."
         )
 
+    last_user_message = ""
+    for m in reversed(recent_messages):
+        if m.get("role") == "user":
+            last_user_message = _safe_text(m.get("content"), "")
+            break
+
+    det_context = assemble_deterministic_workout_context(
+        user=None,
+        user_context=context,
+        message=last_user_message,
+    )
+    det_intent = det_context["intent"]
+    det_goal = det_context["goal"]
+    det_level = det_context["experience_level"]
+    det_age = det_context["age"]
+    det_equipment = det_context["equipment"]
+    det_injuries = det_context["injuries_restrictions"]
+    det_health_notes = det_context["health_notes"]
+    det_app_injury = det_context["application_injury"]
+    det_training_days = det_context["training_days"]
+    det_frequency = det_context["frequency"]
+    det_expected_duration = det_context["expected_duration_minutes"]
+    det_known_weights = det_context["known_weights"]
+    det_existing_routine = det_context["existing_routine"]
+    det_recent_plan_summary = det_context["recent_plan_summary"]
+
+    existing_routine_summary = "None supplied."
+    if det_existing_routine and det_existing_routine.days:
+        day_summaries = []
+        for d in det_existing_routine.days:
+            ex_strs = [
+                f"{e.exercise_name} ({e.sets}x{e.reps}"
+                + (f", {e.weight_kg}kg" if e.weight_kg else (f", {e.load}" if e.load else ""))
+                + ")"
+                for e in d.exercises
+            ]
+            day_summaries.append(f"- {d.day_name} ({d.day_key}): {', '.join(ex_strs) if ex_strs else 'Active Rest'}")
+        existing_routine_summary = f"Supplied routine ({len(det_existing_routine.days)} days):\n" + "\n".join(day_summaries)
+
+    deterministic_workout_layer = (
+        "Layer 3.5 - Deterministic Workout & Coaching Context:\n"
+        f"Detected Workout Intent: {det_intent.value} ("
+        + ("USE CASE B: IMPORT/USE EXISTING WORKOUT" if det_intent == WorkoutIntent.IMPORT_EXISTING else "USE CASE A: CREATE/RECOMMEND NEW WORKOUT" if det_intent == WorkoutIntent.CREATE_NEW else "ADJUST CURRENT PLAN" if det_intent == WorkoutIntent.ADJUST_CURRENT else "GENERAL FITNESS QUERY")
+        + f").\n"
+        f"- user goal: {det_goal}\n"
+        f"- experience level: {det_level}\n"
+        f"- age: {det_age}\n"
+        f"- equipment: {', '.join(det_equipment) if det_equipment else 'Full Gym'}\n"
+        f"- injuries/restrictions: {', '.join(det_injuries) if det_injuries else 'None flagged'}"
+        + (f" (Health Notes: {det_health_notes})" if det_health_notes else "")
+        + (f" (Reported Injury: {det_app_injury})" if det_app_injury else "") + "\n"
+        f"- training days ({det_frequency} days/week): {', '.join(det_training_days)}\n"
+        f"- expected workout duration: {det_expected_duration} minutes per session (NEVER collapse to 25 minutes!)\n"
+        f"- existing routine: {existing_routine_summary}\n"
+        f"- known weights/reps: Bench: {det_known_weights.get('bench') or 'N/A'}, Squat: {det_known_weights.get('squat') or 'N/A'}, Deadlift: {det_known_weights.get('deadlift') or 'N/A'}, Bodyweight: {det_known_weights.get('bodyweight') or 'N/A'} kg\n"
+        f"- recent plan/session information: {det_recent_plan_summary or 'No active plan recorded'}\n\n"
+        "TWO DISTINCT WORKOUT USE CASES (DO NOT MIX INTENTS):\n"
+        "A. User asks AI to CREATE a workout:\n"
+        "AI may recommend a new program. Strictly respect the deterministic context above: match beginner/advanced progression, home equipment (dumbbells/bodyweight only) vs full gym, requested days (e.g. 5-day split), and expected session duration (e.g. 90 minutes).\n"
+        "B. User asks AI to IMPORT/USE their existing workout:\n"
+        "AI MUST preserve their routine rather than inventing a replacement. Preserve exact exercise names, weights in kg (e.g. 80kg), sets, reps, and all days provided (e.g. 5 days). Never drop days or replace user exercises with catalog templates."
+    )
+
     return "\n\n".join(
         [
             COACH_IDENTITY_LAYER,
             country_layer,
             language_layer,
             profile_layer,
+            deterministic_workout_layer,
             progress_layer,
             today_layer,
             conversation_layer,
@@ -391,64 +466,87 @@ def _generate_intelligent_fallback_reply(
     protein_status_hi = f"आपने आज अपने {p_target}g लक्ष्य में से {p_consumed}g प्राप्त कर लिया है।"
     protein_status_en = f"You have hit {p_consumed}g of your {p_target}g target today."
 
-    if _is_workout_plan_query(last_user_message):
-        onboarding = dict(context.get("onboarding") or {})
-        anamnese = dict(onboarding.get("anamnese") or {})
-        equipment = _safe_text(anamnese.get("equipmentAccess"), "available equipment")
-        goal = _safe_text(anamnese.get("primaryGoal"), "strength and consistency")
-        requested_minutes_match = re.search(r"(\d{1,3})\s*(?:min|minute)", lowered)
-        minutes = requested_minutes_match.group(1) if requested_minutes_match else "30"
-        day_aliases = [
-            ("monday", "Mon"), ("mon", "Mon"),
-            ("tuesday", "Tue"), ("tue", "Tue"),
-            ("wednesday", "Wed"), ("wed", "Wed"),
-            ("thursday", "Thu"), ("thu", "Thu"),
-            ("friday", "Fri"), ("fri", "Fri"),
-            ("saturday", "Sat"), ("sat", "Sat"),
-            ("sunday", "Sun"), ("sun", "Sun"),
-        ]
-        requested_days: list[str] = []
-        for needle, day in day_aliases:
-            if needle in lowered and day not in requested_days:
-                requested_days.append(day)
-        if not requested_days:
-            requested_days = ["Mon", "Wed", "Sat"]
+    det_context = assemble_deterministic_workout_context(user_context=context, message=last_user_message)
+    det_intent = det_context["intent"]
 
-        def focus_for_day(day: str, idx: int) -> tuple[str, list[str]]:
-            before, _, after = lowered.partition(day.lower())
-            nearby = after[:80] if after else lowered
-            if "pull" in nearby:
-                return ("Pull-ups Focus", ["Pull-up or inverted row", "Scapular pull", "Dead bug"])
-            if "squat" in nearby:
-                return ("Squat Focus", ["Bodyweight squat", "Glute bridge", "Calf raise"])
-            if "push" in nearby:
-                return ("Push-up Focus", ["Push-up", "Pike press", "Plank shoulder tap"])
-            titles = [
-                ("Push-up Focus", ["Push-up", "Pike press", "Plank shoulder tap"]),
-                ("Pull-ups Focus", ["Pull-up or inverted row", "Scapular pull", "Dead bug"]),
-                ("Squat Focus", ["Bodyweight squat", "Glute bridge", "Calf raise"]),
-            ]
-            return titles[idx % len(titles)]
+    # USE CASE B: IMPORT/USE EXISTING WORKOUT (Preserve user routine verbatim)
+    if det_intent == WorkoutIntent.IMPORT_EXISTING or is_custom_workout_import_request(last_user_message):
+        parsed = det_context.get("existing_routine") or parse_custom_workout(last_user_message, user_context=context)
+        if parsed and parsed.days:
+            plan_blocks = []
+            dur = parsed.expected_duration or 90
+            for day in parsed.days:
+                ex_lines = []
+                for ex in day.exercises:
+                    load_part = f" @ {ex.weight_kg}kg" if ex.weight_kg else (f" ({ex.load})" if ex.load else "")
+                    rest_part = f", {ex.rest_seconds}s rest" if ex.rest_seconds else ""
+                    ex_lines.append(f"- {ex.exercise_name}: {ex.sets} x {ex.reps}{load_part}{rest_part}")
+                plan_blocks.append(
+                    f"**{day.day_name} ({day.day_key})**\n"
+                    f"{dur} min | Custom Routine\n"
+                    + "\n".join(ex_lines)
+                )
 
-        plan_blocks = []
-        for idx, day in enumerate(requested_days):
-            title, exercises = focus_for_day(day, idx)
-            plan_blocks.append(
-                f"**{day}: {title}**\n"
-                f"{minutes} min | Moderate intensity\n"
-                f"- {exercises[0]}: 2 x 6-10, 45s rest, Bodyweight/available kit, Compound\n"
-                f"- {exercises[1]}: 2 x 8-12, 30s rest, Bodyweight, Accessory\n"
-                f"- {exercises[2]}: 2 x 20-30s, 30s rest, Bodyweight, Core"
+            if preferred_lang == "de":
+                return (
+                    f"Ich habe deinen {len(parsed.days)}-Tage-Plan exakt übernommen ({dur} Min/Einheit):\n\n"
+                    + "\n\n".join(plan_blocks)
+                    + "\n\nTippe unten auf den Button, um deinen Plan ohne Änderungen in deinen Home-Plan zu importieren."
+                )
+            return (
+                f"I've verified and preserved your {len(parsed.days)}-day custom routine exactly as provided ({dur} min/session):\n\n"
+                + "\n\n".join(plan_blocks)
+                + "\n\nTap the **Import** button below to lock this plan into your workout schedule without changes."
             )
 
-        if "de" == preferred_lang:
+    # USE CASE A: CREATE A WORKOUT (Recommend new program tailored to user context)
+    if det_intent == WorkoutIntent.CREATE_NEW or _is_workout_plan_query(last_user_message):
+        onboarding = dict(context.get("onboarding") or {})
+        personal_profile = dict(onboarding.get("personalProfile") or {})
+        split = "Push Pull Legs" if det_context["frequency"] >= 5 else "Upper / Lower" if det_context["frequency"] == 4 else "Full Body"
+        input_obj = StrengthWorkoutPlanInput(
+            goal=det_context["goal"],
+            level=det_context["experience_level"],
+            split=split,
+            height=str(personal_profile.get("height") or "175"),
+            gender=str(personal_profile.get("gender") or "Other"),
+            bench=str(det_context["known_weights"].get("bench") or ""),
+            squat=str(det_context["known_weights"].get("squat") or ""),
+            deadlift=str(det_context["known_weights"].get("deadlift") or ""),
+            equipment=det_context["equipment"],
+            frequency=str(det_context["frequency"]),
+            days=det_context["training_days"],
+            age=str(det_context["age"]),
+            weight=str(det_context["known_weights"].get("bodyweight") or "75"),
+            muscle_group="Full Body",
+            duration_minutes=str(det_context["expected_duration_minutes"]),
+            language=preferred_lang,
+            injury_flags=det_context["injuries_restrictions"],
+        )
+        built_plan = _build_strength_workout_plan(input_obj)
+        plan_blocks = []
+        for day_dict in built_plan.get("days", []):
+            day_name = day_dict.get("day")
+            title = day_dict.get("title")
+            est_time = day_dict.get("est_time")
+            intensity = day_dict.get("intensity")
+            ex_lines = []
+            for ex in day_dict.get("exercises", []):
+                ex_lines.append(f"- {ex.get('name')}: {ex.get('sets')} x {ex.get('reps')}, {ex.get('rest')}, {ex.get('weight')}, {ex.get('type')}")
+            plan_blocks.append(f"**{day_name}: {title}**\n{est_time} | {intensity} intensity\n" + "\n".join(ex_lines))
+
+        days_count = len(built_plan.get("days", []))
+        dur_mins = det_context["expected_duration_minutes"]
+        equip_str = ", ".join(det_context["equipment"]) if det_context["equipment"] else "available equipment"
+
+        if preferred_lang == "de":
             return (
-                f"Ich baue den Plan nach deiner Vorgabe: {minutes} Minuten pro Training, nur die genannten Tage. Annahme: Ziel {goal}, Equipment: {equipment}.\n\n"
+                f"Hier ist dein neuer Trainingsplan: {dur_mins} Minuten pro Einheit, {days_count} Trainingstage. Annahme: Ziel {det_context['goal']}, Level {det_context['experience_level']}, Equipment: {equip_str}.\n\n"
                 + "\n\n".join(plan_blocks)
             )
 
         return (
-            f"Here is the Home-ready plan based on your request: {minutes} minutes per session, only the days you named. Assumption: goal is {goal}, equipment is {equipment}.\n\n"
+            f"Here is your structured workout plan: {dur_mins} minutes per session, {days_count} training days. Goal: {det_context['goal']}, Level: {det_context['experience_level']}, Equipment: {equip_str}.\n\n"
             + "\n\n".join(plan_blocks)
         )
 
