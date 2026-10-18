@@ -324,7 +324,7 @@ def generate_nutrition_plan(payload: dict) -> NutritionResult:
 def generate_progressive_nutrition_plan_monday(payload: dict) -> NutritionResult:
     prompt = _build_progressive_nutrition_plan_monday_prompt(payload)
     plan_text = _generate_nutrition_plan_monday_json(prompt)
-    plan = _parse_or_repair_nutrition_plan_monday(plan_text)
+    plan = _parse_or_repair_nutrition_plan_monday(plan_text, payload=payload)
     if plan is None:
         raise RuntimeError("The nutrition model did not return valid Monday plan JSON")
 
@@ -334,7 +334,7 @@ def generate_progressive_nutrition_plan_monday(payload: dict) -> NutritionResult
 def generate_progressive_nutrition_plan_completion(payload: dict, monday_plan: dict) -> NutritionResult:
     prompt = _build_progressive_nutrition_plan_completion_prompt(payload, monday_plan)
     plan_text = _generate_nutrition_plan_completion_json(prompt)
-    plan = _parse_or_repair_nutrition_plan(plan_text)
+    plan = _parse_or_repair_nutrition_plan(plan_text, payload=payload)
     if plan is None:
         raise RuntimeError("The nutrition model did not return valid completion plan JSON")
 
@@ -343,7 +343,7 @@ def generate_progressive_nutrition_plan_completion(payload: dict, monday_plan: d
         remaining_days = [day for day in plan["days"] if day.get("day") != "Mon"]
         plan["days"] = monday_days + remaining_days
 
-    return NutritionResult(data=_validate_nutrition_plan(plan))
+    return NutritionResult(data=_normalize_nutrition_plan(plan, payload=payload))
 
 
 def generate_progressive_nutrition_plan_day(
@@ -357,48 +357,7 @@ def generate_progressive_nutrition_plan_day(
 
     prompt = _build_progressive_nutrition_plan_day_prompt(payload, normalized_day, previous_days)
     plan_text = _generate_nutrition_plan_day_json(prompt)
-    plan = _parse_or_repair_nutrition_day_plan(plan_text, normalized_day)
-    if plan is None:
-        raise RuntimeError(f"The nutrition model did not return valid {normalized_day} plan JSON")
-
-
-def generate_progressive_nutrition_plan_monday(payload: dict) -> NutritionResult:
-    prompt = _build_progressive_nutrition_plan_monday_prompt(payload)
-    plan_text = _generate_nutrition_plan_monday_json(prompt)
-    plan = _parse_or_repair_nutrition_plan_monday(plan_text)
-    if plan is None:
-        raise RuntimeError("The nutrition model did not return valid Monday plan JSON")
-
-    return NutritionResult(data=plan)
-
-
-def generate_progressive_nutrition_plan_completion(payload: dict, monday_plan: dict) -> NutritionResult:
-    prompt = _build_progressive_nutrition_plan_completion_prompt(payload, monday_plan)
-    plan_text = _generate_nutrition_plan_completion_json(prompt)
-    plan = _parse_or_repair_nutrition_plan(plan_text)
-    if plan is None:
-        raise RuntimeError("The nutrition model did not return valid completion plan JSON")
-
-    monday_days = _normalize_plan_days(monday_plan.get("days", []), day_order=["Mon"])
-    if monday_days:
-        remaining_days = [day for day in plan["days"] if day.get("day") != "Mon"]
-        plan["days"] = monday_days + remaining_days
-
-    return NutritionResult(data=_validate_nutrition_plan(plan))
-
-
-def generate_progressive_nutrition_plan_day(
-    payload: dict,
-    day_name: str,
-    previous_days: list[dict],
-) -> NutritionResult:
-    normalized_day = str(day_name).strip().title()[:3]
-    if normalized_day not in PLAN_DAY_ORDER:
-        normalized_day = PLAN_DAY_ORDER[0]
-
-    prompt = _build_progressive_nutrition_plan_day_prompt(payload, normalized_day, previous_days)
-    plan_text = _generate_nutrition_plan_day_json(prompt)
-    plan = _parse_or_repair_nutrition_day_plan(plan_text, normalized_day)
+    plan = _parse_or_repair_nutrition_day_plan(plan_text, normalized_day, payload=payload)
     if plan is None:
         raise RuntimeError(f"The nutrition model did not return valid {normalized_day} plan JSON")
 
@@ -475,14 +434,29 @@ def _parse_weight_kg(weight: Any) -> float:
 def calculate_protein_target(weight: Any, goal: str | None = None) -> tuple[int, float]:
     weight_kg = _parse_weight_kg(weight)
     goal_code = str(goal or "").strip().lower()
-    if goal_code in {"weight reduction", "weight_reduction"}:
+
+    # Maintenance / normal goal: minimum approximately 1.6 g protein per kg bodyweight
+    if (
+        goal_code in {"g3", "maintenance", "normal", "weight maintenance", "weight_maintenance"}
+        or "maintenance" in goal_code
+        or "normal" in goal_code
+    ):
+        multiplier = 1.6
+    # Weight-reduction goal: approximately 2.2 g/kg according to client requested product logic
+    elif (
+        goal_code in {"g1", "weight reduction", "weight_reduction", "weight loss", "weight_loss", "fat loss", "fat_loss", "cutting", "deficit"}
+        or any(term in goal_code for term in ["weight reduction", "weight_reduction", "weight loss", "weight_loss", "lose weight", "fat loss", "fat_loss", "cutting", "deficit"])
+    ):
         multiplier = 2.2
-    elif goal_code in {"muscle gain", "muscle_gain"}:
+    # Muscle-growth goal: target up to approximately 2.2 g/kg
+    elif (
+        goal_code in {"g2", "muscle gain", "muscle_gain", "muscle building", "muscle_building", "muscle growth", "muscle_growth", "hypertrophy"}
+        or any(term in goal_code for term in ["muscle", "hypertrophy", "mass gain", "mass_gain", "build muscle"])
+    ):
         multiplier = 2.2
-    elif goal_code in {"g2", "muscle building", "muscle_building"}:
-        multiplier = 2.0
     else:
         multiplier = 1.6
+
     daily_protein = max(int(round(weight_kg * multiplier)), 60)
     return daily_protein, multiplier
 
@@ -570,6 +544,7 @@ def _favorite_meals_instruction(payload: dict) -> str:
 
 def _workout_nutrient_timing_instruction(payload: dict) -> str:
     workout_time = str(payload.get("workout_time") or "17:30").strip()
+    target_protein, multiplier = calculate_protein_target(payload.get("weight"), payload.get("goal"))
     return (
         "WORKOUT NUTRIENT TIMING & MEAL SCHEDULING REQUIREMENTS:\n"
         f"- User's planned workout time is {workout_time} (or on scheduled workout training days).\n"
@@ -578,20 +553,31 @@ def _workout_nutrient_timing_instruction(payload: dict) -> str:
         "It MUST be CARB-FORWARD (high complex carbohydrates 45–60g+, moderate protein 15–22g, low fat <= 6g) to maximize glycogen and stamina.\n"
         "- POST-WORKOUT MEAL ('post_workout'): Scheduled within 45 minutes AFTER workout ends (e.g. by 18:45). "
         "It MUST be PROTEIN-FORWARD (high complete protein >= 30–40g, moderate carbs 30–45g, low fat) to trigger muscle protein synthesis.\n"
-        "- All 5 meals must sum accurately to the daily calorie and protein targets (1.6g/kg ±5g). No calculation should be missed.\n"
+        f"- All 5 meals must sum accurately to the daily calorie and protein targets ({multiplier}g/kg ±5g, ~{target_protein}g protein/day). No calculation should be missed.\n"
         "- In the meal description ('desc'), explicitly note the timing and purpose.\n"
     )
 
 
 def _protein_target_instruction(payload: dict) -> str:
-    weight_val = payload.get("weight")
+    weight_val = (
+        payload.get("weight")
+        or (payload.get("profile") if isinstance(payload.get("profile"), dict) else {}).get("weight")
+        or payload.get("baseline_weight")
+    )
     weight_kg = _parse_weight_kg(weight_val)
-    goal = payload.get("goal")
+    goal = (
+        payload.get("goal")
+        or (payload.get("profile") if isinstance(payload.get("profile"), dict) else {}).get("goal")
+        or payload.get("goal_label")
+    )
     target_protein, multiplier = calculate_protein_target(weight_kg, goal)
     return (
+        f"CRITICAL DETERMINISTIC PROTEIN CONSTRAINT:\n"
+        f"- The daily protein target for this {weight_kg}kg user is EXACTLY {target_protein}g/day ({multiplier}g/kg bodyweight).\n"
+        f"- Do NOT alter, arbitrarily calculate, or guess a different protein requirement.\n"
         f"PROTEIN ACCURACY TARGET: Daily protein across the 7-day plan must hit approximately {target_protein}g ({multiplier}g/kg ±5g, tolerance range {target_protein - 5}g–{target_protein + 5}g). "
         f"For this {weight_kg}kg user, ensure the daily total across all 5 meals (breakfast, lunch, pre_workout, post_workout, dinner) strictly hits approximately {target_protein}g/day. "
-        f"Distribute across all 5 meals: ~{int(target_protein * 0.20)}g breakfast, ~{int(target_protein * 0.25)}g lunch, ~{int(target_protein * 0.15)}g pre_workout, ~{int(target_protein * 0.25)}g post_workout, ~{int(target_protein * 0.15)}g dinner. "
+        f"Distribute across all 5 meals: ~{int(round(target_protein * 0.20))}g breakfast, ~{int(round(target_protein * 0.25))}g lunch, ~{int(round(target_protein * 0.15))}g pre_workout, ~{int(round(target_protein * 0.25))}g post_workout, ~{int(round(target_protein * 0.15))}g dinner. "
         "Strict Macro Math: For each meal, kcal must equal (p * 4) + (c * 4) + (f * 9) within ±5 kcal. All meals must sum accurately to the daily calorie and protein totals.\n"
     )
 
@@ -2312,11 +2298,12 @@ def _normalize_nutrition_plan(plan: dict, payload: dict | None = None) -> dict:
 
     weight_kg = _parse_weight_kg(user_weight_input) if user_weight_input else 0.0
     if weight_kg <= 0 and daily_protein:
-        weight_kg = round(daily_protein / 1.6, 1)
+        _, fallback_mult = calculate_protein_target(70.0, user_goal_input)
+        weight_kg = round(daily_protein / fallback_mult, 1)
 
     target_p, multiplier = calculate_protein_target(weight_kg, user_goal_input) if weight_kg > 0 else (0, 1.6)
 
-    # Ensure total protein across 7-day plan strictly hits target_p (1.6g/kg ± 5g)
+    # Ensure total protein across 7-day plan strictly hits target_p
     if target_p > 0 and normalized_days:
         for day in normalized_days:
             keys = [k for k in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner") if k in day]
@@ -2336,6 +2323,8 @@ def _normalize_nutrition_plan(plan: dict, payload: dict | None = None) -> dict:
                 # Strict Macro Math: kcal = (p * 4) + (c * 4) + (f * 9)
                 calc_kcal = (meal["p"] * 4) + (meal.get("c", 30) * 4) + (meal.get("f", 10) * 9)
                 meal["kcal"] = max(calc_kcal, 100)
+        daily_protein = target_p
+    elif target_p > 0:
         daily_protein = target_p
 
     if not daily_protein and normalized_days:
@@ -2391,9 +2380,9 @@ def _parse_or_repair_nutrition_plan(text: str, payload: dict | None = None) -> d
         return None
 
 
-def _parse_or_repair_nutrition_plan_monday(text: str) -> dict | None:
+def _parse_or_repair_nutrition_plan_monday(text: str, payload: dict | None = None) -> dict | None:
     try:
-        return _normalize_nutrition_plan_monday(_parse_json_object(text))
+        return _normalize_nutrition_plan_monday(_parse_json_object(text), payload=payload)
     except json.JSONDecodeError:
         pass
 
@@ -2406,14 +2395,14 @@ def _parse_or_repair_nutrition_plan_monday(text: str) -> dict | None:
         return None
 
     try:
-        return _normalize_nutrition_plan_monday(_parse_json_object(repaired_text))
+        return _normalize_nutrition_plan_monday(_parse_json_object(repaired_text), payload=payload)
     except json.JSONDecodeError:
         return None
 
 
-def _parse_or_repair_nutrition_day_plan(text: str, day_name: str) -> dict | None:
+def _parse_or_repair_nutrition_day_plan(text: str, day_name: str, payload: dict | None = None) -> dict | None:
     try:
-        return _normalize_nutrition_day_plan(_parse_json_object(text), day_name)
+        return _normalize_nutrition_day_plan(_parse_json_object(text), day_name, payload=payload)
     except json.JSONDecodeError:
         pass
 
@@ -2426,7 +2415,7 @@ def _parse_or_repair_nutrition_day_plan(text: str, day_name: str) -> dict | None
         return None
 
     try:
-        return _normalize_nutrition_day_plan(_parse_json_object(repaired_text), day_name)
+        return _normalize_nutrition_day_plan(_parse_json_object(repaired_text), day_name, payload=payload)
     except json.JSONDecodeError:
         return None
 
@@ -2462,7 +2451,7 @@ def _normalize_plan_days(days: object, day_order: list[str] | None = None) -> li
     return [by_day.get(day_name, _default_day_plan(day_name)) for day_name in ordered_days]
 
 
-def _normalize_nutrition_plan_monday(plan: dict) -> dict:
+def _normalize_nutrition_plan_monday(plan: dict, payload: dict | None = None) -> dict:
     raw_day = plan.get("day")
     normalized_day = _normalize_day_plan(raw_day if isinstance(raw_day, dict) else {})
     normalized_day["day"] = "Mon"
@@ -2472,10 +2461,10 @@ def _normalize_nutrition_plan_monday(plan: dict) -> dict:
         "days": [normalized_day],
         "shopping_list": [],
     }
-    return _validate_nutrition_plan(normalized_plan)
+    return _normalize_nutrition_plan(normalized_plan, payload=payload)
 
 
-def _normalize_nutrition_day_plan(plan: dict, day_name: str) -> dict:
+def _normalize_nutrition_day_plan(plan: dict, day_name: str, payload: dict | None = None) -> dict:
     raw_day = plan.get("day")
     normalized_day = _normalize_day_plan(raw_day if isinstance(raw_day, dict) else {})
     normalized_day["day"] = day_name
@@ -2485,7 +2474,7 @@ def _normalize_nutrition_day_plan(plan: dict, day_name: str) -> dict:
         "days": [normalized_day],
         "shopping_list": [],
     }
-    return _validate_nutrition_plan(normalized_plan)
+    return _normalize_nutrition_plan(normalized_plan, payload=payload)
 
 
 def _normalize_day_plan(day: dict) -> dict:
