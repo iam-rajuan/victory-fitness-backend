@@ -1022,6 +1022,9 @@ class ChallengePlanProgressResponse(BaseModel):
     viewer_progress_days_completed: int = 0
     viewer_points_earned: int = 0
     viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
+    current_day_number: int | None = None
+    completed_today: bool = False
+    next_day_unlock_at: datetime | None = None
 
 
 class ChallengeProgressReportResponse(BaseModel):
@@ -1156,6 +1159,7 @@ class ChallengeDetailResponse(BaseModel):
     current_day_number: int | None = None
     can_complete_today: bool = False
     completed_today: bool = False
+    next_day_unlock_at: datetime | None = None
     messages: list["ChallengeChatMessageResponse"] = Field(default_factory=list)
     started_at: datetime | None = None
 
@@ -1207,6 +1211,9 @@ class ChallengeChatThreadResponse(BaseModel):
     unread_count: int = 0
     messages: list[ChallengeChatMessageResponse] = Field(default_factory=list)
     started_at: datetime | None = None
+    current_day_number: int | None = None
+    completed_today: bool = False
+    next_day_unlock_at: datetime | None = None
 
 
 

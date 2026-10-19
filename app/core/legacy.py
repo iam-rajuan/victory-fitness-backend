@@ -2298,6 +2298,10 @@ def _serialize_challenge_plan_progress_response(
 
     raw_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
 
+    duration_days = max(len(plan_days), 1)
+
+    current_day_number = _get_current_challenge_day_number(membership, plan_days, duration_days)
+
     return ChallengePlanProgressResponse(
 
         challenge_id=challenge_id,
@@ -2309,6 +2313,12 @@ def _serialize_challenge_plan_progress_response(
         viewer_points_earned=_calculate_challenge_points_earned(plan_days, membership, challenge_points),
 
         viewer_plan_progress=_build_viewer_plan_progress(plan_days, membership),
+
+        current_day_number=current_day_number,
+
+        completed_today=_has_completed_challenge_day_today(membership),
+
+        next_day_unlock_at=_get_next_challenge_day_unlock_at(membership, duration_days),
 
     )
 
@@ -3817,6 +3827,10 @@ async def _store_membership_plan_progress(
 
     plan_days = _get_normalized_plan_days(challenge)
 
+    duration_days = max(int(challenge.get("duration_days") or 0), len(plan_days), 1)
+
+    _ensure_challenge_day_is_current(membership, plan_days, duration_days, day_number)
+
     plan_day = _get_plan_day_or_404(plan_days, day_number)
 
     valid_section_ids, valid_exercise_ids = _get_plan_day_ids(plan_day)
@@ -3873,6 +3887,14 @@ async def _store_membership_plan_progress(
 
     existing_progress = membership.get("plan_progress") if isinstance(membership.get("plan_progress"), dict) else {}
 
+    existing_day_progress = existing_progress.get(str(day_number), {})
+
+    was_day_completed = bool(isinstance(existing_day_progress, dict) and existing_day_progress.get("completed"))
+
+    if is_day_completed and not was_day_completed and _has_completed_challenge_day_today(membership):
+
+        raise HTTPException(status_code=409, detail="You can only complete one challenge day per day")
+
     next_plan_progress = dict(existing_progress)
 
     next_plan_progress[str(day_number)] = {
@@ -3888,8 +3910,6 @@ async def _store_membership_plan_progress(
     }
 
     progress_days_completed = _count_completed_plan_days_from_start(plan_days, next_plan_progress)
-
-    duration_days = max(int(challenge.get("duration_days") or 0), 1)
 
     next_status = "COMPLETED" if progress_days_completed >= duration_days else "ACTIVE"
 
@@ -3996,7 +4016,17 @@ async def _store_membership_plan_progress(
 
     return _serialize_challenge_plan_progress_response(str(challenge["_id"]), membership_with_points, plan_days)
 
-def _get_current_challenge_day_number(membership: dict, plan_days: list[dict], duration_days: int) -> int:
+def _get_current_challenge_day_number(
+
+    membership: dict,
+
+    plan_days: list[dict],
+
+    duration_days: int,
+
+    now: datetime | None = None,
+
+) -> int:
 
     started_at_raw = membership.get("started_at")
 
@@ -4014,7 +4044,7 @@ def _get_current_challenge_day_number(membership: dict, plan_days: list[dict], d
 
                 started_at = started_at.astimezone(timezone.utc)
 
-            today = datetime.now(timezone.utc).date()
+            today = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).date()
 
             started_day = started_at.date()
 
@@ -4043,6 +4073,70 @@ def _get_current_challenge_day_number(membership: dict, plan_days: list[dict], d
     next_day = max(int(membership.get("progress_days_completed") or 0), 0) + 1
 
     return min(max(next_day, 1), max(duration_days, 1))
+
+def _ensure_challenge_day_is_current(
+
+    membership: dict,
+
+    plan_days: list[dict],
+
+    duration_days: int,
+
+    day_number: int,
+
+    now: datetime | None = None,
+
+) -> None:
+
+    current_day_number = _get_current_challenge_day_number(membership, plan_days, duration_days, now=now)
+
+    if day_number == current_day_number:
+
+        return
+
+    if day_number > current_day_number:
+
+        raise HTTPException(
+
+            status_code=409,
+
+            detail=f"Day {day_number} is not unlocked yet. Complete day {current_day_number} on its scheduled day.",
+
+        )
+
+    raise HTTPException(status_code=409, detail="Only today's challenge day can be updated")
+
+def _get_next_challenge_day_unlock_at(
+
+    membership: dict,
+
+    duration_days: int,
+
+    now: datetime | None = None,
+
+) -> datetime | None:
+
+    started_at = _coerce_utc_datetime(membership.get("started_at"))
+
+    if not started_at:
+
+        return None
+
+    current_day_number = _get_current_challenge_day_number(membership, [], duration_days, now=now)
+
+    if current_day_number >= max(duration_days, 1):
+
+        return None
+
+    return datetime.combine(
+
+        started_at.date() + timedelta(days=current_day_number),
+
+        datetime.min.time(),
+
+        tzinfo=timezone.utc,
+
+    )
 
 def _get_normalized_plan_days(challenge: dict) -> list[dict]:
 

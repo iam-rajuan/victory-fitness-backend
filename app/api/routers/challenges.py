@@ -471,6 +471,8 @@ async def get_challenge_detail(
 
         completed_today=completed_today,
 
+        next_day_unlock_at=_get_next_challenge_day_unlock_at(membership, max(int(challenge.get("duration_days") or 0), len(normalized_plan_days), 1)) if membership and has_joined else None,
+
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
 
         started_at=membership.get("started_at") if membership else None,
@@ -589,6 +591,10 @@ async def get_challenge_chat_thread(
 
     difficulties = _normalize_challenge_difficulties(challenge)
 
+    duration_days = max(int(challenge.get("duration_days") or 0), len(normalized_plan_days), 1)
+
+    current_day_number = _get_current_challenge_day_number(membership, normalized_plan_days, duration_days)
+
     return ChallengeChatThreadResponse(
 
         challenge_id=challenge_id,
@@ -643,6 +649,12 @@ async def get_challenge_chat_thread(
         messages=[ChallengeChatMessageResponse(**message) for message in messages],
 
         started_at=membership.get("started_at"),
+
+        current_day_number=current_day_number,
+
+        completed_today=_has_completed_challenge_day_today(membership),
+
+        next_day_unlock_at=_get_next_challenge_day_unlock_at(membership, duration_days),
 
     )
 
