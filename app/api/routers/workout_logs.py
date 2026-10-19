@@ -267,6 +267,11 @@ async def create_workout_log(
         "status": payload.status,
         "workout_id": payload.workout_id,
         "title": resolved_title,
+        "duration_seconds": payload.duration_seconds,
+        "sets_logged": payload.sets_logged,
+        "volume_kg": payload.volume_kg,
+        "movements": doc["movements"],
+        "completed_at": doc["completed_at"].isoformat() if doc["completed_at"] else None,
     }
 
 

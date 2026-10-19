@@ -20,11 +20,16 @@ class _FakeNutritionPlansCollection:
     async def find_one(self, query, sort=None):
         user_id = query.get("user_id")
         profile_hash = query.get("profile_hash")
-        matching = [
-            record
-            for record in self.records
-            if record.get("user_id") == user_id and (profile_hash is None or record.get("profile_hash") == profile_hash)
-        ]
+        matching = []
+        for record in self.records:
+            if record.get("user_id") != user_id:
+                continue
+            if isinstance(profile_hash, dict) and "$ne" in profile_hash:
+                if record.get("profile_hash") == profile_hash["$ne"]:
+                    continue
+            elif profile_hash is not None and record.get("profile_hash") != profile_hash:
+                continue
+            matching.append(record)
         if not matching:
             return None
         return matching[-1]
@@ -397,3 +402,145 @@ class NutritionPlanFallbackTests(unittest.TestCase):
         self.assertEqual(result.data["days"][0]["day"], "Mon")
         self.assertIn("Tofu and chickpeas", result.data["days"][0]["lunch"]["ingredients"])
         self.assertTrue(result.data["shopping_list"])
+
+    def test_concise_nutrition_summary_across_goals_and_countries(self) -> None:
+        """Validate dynamic concise structured summary with different goals, countries, and allergies."""
+        build_summary = nutrition_ai_module.build_concise_nutrition_summary
+
+        # 1. Ghanaian maintenance plan with nut allergy
+        ghana_days = [
+            {
+                "day": "Mon",
+                "breakfast": {"name": "Waakye", "kcal": 450, "p": 25},
+                "lunch": {"name": "Red Red", "kcal": 700, "p": 40},
+                "dinner": {"name": "Grilled Tilapia with Banku", "kcal": 650, "p": 35},
+                "pre_workout": {"name": "Banana", "kcal": 150, "p": 2},
+                "post_workout": {"name": "Protein Shake", "kcal": 150, "p": 10},
+            }
+        ]
+        ghana_summary = build_summary(
+            {
+                "days": ghana_days,
+                "goal_label": "Maintenance",
+                "daily_protein_target": 112,
+            },
+            payload={
+                "country": "Ghana",
+                "cuisine": "Ghanaian",
+                "goal": "g3",
+                "allergies": "nut",
+            },
+        )
+        self.assertIn("7-day Ghanaian maintenance plan", ghana_summary)
+        self.assertIn("~2,100 kcal/day", ghana_summary)
+        self.assertIn("112g protein/day", ghana_summary)
+        self.assertIn("Nut allergy respected", ghana_summary)
+        self.assertIn("Meals prioritize authentic Ghanaian options and your stated preferences", ghana_summary)
+        self.assertNotIn("This tailored 7-day plan supports", ghana_summary)
+
+        # 2. German muscle building plan
+        german_days = [
+            {
+                "day": "Mon",
+                "breakfast": {"name": "Quark with Berries", "kcal": 550, "p": 45},
+                "lunch": {"name": "Chicken and Potatoes", "kcal": 850, "p": 55},
+                "dinner": {"name": "Salmon and Vegetables", "kcal": 800, "p": 50},
+                "pre_workout": {"name": "Oat Bar", "kcal": 200, "p": 5},
+                "post_workout": {"name": "Whey Shake", "kcal": 200, "p": 25},
+            }
+        ]
+        german_summary = build_summary(
+            {
+                "days": german_days,
+                "goal_label": "Muscle Building",
+                "daily_protein_target": 180,
+            },
+            payload={
+                "country": "Germany",
+                "cuisine": "German",
+                "goal": "g2",
+                "allergies": "",
+            },
+        )
+        self.assertIn("7-day German muscle building plan", german_summary)
+        self.assertIn("~2,600 kcal/day", german_summary)
+        self.assertIn("180g protein/day", german_summary)
+        self.assertIn("Meals prioritize authentic German options and your stated preferences", german_summary)
+
+        # 3. Italian weight loss plan with lactose allergy
+        italian_days = [
+            {
+                "day": "Mon",
+                "breakfast": {"name": "Eggs and Fruit", "kcal": 380, "p": 30},
+                "lunch": {"name": "Tuna Salad", "kcal": 550, "p": 45},
+                "dinner": {"name": "Chicken Breast with Spinach", "kcal": 520, "p": 40},
+                "pre_workout": {"name": "Apple", "kcal": 100, "p": 1},
+                "post_workout": {"name": "Isolate Shake", "kcal": 150, "p": 24},
+            }
+        ]
+        italian_summary = build_summary(
+            {
+                "days": italian_days,
+                "goal_label": "Weight Loss",
+                "daily_protein_target": 140,
+            },
+            payload={
+                "country": "Italy",
+                "cuisine": "Italian",
+                "goal": "g1",
+                "allergies": "lactose",
+            },
+        )
+        self.assertIn("7-day Italian weight loss plan", italian_summary)
+        self.assertIn("~1,700 kcal/day", italian_summary)
+        self.assertIn("140g protein/day", italian_summary)
+        self.assertIn("Lactose allergy respected", italian_summary)
+        self.assertIn("Meals prioritize authentic Italian options and your stated preferences", italian_summary)
+
+    def test_meal_entry_preparation_steps_sync_and_fallback(self) -> None:
+        from app.models import NutritionMealEntry
+
+        # 1. Existing instructions populates preparation_steps
+        meal1 = NutritionMealEntry(
+            name="Grilled Chicken",
+            desc="Healthy chicken",
+            kcal=400,
+            p=40,
+            c=10,
+            f=8,
+            ingredients=["200g chicken", "Olive oil"],
+            instructions=["Season chicken", "Grill for 12 mins", "Rest and serve"],
+        )
+        self.assertEqual(meal1.preparation_steps, ["Season chicken", "Grill for 12 mins", "Rest and serve"])
+        self.assertEqual(meal1.instructions, meal1.preparation_steps)
+
+        # 2. Existing preparation_steps populates instructions
+        meal2 = NutritionMealEntry(
+            name="Oats Bowl",
+            desc="Warm oats",
+            kcal=350,
+            p=25,
+            c=45,
+            f=6,
+            ingredients=["Oats", "Whey"],
+            preparation_steps=["Boil water", "Add oats", "Stir in whey"],
+        )
+        self.assertEqual(meal2.instructions, ["Boil water", "Add oats", "Stir in whey"])
+        self.assertEqual(meal2.preparation_steps, meal2.instructions)
+
+        # 3. Missing preparation steps generates structured 4-step meal-specific fallback
+        meal3 = NutritionMealEntry(
+            name="Jollof Rice with Chicken",
+            desc="Spicy rice dish",
+            kcal=650,
+            p=45,
+            c=70,
+            f=15,
+            ingredients=["Chicken breast", "Jasmine rice", "Tomatoes"],
+        )
+        self.assertEqual(len(meal3.preparation_steps), 4)
+        self.assertEqual(meal3.instructions, meal3.preparation_steps)
+        self.assertIn("Chicken breast, Jasmine rice, Tomatoes", meal3.preparation_steps[0])
+        self.assertIn("Jollof Rice with Chicken", meal3.preparation_steps[1])
+        self.assertIn("seasoning", meal3.preparation_steps[2].lower())
+        self.assertIn("serve", meal3.preparation_steps[3].lower())

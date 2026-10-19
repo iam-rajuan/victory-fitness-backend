@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from urllib import error, request
 
 from .config import settings
+from .workout_terminology import canonicalize_strength_plan_dict
 
 
 DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -192,9 +193,10 @@ def generate_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict
     ai_plan = _generate_strength_workout_plan_with_ai(input_data)
     if _looks_like_strength_plan(ai_plan):
         sanitized = _sanitize_plan_injuries(ai_plan, getattr(input_data, "injury_flags", []))
-        return _validate_and_correct_strength_plan(sanitized, input_data)
+        corrected = _validate_and_correct_strength_plan(sanitized, input_data)
+        return canonicalize_strength_plan_dict(corrected)
 
-    return _build_strength_workout_plan(input_data)
+    return canonicalize_strength_plan_dict(_build_strength_workout_plan(input_data))
 
 
 def _build_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
@@ -251,7 +253,7 @@ def _build_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
             volume_value = working_sets * average_weight * 8
             volume_label = f"{volume_value:,} kg"
 
-        day_est_time = _calculate_day_est_time(exercises)
+        day_est_time = _calculate_day_est_time(exercises, input_data.duration_minutes)
         days.append(
             {
                 "day": day_name,
@@ -364,7 +366,16 @@ def _looks_like_strength_plan(plan: dict | None) -> bool:
 
 def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
     lang = getattr(input_data, "language", "en") or "en"
-    lang_line = f"- Language: Write the summary, day titles, and exercise notes in {lang}. Keep day keys as Mon, Tue, etc.\n" if lang not in ("en", "en-gh") else ""
+    lang_line = (
+        f"- Language: Write the plan summary in {lang}. Keep day keys as Mon, Tue, etc.\n"
+        if lang not in ("en", "en-gh")
+        else ""
+    )
+    canonical_rule = (
+        "- CRITICAL CLIENT REQUIREMENT: All workout titles (e.g. 'Upper Body Strength', 'Lower Body Power', 'Full Body Hypertrophy', 'Push Strength', 'Pull Strength'), "
+        "day session titles, and exercise names (e.g. 'Bench Press', 'Barbell Back Squat', 'Lat Pulldown', 'Deadlift', 'Romanian Deadlift', 'Push-Up', 'Pull-Up', 'Dumbbell Row') "
+        "MUST ALWAYS remain in English regardless of the user's language. NEVER translate workout titles, session titles, or exercise names into German or any other language.\n"
+    )
     injury_list = [str(item).lower() for item in getattr(input_data, "injury_flags", []) if str(item).strip()]
     injury_line = ""
     if "knee" in injury_list:
@@ -392,6 +403,7 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- If equipment is 'home gym' or 'dumbbells', use only dumbbells and bodyweight. NEVER prescribe barbells or cable machines.\n"
         f"{injury_line}"
         "- Keep exercise ids stable and machine-friendly.\n"
+        f"{canonical_rule}"
         f"{lang_line}"
         f"User inputs: {json.dumps(input_data.__dict__, ensure_ascii=False)}"
     )
@@ -630,7 +642,7 @@ def _classify_equipment(equipment: list[str]) -> str:
     return "bodyweight_only"
 
 
-def _calculate_day_est_time(exercises: list[dict]) -> str:
+def _calculate_day_est_time(exercises: list[dict], target_duration_minutes: str | int | None = None) -> str:
     """Calculates realistic workout duration based on sets, rep cadence (35s), and rest seconds."""
     total_sec = 0
     for ex in exercises:
@@ -639,8 +651,25 @@ def _calculate_day_est_time(exercises: list[dict]) -> str:
         m = re.search(r"(\d+)", rest_str)
         r_sec = int(m.group(1)) * 60 if m and "min" in rest_str else int(m.group(1)) if m else 60
         total_sec += (sets * 35) + (max(0, sets - 1) * r_sec)
-    # Total minutes + 5-7 min warm-up & cool-down
-    mins = max(int((total_sec + 59) // 60) + 6, 25)
+
+    target_mins = None
+    if target_duration_minutes:
+        try:
+            m_target = re.search(r"(\d+)", str(target_duration_minutes))
+            if m_target:
+                target_mins = int(m_target.group(1))
+        except Exception:
+            pass
+
+    warmup_cooldown = 12 if target_mins and target_mins >= 75 else 6
+    calculated_mins = int((total_sec + 59) // 60) + warmup_cooldown
+
+    if target_mins:
+        # Strictly preserve user's requested session duration (e.g. 90 min, 60 min, 45 min); never collapse to 25 minutes
+        mins = max(calculated_mins, target_mins)
+    else:
+        mins = max(calculated_mins, 25)
+
     return f"{mins} min"
 
 
@@ -667,11 +696,11 @@ def _normalize_muscle_group(value: str | None) -> str:
 
 def _requested_duration_minutes(value: str | int | None) -> int:
     if isinstance(value, int):
-        return max(20, min(value, 90))
+        return max(20, min(value, 240))
     match = re.search(r"(\d+)", str(value or ""))
     if not match:
         return 45
-    return max(20, min(int(match.group(1)), 90))
+    return max(20, min(int(match.group(1)), 240))
 
 
 def _target_exercise_count(duration_minutes: str | int | None) -> int:
@@ -682,20 +711,22 @@ def _target_exercise_count(duration_minutes: str | int | None) -> int:
         return 4
     if duration <= 60:
         return 5
-    return 6
+    if duration <= 75:
+        return 6
+    return 7
 
 
-def _estimated_minutes_value(exercises: list[dict]) -> int:
-    match = re.search(r"(\d+)", _calculate_day_est_time(exercises))
+def _estimated_minutes_value(exercises: list[dict], target_duration: str | int | None = None) -> int:
+    match = re.search(r"(\d+)", _calculate_day_est_time(exercises, target_duration))
     return int(match.group(1)) if match else 45
 
 
 def _fit_exercises_to_duration(exercises: list[dict], duration_minutes: str | int | None) -> list[dict]:
     duration = _requested_duration_minutes(duration_minutes)
     fitted = [dict(exercise) for exercise in exercises]
-    while len(fitted) > 3 and _estimated_minutes_value(fitted) > duration + 5:
+    while len(fitted) > 3 and _estimated_minutes_value(fitted, duration) > duration + 10:
         fitted.pop()
-    if _estimated_minutes_value(fitted) <= duration + 5:
+    if _estimated_minutes_value(fitted, duration) <= duration + 10:
         return fitted
     for exercise in fitted:
         exercise["sets"] = min(max(int(exercise.get("sets") or 3), 1), 3)
@@ -873,7 +904,7 @@ def _validate_and_correct_strength_plan(plan: dict, input_data: StrengthWorkoutP
         corrected_day = {
             "day": day_name,
             "title": str(incoming.get("title") or fallback_day.get("title") or f"{day_name} Strength"),
-            "est_time": _calculate_day_est_time(_fit_exercises_to_duration(clean_exercises, input_data.duration_minutes)),
+            "est_time": _calculate_day_est_time(_fit_exercises_to_duration(clean_exercises, input_data.duration_minutes), input_data.duration_minutes),
             "volume": str(fallback_day.get("volume") or incoming.get("volume") or ""),
             "intensity": _strength_intensity_label(input_data.goal, input_data.level),
             "exercises": _fit_exercises_to_duration(clean_exercises, input_data.duration_minutes),
@@ -907,7 +938,7 @@ def _strength_exercise_pool(
             for day_index in range(5)
         ]
 
-    # 1. BODYWEIGHT / NO EQUIPMENT SPLIT
+    # 1. BODYWEIGHT / NO EQUIPMENT SPLIT (5 Full Days)
     if equip_type == "bodyweight_only":
         return _shape_pool_for_constraints([
             # Day 1: Full Body / Lower Focus
@@ -917,78 +948,207 @@ def _strength_exercise_pool(
                 {"name": "Reverse Lunge", "sets": 3, "reps": "10/side", "rest": "60s", "type": "Accessory"},
                 {"name": "Single-Leg Glute Bridge", "sets": 3, "reps": "12/side", "rest": "45s", "type": "Accessory"},
                 {"name": "Plank", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
+                {"name": "Calf Raise", "sets": 3, "reps": "20", "rest": "45s", "type": "Isolation"},
+                {"name": "Mountain Climber", "sets": 3, "reps": "30s", "rest": "45s", "type": "Core"},
             ],
-            # Day 2: Upper / Calisthenics Focus
+            # Day 2: Upper Body & Calisthenics
             [
                 {"name": "Pike Push-Up", "sets": 4, "reps": "8-12", "rest": "75s", "type": "Compound"},
                 {"name": "Inverted Bodyweight Row", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
-                {"name": "Bulgarian Split Squat", "sets": 3, "reps": "10/side", "rest": "60s", "type": "Compound"},
+                {"name": "Diamond Push-Up", "sets": 3, "reps": "8-12", "rest": "60s", "type": "Compound"},
                 {"name": "Chair / Bench Dips", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Accessory"},
-                {"name": "Hollow Hold", "sets": 3, "reps": "30-40s", "rest": "45s", "type": "Core"},
+                {"name": "Hollow Hold", "sets": 3, "reps": "30-45s", "rest": "45s", "type": "Core"},
+                {"name": "Push-Up", "sets": 3, "reps": "Max-2", "rest": "60s", "type": "Compound"},
+                {"name": "Russian Twist", "sets": 3, "reps": "20 total", "rest": "45s", "type": "Core"},
             ],
-            # Day 3: Hypertrophy & Conditioning
+            # Day 3: Lower Body Power & Posterior Chain
             [
                 {"name": "Jump Squat", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
-                {"name": "Diamond Push-Up", "sets": 3, "reps": "8-12", "rest": "60s", "type": "Compound"},
                 {"name": "Walking Lunge", "sets": 3, "reps": "12/side", "rest": "60s", "type": "Accessory"},
-                {"name": "Mountain Climber", "sets": 3, "reps": "30s", "rest": "45s", "type": "Core"},
+                {"name": "Glute Bridge", "sets": 4, "reps": "15", "rest": "45s", "type": "Accessory"},
+                {"name": "Bodyweight Tempo Squat", "sets": 3, "reps": "15", "rest": "60s", "type": "Compound"},
+                {"name": "Calf Raise", "sets": 4, "reps": "20", "rest": "45s", "type": "Isolation"},
+                {"name": "Plank", "sets": 3, "reps": "60s", "rest": "45s", "type": "Core"},
+                {"name": "Mountain Climber", "sets": 3, "reps": "40s", "rest": "45s", "type": "Core"},
+            ],
+            # Day 4: Upper Volume & Core Endurance
+            [
+                {"name": "Push-Up", "sets": 4, "reps": "12-15", "rest": "60s", "type": "Compound"},
+                {"name": "Inverted Bodyweight Row", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Pike Push-Up", "sets": 3, "reps": "8-10", "rest": "60s", "type": "Compound"},
+                {"name": "Chair / Bench Dips", "sets": 3, "reps": "12", "rest": "60s", "type": "Accessory"},
+                {"name": "Hollow Hold", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
+                {"name": "Russian Twist", "sets": 3, "reps": "25", "rest": "45s", "type": "Core"},
+                {"name": "Plank", "sets": 3, "reps": "60s", "rest": "45s", "type": "Core"},
+            ],
+            # Day 5: Full Body Metabolic Conditioning
+            [
+                {"name": "Bodyweight Tempo Squat", "sets": 4, "reps": "15", "rest": "60s", "type": "Compound"},
+                {"name": "Diamond Push-Up", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Reverse Lunge", "sets": 3, "reps": "10/side", "rest": "60s", "type": "Accessory"},
+                {"name": "Jump Squat", "sets": 3, "reps": "10", "rest": "60s", "type": "Compound"},
+                {"name": "Mountain Climber", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
+                {"name": "Glute Bridge", "sets": 3, "reps": "15", "rest": "45s", "type": "Accessory"},
+                {"name": "Hollow Hold", "sets": 3, "reps": "30s", "rest": "45s", "type": "Core"},
             ],
         ], goal, level, duration_minutes)
 
-    # 2. HOME GYM / DUMBBELLS SPLIT
+    # 2. HOME GYM / DUMBBELLS SPLIT (5 Full Days)
     if equip_type == "dumbbells_only":
         return _shape_pool_for_constraints([
+            # Day 1: Dumbbell Push & Quads
             [
                 {"name": "Dumbbell Goblet Squat", "sets": 4, "reps": "10-12", "rest": "75s", "type": "Compound"},
                 {"name": "Dumbbell Floor Press", "sets": 4, "reps": "8-12", "rest": "75s", "type": "Compound"},
-                {"name": "Dumbbell Romanian Deadlift", "sets": 3, "reps": "10-12", "rest": "75s", "type": "Compound"},
-                {"name": "Dumbbell Row", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Dumbbell Chest Flye", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Accessory"},
+                {"name": "Dumbbell Bulgarian Split Squat", "sets": 3, "reps": "8-10/side", "rest": "75s", "type": "Compound"},
                 {"name": "Plank", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
+                {"name": "Calf Raise", "sets": 3, "reps": "15", "rest": "45s", "type": "Isolation"},
+                {"name": "Push-Up", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Compound"},
             ],
+            # Day 2: Dumbbell Pull & Hamstrings
+            [
+                {"name": "Dumbbell Romanian Deadlift", "sets": 4, "reps": "10-12", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Row", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Dumbbell Curl", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Isolation"},
+                {"name": "Single-Leg Glute Bridge", "sets": 3, "reps": "12/side", "rest": "45s", "type": "Accessory"},
+                {"name": "Russian Twist", "sets": 3, "reps": "20 total", "rest": "45s", "type": "Core"},
+                {"name": "Farmer Carry", "sets": 3, "reps": "30m", "rest": "60s", "type": "Accessory"},
+                {"name": "Hollow Hold", "sets": 3, "reps": "30-45s", "rest": "45s", "type": "Core"},
+            ],
+            # Day 3: Dumbbell Shoulders, Arms & Core
             [
                 {"name": "Dumbbell Overhead Press", "sets": 4, "reps": "8-10", "rest": "75s", "type": "Compound"},
-                {"name": "Dumbbell Bulgarian Split Squat", "sets": 3, "reps": "8-10/side", "rest": "75s", "type": "Compound"},
-                {"name": "Dumbbell Chest Flye", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Accessory"},
-                {"name": "Dumbbell Lateral Raise", "sets": 3, "reps": "12-15", "rest": "45s", "type": "Isolation"},
-                {"name": "Russian Twist", "sets": 3, "reps": "20 total", "rest": "45s", "type": "Core"},
+                {"name": "Dumbbell Lateral Raise", "sets": 4, "reps": "12-15", "rest": "45s", "type": "Isolation"},
+                {"name": "Dumbbell Skull Crusher", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Isolation"},
+                {"name": "Dumbbell Curl", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Isolation"},
+                {"name": "Plank", "sets": 3, "reps": "60s", "rest": "45s", "type": "Core"},
+                {"name": "Dumbbell Chest Flye", "sets": 3, "reps": "12", "rest": "60s", "type": "Accessory"},
+                {"name": "Russian Twist", "sets": 3, "reps": "20", "rest": "45s", "type": "Core"},
+            ],
+            # Day 4: Dumbbell Lower Body Power
+            [
+                {"name": "Dumbbell Bulgarian Split Squat", "sets": 4, "reps": "8-10/side", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Romanian Deadlift", "sets": 4, "reps": "8-10", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Goblet Squat", "sets": 3, "reps": "12", "rest": "75s", "type": "Compound"},
+                {"name": "Calf Raise", "sets": 4, "reps": "15-20", "rest": "45s", "type": "Isolation"},
+                {"name": "Glute Bridge", "sets": 3, "reps": "15", "rest": "45s", "type": "Accessory"},
+                {"name": "Hollow Hold", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
+                {"name": "Mountain Climber", "sets": 3, "reps": "30s", "rest": "45s", "type": "Core"},
+            ],
+            # Day 5: Dumbbell Upper Body & Conditioning
+            [
+                {"name": "Dumbbell Floor Press", "sets": 4, "reps": "8-10", "rest": "75s", "type": "Compound"},
+                {"name": "Dumbbell Row", "sets": 4, "reps": "10-12", "rest": "60s", "type": "Compound"},
+                {"name": "Dumbbell Overhead Press", "sets": 3, "reps": "10", "rest": "60s", "type": "Compound"},
+                {"name": "Dumbbell Lateral Raise", "sets": 3, "reps": "15", "rest": "45s", "type": "Isolation"},
+                {"name": "Dumbbell Skull Crusher", "sets": 3, "reps": "12", "rest": "45s", "type": "Isolation"},
+                {"name": "Farmer Carry", "sets": 3, "reps": "30m", "rest": "60s", "type": "Accessory"},
+                {"name": "Plank", "sets": 3, "reps": "60s", "rest": "45s", "type": "Core"},
             ],
         ], goal, level, duration_minutes)
 
-    # 3. FULL GYM SPLIT
+    # 3. FULL GYM SPLIT (5 Full Days)
     if normalized_goal == "PURE STRENGTH":
         return _shape_pool_for_constraints([
+            # Day 1: Heavy Squat & Lower
             [
                 {"name": "Barbell Back Squat", "sets": 5, "reps": "4-6", "rest": "180s", "type": "Compound"},
+                {"name": "Romanian Deadlift", "sets": 4, "reps": "6-8", "rest": "150s", "type": "Compound"},
+                {"name": "Leg Press", "sets": 3, "reps": "8-10", "rest": "120s", "type": "Accessory"},
+                {"name": "Calf Raise", "sets": 4, "reps": "12", "rest": "60s", "type": "Isolation"},
+                {"name": "Plank", "sets": 3, "reps": "60s", "rest": "60s", "type": "Core"},
+                {"name": "Farmer Carry", "sets": 3, "reps": "40m", "rest": "90s", "type": "Accessory"},
+            ],
+            # Day 2: Heavy Bench & Push
+            [
                 {"name": "Bench Press", "sets": 5, "reps": "4-6", "rest": "180s", "type": "Compound"},
-                {"name": "Weighted Row", "sets": 4, "reps": "6-8", "rest": "120s", "type": "Compound"},
+                {"name": "Overhead Press", "sets": 4, "reps": "5-6", "rest": "150s", "type": "Compound"},
+                {"name": "Incline Dumbbell Press", "sets": 3, "reps": "8-10", "rest": "120s", "type": "Accessory"},
+                {"name": "Lateral Raise", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Isolation"},
+                {"name": "Cable Face Pull", "sets": 3, "reps": "15", "rest": "60s", "type": "Accessory"},
+                {"name": "Push-Up", "sets": 2, "reps": "Max", "rest": "60s", "type": "Compound"},
+            ],
+            # Day 3: Heavy Deadlift & Pull
+            [
+                {"name": "Deadlift", "sets": 5, "reps": "3-5", "rest": "210s", "type": "Compound"},
+                {"name": "Weighted Row", "sets": 4, "reps": "6-8", "rest": "150s", "type": "Compound"},
+                {"name": "Pull-Up", "sets": 4, "reps": "6-8", "rest": "120s", "type": "Compound"},
+                {"name": "Cable Row", "sets": 3, "reps": "8-10", "rest": "90s", "type": "Compound"},
+                {"name": "Cable Crunch", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Core"},
                 {"name": "Farmer Carry", "sets": 3, "reps": "30m", "rest": "75s", "type": "Accessory"},
             ],
+            # Day 4: Overhead & Upper Volume
             [
-                {"name": "Deadlift", "sets": 4, "reps": "3-5", "rest": "210s", "type": "Compound"},
-                {"name": "Overhead Press", "sets": 4, "reps": "5-6", "rest": "120s", "type": "Compound"},
-                {"name": "Pull-Up", "sets": 4, "reps": "6-8", "rest": "90s", "type": "Compound"},
-                {"name": "Split Squat", "sets": 3, "reps": "8/side", "rest": "75s", "type": "Accessory"},
+                {"name": "Overhead Press", "sets": 4, "reps": "5-6", "rest": "150s", "type": "Compound"},
+                {"name": "Incline Dumbbell Press", "sets": 4, "reps": "6-8", "rest": "120s", "type": "Accessory"},
+                {"name": "Chest-Supported Row", "sets": 4, "reps": "8-10", "rest": "90s", "type": "Compound"},
+                {"name": "Lateral Raise", "sets": 4, "reps": "12-15", "rest": "60s", "type": "Isolation"},
+                {"name": "Cable Face Pull", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Accessory"},
+                {"name": "Plank", "sets": 3, "reps": "60s", "rest": "45s", "type": "Core"},
+            ],
+            # Day 5: Lower Posterior & Accessory Power
+            [
+                {"name": "Romanian Deadlift", "sets": 4, "reps": "6-8", "rest": "150s", "type": "Compound"},
+                {"name": "Leg Press", "sets": 4, "reps": "8-10", "rest": "120s", "type": "Accessory"},
+                {"name": "Walking Lunge", "sets": 3, "reps": "8/side", "rest": "90s", "type": "Accessory"},
+                {"name": "Hamstring Curl", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Isolation"},
+                {"name": "Calf Raise", "sets": 4, "reps": "12-15", "rest": "60s", "type": "Isolation"},
+                {"name": "Cable Crunch", "sets": 3, "reps": "15", "rest": "60s", "type": "Core"},
             ],
         ], goal, level, duration_minutes)
 
+    # Full Gym Hypertrophy / Standard Split (5 Full Days)
     return _shape_pool_for_constraints([
-        [
-            {"name": "Barbell Back Squat", "sets": 4, "reps": "6-8", "rest": "180s", "type": "Compound"},
-            {"name": "Romanian Deadlift", "sets": 3, "reps": "8-10", "rest": "120s", "type": "Compound"},
-            {"name": "Leg Press", "sets": 3, "reps": "10-12", "rest": "90s", "type": "Accessory"},
-            {"name": "Leg Extension", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Isolation"},
-        ],
+        # Day 1: Chest & Shoulders
         [
             {"name": "Bench Press", "sets": 4, "reps": "6-8", "rest": "150s", "type": "Compound"},
             {"name": "Incline Dumbbell Press", "sets": 3, "reps": "8-10", "rest": "90s", "type": "Accessory"},
-            {"name": "Cable Row", "sets": 3, "reps": "10-12", "rest": "75s", "type": "Compound"},
-            {"name": "Lateral Raise", "sets": 3, "reps": "12-15", "rest": "45s", "type": "Isolation"},
+            {"name": "Overhead Press", "sets": 3, "reps": "8-10", "rest": "90s", "type": "Compound"},
+            {"name": "Lateral Raise", "sets": 4, "reps": "12-15", "rest": "45s", "type": "Isolation"},
+            {"name": "Cable Face Pull", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Accessory"},
+            {"name": "Cable Crunch", "sets": 3, "reps": "15", "rest": "45s", "type": "Core"},
+            {"name": "Push-Up", "sets": 2, "reps": "Max", "rest": "60s", "type": "Compound"},
         ],
+        # Day 2: Back & Biceps
         [
             {"name": "Deadlift", "sets": 4, "reps": "5-6", "rest": "180s", "type": "Compound"},
             {"name": "Pull-Up", "sets": 4, "reps": "6-10", "rest": "90s", "type": "Compound"},
+            {"name": "Cable Row", "sets": 3, "reps": "10-12", "rest": "75s", "type": "Compound"},
+            {"name": "Chest-Supported Row", "sets": 3, "reps": "10-12", "rest": "60s", "type": "Compound"},
+            {"name": "Dumbbell Curl", "sets": 3, "reps": "12", "rest": "45s", "type": "Isolation"},
+            {"name": "Farmer Carry", "sets": 3, "reps": "30m", "rest": "60s", "type": "Accessory"},
+            {"name": "Plank", "sets": 3, "reps": "60s", "rest": "45s", "type": "Core"},
+        ],
+        # Day 3: Legs Quads & Calves
+        [
+            {"name": "Barbell Back Squat", "sets": 4, "reps": "6-8", "rest": "180s", "type": "Compound"},
+            {"name": "Leg Press", "sets": 3, "reps": "10-12", "rest": "90s", "type": "Accessory"},
             {"name": "Walking Lunge", "sets": 3, "reps": "10/side", "rest": "75s", "type": "Accessory"},
-            {"name": "Cable Crunch", "sets": 3, "reps": "12-15", "rest": "45s", "type": "Core"},
+            {"name": "Leg Extension", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Isolation"},
+            {"name": "Calf Raise", "sets": 4, "reps": "15", "rest": "45s", "type": "Isolation"},
+            {"name": "Cable Crunch", "sets": 3, "reps": "15", "rest": "45s", "type": "Core"},
+            {"name": "Plank", "sets": 3, "reps": "60s", "rest": "45s", "type": "Core"},
+        ],
+        # Day 4: Upper Body Hypertrophy
+        [
+            {"name": "Incline Dumbbell Press", "sets": 4, "reps": "8-10", "rest": "90s", "type": "Accessory"},
+            {"name": "Weighted Row", "sets": 4, "reps": "8-10", "rest": "90s", "type": "Compound"},
+            {"name": "Lateral Raise", "sets": 4, "reps": "12-15", "rest": "45s", "type": "Isolation"},
+            {"name": "Cable Face Pull", "sets": 3, "reps": "15", "rest": "60s", "type": "Accessory"},
+            {"name": "Dumbbell Skull Crusher", "sets": 3, "reps": "12", "rest": "45s", "type": "Isolation"},
+            {"name": "Dumbbell Curl", "sets": 3, "reps": "12", "rest": "45s", "type": "Isolation"},
+            {"name": "Hollow Hold", "sets": 3, "reps": "45s", "rest": "45s", "type": "Core"},
+        ],
+        # Day 5: Legs Posterior Chain & Glutes
+        [
+            {"name": "Romanian Deadlift", "sets": 4, "reps": "8-10", "rest": "120s", "type": "Compound"},
+            {"name": "Hip Thrust", "sets": 4, "reps": "10-12", "rest": "90s", "type": "Compound"},
+            {"name": "Hamstring Curl", "sets": 3, "reps": "12-15", "rest": "60s", "type": "Isolation"},
+            {"name": "Glute Bridge", "sets": 3, "reps": "15", "rest": "60s", "type": "Accessory"},
+            {"name": "Calf Raise", "sets": 4, "reps": "15-20", "rest": "45s", "type": "Isolation"},
+            {"name": "Farmer Carry", "sets": 3, "reps": "30m", "rest": "60s", "type": "Accessory"},
+            {"name": "Cable Crunch", "sets": 3, "reps": "15", "rest": "45s", "type": "Core"},
         ],
     ], goal, level, duration_minutes)
 

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from ..utils.datetime import as_utc
 from ..workout_categories import DEFAULT_WORKOUT_CATEGORY, WORKOUT_CATEGORY_OPTIONS, normalize_workout_categories
+from ..workout_terminology import canonicalize_fitness_text
 
 VALID_WORKOUT_LEVELS = {"Beginner", "Intermediate", "Advanced"}
 VALID_WORKOUT_PURPOSES = WORKOUT_CATEGORY_OPTIONS
@@ -56,7 +57,7 @@ def _serialize_workout_movements(value: object) -> list[dict]:
     for idx, item in enumerate(value):
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").strip()
+        name = canonicalize_fitness_text(str(item.get("name") or "").strip())
         if not name:
             continue
         try:
@@ -89,7 +90,7 @@ def serialize_public_workout_record(record: dict) -> dict:
     purposes = normalize_workout_purposes(record)
     return {
         "id": str(record["_id"]),
-        "title": str(record.get("title") or ""),
+        "title": canonicalize_fitness_text(str(record.get("title") or "")),
         "vimeoId": str(record.get("vimeo_id") or ""),
         "videoUrl": str(record.get("video_url") or ""),
         "videoSource": str(record.get("video_source") or "VIMEO"),

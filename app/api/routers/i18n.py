@@ -9,8 +9,10 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 
 from ...config import settings
-from ...database import app_content_collection
+from ...database import app_content_collection, challenges_collection
 from ...models import TranslationBatchRequest, TranslationBatchResponse
+from ...workout_terminology import is_canonical_fitness_text, canonicalize_fitness_text
+from ...challenge_terminology import is_canonical_challenge_title, canonicalize_challenge_title
 
 router = APIRouter()
 
@@ -91,7 +93,9 @@ def _openai_translate(target_language: str, texts: list[str]) -> dict[str, str]:
                 "content": (
                     "Translate Victory Fitness app UI copy from English into the requested target language. "
                     "Return only valid JSON object mapping each exact source string to its translation. "
-                    "Preserve placeholders like {name}, numbers, punctuation intent, product names, and short button tone."
+                    "Preserve placeholders like {name}, numbers, punctuation intent, product names, and short button tone. "
+                    "CRITICAL: Keep all workout titles (e.g. Upper Body, Lower Body, Full Body), exercise names (e.g. Bench Press, Squat, Deadlift, Lat Pulldown), and gym movement terminology in English without translating them. "
+                    "CRITICAL: Keep all challenge titles and challenge names (e.g. 21-Day Gold Beta, Core Crusher, Morning Mobility, etc.) exactly in English without translating them."
                 ),
             },
             {
@@ -150,13 +154,38 @@ async def translate_batch(payload: TranslationBatchRequest) -> TranslationBatchR
     if not texts or target_language == source_language:
         return TranslationBatchResponse(target_language=target_language, translations={text: text for text in texts})
 
+    db_challenge_titles: set[str] = set()
+    if challenges_collection is not None:
+        try:
+            matched_records = await challenges_collection.find({"title": {"$in": texts}}, {"title": 1}).to_list(length=len(texts))
+            db_challenge_titles = {str(rec.get("title") or "").strip() for rec in matched_records if str(rec.get("title") or "").strip()}
+        except Exception:
+            db_challenge_titles = set()
+
+    def _is_protected_english(t: str) -> bool:
+        return is_canonical_fitness_text(t) or is_canonical_challenge_title(t) or t in db_challenge_titles
+
+    def _canonical_english_value(t: str) -> str:
+        if is_canonical_fitness_text(t):
+            return canonicalize_fitness_text(t)
+        if is_canonical_challenge_title(t) or t in db_challenge_titles:
+            return canonicalize_challenge_title(t)
+        return t
+
     cached = await _read_cached_translations(target_language, texts)
-    missing = [text for text in texts if text not in cached]
+    missing = [text for text in texts if text not in cached and not _is_protected_english(text)]
     translated = await asyncio.to_thread(_openai_translate, target_language, missing) if missing else {}
     if translated:
         await _write_cached_translations(target_language, translated)
 
+    result_translations: dict[str, str] = {}
+    for text in texts:
+        if _is_protected_english(text):
+            result_translations[text] = _canonical_english_value(text)
+        else:
+            result_translations[text] = cached.get(text) or translated.get(text) or text
+
     return TranslationBatchResponse(
         target_language=target_language,
-        translations={text: cached.get(text) or translated.get(text) or text for text in texts},
+        translations=result_translations,
     )

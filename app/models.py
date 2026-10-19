@@ -1022,6 +1022,9 @@ class ChallengePlanProgressResponse(BaseModel):
     viewer_progress_days_completed: int = 0
     viewer_points_earned: int = 0
     viewer_plan_progress: list[ChallengePlanDayProgressResponse] = Field(default_factory=list)
+    current_day_number: int | None = None
+    completed_today: bool = False
+    next_day_unlock_at: datetime | None = None
 
 
 class ChallengeProgressReportResponse(BaseModel):
@@ -1156,6 +1159,7 @@ class ChallengeDetailResponse(BaseModel):
     current_day_number: int | None = None
     can_complete_today: bool = False
     completed_today: bool = False
+    next_day_unlock_at: datetime | None = None
     messages: list["ChallengeChatMessageResponse"] = Field(default_factory=list)
     started_at: datetime | None = None
 
@@ -1207,6 +1211,9 @@ class ChallengeChatThreadResponse(BaseModel):
     unread_count: int = 0
     messages: list[ChallengeChatMessageResponse] = Field(default_factory=list)
     started_at: datetime | None = None
+    current_day_number: int | None = None
+    completed_today: bool = False
+    next_day_unlock_at: datetime | None = None
 
 
 
@@ -1348,12 +1355,13 @@ class UserOut(BaseModel):
 
 class CoachVictorMessage(BaseModel):
     role: str = Field(pattern=r"^(user|assistant)$")
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(min_length=1, max_length=20000)
 
 
 class CoachVictorThreadMessage(CoachVictorMessage):
     id: str
     created_at: datetime
+    plan_action: dict | None = None
 
 
 class CoachVictorChatRequest(BaseModel):
@@ -1369,10 +1377,13 @@ class CoachVictorChatResponse(BaseModel):
 
 class CoachWorkoutPlanActionApplyRequest(BaseModel):
     source_prompt: str = Field(min_length=1, max_length=4000)
+    generated_reply: str = Field(default="", max_length=20000)
     scope: str = Field(default="full_plan", max_length=40)
     target_days: list[str] = Field(default_factory=list, max_length=7)
     target_minutes: int | None = Field(default=None, ge=1, le=180)
     summary: str = Field(default="", max_length=300)
+    draft_id: str | None = Field(default=None, max_length=80)
+    draft_version: int | None = Field(default=None, ge=1)
 
 
 class CoachVictorHistoryResponse(BaseModel):
@@ -1463,6 +1474,21 @@ class NutritionShoppingSection(BaseModel):
     items: list[NutritionMealItem] = Field(default_factory=list)
 
 
+def build_meal_specific_prep_steps(name: str | None, ingredients: list[str] | None = None) -> list[str]:
+    clean_name = str(name or "Meal").strip() or "Meal"
+    clean_ingredients = [str(i).strip() for i in (ingredients or []) if str(i).strip()]
+    if clean_ingredients:
+        ing_sample = ", ".join(clean_ingredients[:3])
+        step_1 = f"Prepare and portion ingredients ({ing_sample})."
+    else:
+        step_1 = f"Prepare and chop all fresh ingredients for {clean_name}."
+
+    step_2 = f"Cook the main ingredients of {clean_name} thoroughly using your preferred low-oil method."
+    step_3 = "Add seasoning, herbs, or sauce to taste according to your plan preferences."
+    step_4 = "Portion and serve immediately according to your daily meal targets."
+    return [step_1, step_2, step_3, step_4]
+
+
 class NutritionMealEntry(BaseModel):
     name: str = Field(min_length=1, max_length=140)
     desc: str = Field(min_length=1, max_length=300)
@@ -1472,7 +1498,18 @@ class NutritionMealEntry(BaseModel):
     f: int = Field(ge=0, le=200)
     ingredients: list[str] = Field(default_factory=list)
     instructions: list[str] = Field(default_factory=list)
+    preparation_steps: list[str] = Field(default_factory=list)
     timing: str | None = None
+
+    @model_validator(mode="after")
+    def sync_preparation_fields(self) -> "NutritionMealEntry":
+        raw = self.preparation_steps or self.instructions or []
+        valid_steps = [str(s).strip() for s in raw if str(s).strip()]
+        if not valid_steps or (len(valid_steps) == 1 and "prepare the ingredients and portion" in valid_steps[0].lower()):
+            valid_steps = build_meal_specific_prep_steps(self.name, self.ingredients)
+        self.instructions = valid_steps
+        self.preparation_steps = valid_steps
+        return self
 
 
 class NutritionDayPlan(BaseModel):
@@ -1485,6 +1522,15 @@ class NutritionDayPlan(BaseModel):
     snacks: list[NutritionMealEntry] = Field(default_factory=list)
 
 
+class FavoriteFoodPreference(BaseModel):
+    name: str
+    is_favourite: bool = True
+    health_preference: str = Field(
+        default="unspecified",
+        description="'healthy_for_me' | 'not_healthy_for_me' | 'unspecified'",
+    )
+
+
 class NutritionPlanRequest(BaseModel):
     goal: str | None = None
     cuisine: str | None = None
@@ -1493,6 +1539,8 @@ class NutritionPlanRequest(BaseModel):
     favorite_meal: str | None = None
     favorite_meals: list[str] = Field(default_factory=list)
     favorite_meals_json: list[str] = Field(default_factory=list)
+    favorite_foods_details: list[FavoriteFoodPreference] = Field(default_factory=list)
+    favorite_meals_preferences: dict[str, str] = Field(default_factory=dict)
     diet: str | None = None
     allergies: str | None = None
     activity_level: str | None = None
@@ -1510,14 +1558,68 @@ class NutritionPlanRequest(BaseModel):
 
     @model_validator(mode="after")
     def normalize_favorite_meals(self) -> "NutritionPlanRequest":
+        details_map: dict[str, FavoriteFoodPreference] = {}
+        for detail in self.favorite_foods_details:
+            name_norm = str(detail.name or "").strip()
+            if name_norm:
+                pref = str(detail.health_preference or "unspecified").strip().lower()
+                if pref not in {"healthy_for_me", "not_healthy_for_me"}:
+                    pref = "unspecified"
+                details_map[name_norm.lower()] = FavoriteFoodPreference(
+                    name=name_norm,
+                    is_favourite=detail.is_favourite,
+                    health_preference=pref,
+                )
+
+        for meal_name, pref_val in self.favorite_meals_preferences.items():
+            name_norm = str(meal_name or "").strip()
+            if not name_norm:
+                continue
+            norm_key = name_norm.lower()
+            pref = str(pref_val or "unspecified").strip().lower()
+            if pref not in {"healthy_for_me", "not_healthy_for_me"}:
+                pref = "unspecified"
+            if norm_key in details_map:
+                if details_map[norm_key].health_preference == "unspecified" and pref != "unspecified":
+                    details_map[norm_key].health_preference = pref
+            else:
+                details_map[norm_key] = FavoriteFoodPreference(
+                    name=name_norm,
+                    is_favourite=True,
+                    health_preference=pref,
+                )
+
         meals: list[str] = []
+        for detail in self.favorite_foods_details:
+            name_norm = str(detail.name or "").strip()
+            if name_norm and name_norm.lower() not in {item.lower() for item in meals}:
+                meals.append(name_norm)
+
         for meal in [self.favorite_meal, *self.favorite_meals, *self.favorite_meals_json]:
             normalized = str(meal or "").strip()
             if normalized and normalized.lower() not in {item.lower() for item in meals}:
                 meals.append(normalized)
+
         self.favorite_meals = meals[:8]
         self.favorite_meals_json = self.favorite_meals
         self.favorite_meal = self.favorite_meals[0] if self.favorite_meals else None
+
+        final_details: list[FavoriteFoodPreference] = []
+        final_prefs: dict[str, str] = {}
+        for meal in self.favorite_meals:
+            key = meal.lower()
+            pref = details_map[key].health_preference if key in details_map else "unspecified"
+            final_details.append(
+                FavoriteFoodPreference(
+                    name=meal,
+                    is_favourite=True,
+                    health_preference=pref,
+                )
+            )
+            final_prefs[meal] = pref
+
+        self.favorite_foods_details = final_details
+        self.favorite_meals_preferences = final_prefs
         return self
 
 
@@ -2487,11 +2589,12 @@ class WorkoutLibraryResponse(BaseModel):
 class StrengthWorkoutExercise(BaseModel):
     id: str
     name: str
-    sets: int = Field(ge=1, le=10)
+    sets: int = Field(ge=1, le=20)
     reps: str
     rest: str
     weight: str = ""
     type: str
+    notes: str = ""
 
 
 class StrengthWorkoutSection(BaseModel):
@@ -2509,6 +2612,34 @@ class StrengthWorkoutDay(BaseModel):
     intensity: str
     sections: list[StrengthWorkoutSection] = Field(default_factory=list)
     exercises: list[StrengthWorkoutExercise] = Field(default_factory=list)
+
+
+class CustomWorkoutExercise(BaseModel):
+    exercise_name: str
+    sets: int = Field(default=3, ge=1, le=20)
+    reps: str = Field(default="8-12")
+    weight: str = Field(default="")
+    rest: str = Field(default="90s")
+    notes: str = Field(default="")
+    type: str = Field(default="Compound")
+
+
+class CustomWorkoutDay(BaseModel):
+    day_name: str
+    day_key: str = Field(default="Mon")
+    expected_duration: int = Field(default=90, ge=1, le=300)
+    equipment: list[str] = Field(default_factory=list)
+    exercises: list[CustomWorkoutExercise] = Field(default_factory=list)
+
+
+class CustomWorkoutPlan(BaseModel):
+    plan_name: str = Field(default="Custom Workout Plan")
+    expected_duration: int = Field(default=90, ge=1, le=300)
+    equipment: list[str] = Field(default_factory=list)
+    days: list[CustomWorkoutDay] = Field(default_factory=list)
+    parsing_uncertainty: list[str] = Field(default_factory=list)
+    is_valid: bool = True
+    error_message: str | None = None
 
 
 class StrengthWorkoutPlanRequest(BaseModel):

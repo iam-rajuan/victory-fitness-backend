@@ -4,11 +4,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from bson import ObjectId
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from ...core.legacy import *
-from ...models import CoachWorkoutPlanActionApplyRequest, StrengthWorkoutPlanResponse
+from ...models import CoachWorkoutPlanActionApplyRequest, CustomWorkoutPlan, StrengthWorkoutPlanResponse
 from ...coach_victor import (
     build_coach_victor_system_prompt,
     generate_coach_victor_reply,
@@ -17,6 +17,16 @@ from ...coach_victor import (
 )
 from .ai_workout_plan import _hydrate_strength_plan_input
 from ...workout_plan_ai import sanitize_workout_plan_for_injuries
+from ...workout_import import (
+    WorkoutIntent,
+    assemble_deterministic_workout_context,
+    classify_workout_message_intent,
+    convert_custom_plan_to_strength_plan_dict,
+    extract_expected_duration_minutes,
+    is_custom_workout_import_request,
+    parse_custom_workout,
+    validate_strength_plan_structure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +53,13 @@ DAY_ALIASES = [
 ]
 
 DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+
+
+def _confirms_workout_draft(message: str) -> bool:
+    return bool(re.search(
+        r"(?i)\b(?:insert|apply|save|use|lock)\b.*\b(?:it|this|plan|routine|workout|home)\b|\b(?:yes|confirm|do it)\b",
+        str(message or ""),
+    ))
 
 
 def _day_sort_key(day: str) -> int:
@@ -75,37 +92,117 @@ def _extract_target_minutes(message: str) -> int | None:
 
 def _is_full_plan_rebuild_request(message: str) -> bool:
     lowered = str(message or "").lower()
-    return any(term in lowered for term in ("rebuild", "new plan", "generate", "create", "build my plan", "replace my plan", "full plan", "whole plan"))
+    return any(term in lowered for term in (
+        "rebuild", "new plan", "generate", "create", "build my plan", "replace my plan",
+        "full plan", "whole plan", "create a workout", "create a plan", "make a plan",
+        "make me a plan", "split", "5-day", "five-day", "5 day",
+    ))
 
 
 def _looks_like_home_plan_change_request(message: str) -> bool:
     lowered = str(message or "").lower()
-    action_terms = ("change", "adjust", "update", "make", "replace", "rebuild", "generate", "create", "insert", "save", "apply", "switch", "remove", "add", "only have", "have")
-    plan_terms = ("workout", "training", "routine", "plan", "session", "today", "tonight", "minutes", "no equipment", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "push", "pull", "squat", "legs")
+    action_terms = ("change", "adjust", "update", "make", "replace", "rebuild", "generate", "create", "insert", "save", "apply", "switch", "swap", "modify", "shorten", "lengthen", "reduce", "increase", "remove", "add", "move", "only have", "have")
+    plan_terms = ("workout", "training", "routine", "plan", "session", "today", "tonight", "minutes", "sets", "reps", "volume", "weight", "exercise", "equipment", "no equipment", "bodyweight", "gym", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "push", "pull", "bench", "press", "row", "curl", "squat", "deadlift", "legs")
     return any(term in lowered for term in action_terms) and any(term in lowered for term in plan_terms)
 
 
+def _recent_context_is_workout_plan(user_context: dict[str, Any] | None) -> bool:
+    recent_messages = list((user_context or {}).get("recent_messages") or [])[-4:]
+    recent_text = "\n".join(str(item.get("content") or "") for item in recent_messages if isinstance(item, dict)).lower()
+    return any(term in recent_text for term in ("workout plan", "training plan", "day 1", "home plan", "routine preview", "sets", "reps"))
+
+
 def _coach_plan_action_from_message(message: str, user_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    if not _looks_like_home_plan_change_request(message):
+    intent = classify_workout_message_intent(message, user_context)
+
+    # USE CASE B: IMPORT/USE EXISTING WORKOUT
+    if intent == WorkoutIntent.IMPORT_EXISTING or is_custom_workout_import_request(message):
+        parsed_custom = parse_custom_workout(message, user_context)
+        if parsed_custom.is_valid and len(parsed_custom.days) >= 1:
+            day_count = len(parsed_custom.days)
+            duration_mins = parsed_custom.expected_duration or 90
+            day_keys = [d.day_key for d in parsed_custom.days]
+            return {
+                "type": "custom_workout_import",
+                "source_prompt": str(message or "").strip(),
+                "scope": "full_plan",
+                "target_days": day_keys,
+                "target_minutes": duration_mins,
+                "day_count": day_count,
+                "plan_name": parsed_custom.plan_name,
+                "summary": f"Import {day_count}-Day Custom Routine ({duration_mins} min/session)",
+                "button_label": f"Import {day_count}-Day Plan",
+                "preview": parsed_custom.model_dump(),
+            }
+        # Dense user messages may describe all days in one paragraph. The
+        # generated reply is deliberately machine-readable, so retain the
+        # import intent and let _insertable_coach_plan_action parse that reply.
+        if intent == WorkoutIntent.IMPORT_EXISTING:
+            return {
+                "type": "custom_workout_import",
+                "source_prompt": str(message or "").strip(),
+                "scope": "full_plan",
+                "target_days": [],
+                "target_minutes": extract_expected_duration_minutes(message),
+                "summary": "Import custom workout routine",
+                "button_label": "Apply to Home plan",
+            }
+
+    # USE CASE A: CREATE A WORKOUT / HOME PLAN UPDATE
+    lowered = str(message or "").lower()
+    follow_up_change = _recent_context_is_workout_plan(user_context) and any(
+        term in lowered
+        for term in ("change", "make it", "swap", "replace", "reduce", "increase", "remove", "add", "shorter", "longer", "instead", "that", "this")
+    )
+    if not _looks_like_home_plan_change_request(message) and intent != WorkoutIntent.CREATE_NEW and not follow_up_change:
         return None
+
     target_days = _extract_target_days(message)
     target_minutes = _extract_target_minutes(message)
-    lowered = str(message or "").lower()
+    day_count_match = re.search(r"\b([1-7])[\s-]*(?:training[\s-]*)?days?\b", lowered)
+    detected_freq = int(day_count_match.group(1)) if day_count_match else None
+    if not target_days and detected_freq:
+        default_days_map = {
+            1: ["Mon"],
+            2: ["Mon", "Thu"],
+            3: ["Mon", "Wed", "Fri"],
+            4: ["Mon", "Tue", "Thu", "Fri"],
+            5: ["Mon", "Tue", "Wed", "Fri", "Sat"],
+            6: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+            7: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        }
+        target_days = default_days_map.get(detected_freq, ["Mon", "Tue", "Thu", "Fri"])
+
     current_plan = dict(((user_context or {}).get("progress") or {}).get("current_home_workout_plan") or {})
     if not target_days and any(term in lowered for term in ("today", "tonight", "current session", "this session", "today's workout", "todays workout")):
+        draft_preview = dict((user_context or {}).get("workout_draft") or {})
+        draft_days = [day for day in draft_preview.get("days") or [] if isinstance(day, dict)]
+        today_key = datetime.now(timezone.utc).strftime("%a")
+        if any(str(day.get("day_key") or "") == today_key for day in draft_days):
+            target_days = [today_key]
+        elif draft_days:
+            first_draft_day = str(draft_days[0].get("day_key") or "")
+            if first_draft_day in DAY_ORDER:
+                target_days = [first_draft_day]
         for session in current_plan.get("sessions") or []:
+            if target_days:
+                break
             if isinstance(session, dict) and not session.get("completed"):
                 day_key = str(session.get("day") or "").strip()
                 if day_key in DAY_ORDER:
                     target_days = [day_key]
                     break
-    scope = "full_plan" if _is_full_plan_rebuild_request(message) or not target_days else "day"
+
+    scope = "full_plan" if _is_full_plan_rebuild_request(message) or not target_days or (detected_freq and detected_freq > 1) else "day"
     label = ", ".join(target_days) if target_days else "Home plan"
     summary_bits = []
     if scope == "day":
         summary_bits.append(f"Update {label}")
     else:
-        summary_bits.append("Replace your Home workout plan")
+        if detected_freq:
+            summary_bits.append(f"Replace your Home workout plan ({detected_freq} days)")
+        else:
+            summary_bits.append("Replace your Home workout plan")
     if target_minutes:
         summary_bits.append(f"{target_minutes} min")
     elif current_plan.get("summary") and scope == "full_plan":
@@ -119,6 +216,103 @@ def _coach_plan_action_from_message(message: str, user_context: dict[str, Any] |
         "summary": " · ".join(summary_bits),
         "button_label": "Apply to Home plan" if scope == "full_plan" else f"Update {label}",
     }
+
+
+def _insertable_coach_plan_action(
+    message: str,
+    generated_reply: str,
+    user_context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return an action only when the generated reply is a parseable workout plan."""
+    action = _coach_plan_action_from_message(message, user_context)
+    if not action:
+        return None
+
+    draft_state = dict((user_context or {}).get("workout_draft_state") or {})
+    confirms_existing_draft = _confirms_workout_draft(message)
+    if confirms_existing_draft and isinstance(draft_state.get("preview"), dict):
+        preview = dict(draft_state["preview"])
+        return {
+            **action,
+            "scope": str(draft_state.get("scope") or action.get("scope") or "full_plan"),
+            "target_days": list(draft_state.get("target_days") or action.get("target_days") or []),
+            "target_minutes": draft_state.get("target_minutes") or action.get("target_minutes"),
+            "preview": preview,
+            "day_count": len(preview.get("days") or []),
+            "summary": str(action.get("summary") or "Apply workout draft"),
+            "button_label": "Apply to Home plan",
+        }
+
+    parsed_plan = parse_custom_workout(generated_reply, user_context=user_context)
+    if not parsed_plan.is_valid or not parsed_plan.days:
+        return None
+
+    action = dict(action)
+    action["preview"] = parsed_plan.model_dump()
+    action["day_count"] = len(parsed_plan.days)
+    if not action.get("target_days"):
+        action["target_days"] = [day.day_key for day in parsed_plan.days]
+    if not action.get("target_minutes") and parsed_plan.expected_duration:
+        action["target_minutes"] = parsed_plan.expected_duration
+    return action
+
+
+def _build_versioned_workout_draft(
+    thread: dict | None,
+    action: dict[str, Any] | None,
+    *,
+    draft_id: str,
+    now: datetime,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Turn a validated plan action into the authoritative chat draft."""
+    if not action or not isinstance(action.get("preview"), dict):
+        return None, action
+
+    previous = dict((thread or {}).get("workout_draft") or {})
+    incoming_preview = dict(action["preview"])
+    next_preview = incoming_preview
+    scope = str(action.get("scope") or "full_plan")
+    target_days = [day for day in action.get("target_days") or [] if day in DAY_ORDER]
+
+    if scope == "day" and isinstance(previous.get("preview"), dict) and target_days:
+        next_preview = dict(previous["preview"])
+        existing_days = [dict(day) for day in next_preview.get("days") or [] if isinstance(day, dict)]
+        incoming_days = [dict(day) for day in incoming_preview.get("days") or [] if isinstance(day, dict)]
+        replacements: dict[str, dict[str, Any]] = {}
+        for index, target_day in enumerate(target_days):
+            if not incoming_days:
+                break
+            replacement = dict(incoming_days[min(index, len(incoming_days) - 1)])
+            replacement["day_key"] = target_day
+            replacements[target_day] = replacement
+        next_preview["days"] = [replacements.get(str(day.get("day_key") or ""), day) for day in existing_days]
+        next_preview["days_count"] = len(next_preview["days"])
+        equipment = list(next_preview.get("equipment") or [])
+        for item in incoming_preview.get("equipment") or []:
+            if item not in equipment:
+                equipment.append(item)
+        next_preview["equipment"] = equipment
+
+    version = max(int(previous.get("version") or 0), 0) + 1
+    draft = {
+        "id": draft_id,
+        "version": version,
+        "status": "ready",
+        "preview": next_preview,
+        "source_prompt": str(action.get("source_prompt") or ""),
+        "scope": scope,
+        "target_days": target_days,
+        "target_minutes": action.get("target_minutes"),
+        "updated_at": now,
+    }
+    next_action = {
+        **action,
+        "preview": next_preview,
+        "day_count": len(next_preview.get("days") or []),
+        "draft_id": draft_id,
+        "draft_version": version,
+    }
+    return draft, next_action
 
 
 def _plan_input_document(input_data: Any, source: str, message: str) -> dict[str, Any]:
@@ -229,12 +423,147 @@ async def _apply_coach_workout_plan_action(
     user: dict,
     *,
     source_prompt: str,
+    generated_reply: str = "",
     scope: str,
     target_days: list[str] | None = None,
     target_minutes: int | None = None,
+    draft_id: str | None = None,
+    draft_version: int | None = None,
 ) -> dict:
     user_id = str(user["_id"])
     now = datetime.now(timezone.utc)
+
+    if draft_id:
+        draft_query_id: Any = ObjectId(draft_id) if ObjectId.is_valid(draft_id) else draft_id
+        draft_thread = await coach_victor_threads_collection.find_one({"_id": draft_query_id, "user_id": user_id})
+        draft = dict((draft_thread or {}).get("workout_draft") or {})
+        if not draft or str(draft.get("id") or "") != draft_id:
+            raise HTTPException(status_code=404, detail="Workout draft not found")
+        if draft_version is None or int(draft.get("version") or 0) != draft_version:
+            raise HTTPException(status_code=409, detail="This workout draft has changed. Review the latest preview before applying it.")
+        if str(draft.get("status") or "ready") != "ready":
+            raise HTTPException(status_code=409, detail="This workout draft has already been applied")
+        try:
+            parsed_draft = CustomWorkoutPlan(**dict(draft.get("preview") or {}))
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="Workout draft is invalid") from exc
+        if not parsed_draft.is_valid or not parsed_draft.days:
+            raise HTTPException(status_code=422, detail="Workout draft has no valid training days")
+        plan_data = convert_custom_plan_to_strength_plan_dict(parsed_draft, user)
+        is_valid, validation_errors = validate_strength_plan_structure(
+            plan_data,
+            expected_days_count=len(parsed_draft.days),
+            min_duration_minutes=parsed_draft.expected_duration if str(draft.get("scope") or "full_plan") == "full_plan" else None,
+        )
+        if not is_valid:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "Workout draft failed validation.", "errors": validation_errors},
+            )
+        insert_doc = {
+            "user_id": user_id,
+            "input": {
+                "goal": "Coach Draft",
+                "level": "Intermediate",
+                "split": parsed_draft.plan_name,
+                "muscle_group": "Full Body",
+                "duration_minutes": str(parsed_draft.expected_duration),
+                "equipment": parsed_draft.equipment,
+                "frequency": str(len(parsed_draft.days)),
+                "days": [day.day_key for day in parsed_draft.days],
+                "source": "coach_workout_draft",
+                "coach_message": str(draft.get("source_prompt") or source_prompt)[:4000],
+                "draft_id": draft_id,
+                "draft_version": draft_version,
+            },
+            "plan": plan_data,
+            "progress": [],
+            "created_at": now,
+            "updated_at": now,
+        }
+        claim_result = await coach_victor_threads_collection.update_one(
+            {
+                "_id": draft_query_id,
+                "user_id": user_id,
+                "workout_draft.version": draft_version,
+                "workout_draft.status": "ready",
+            },
+            {"$set": {"workout_draft.status": "applying", "workout_draft.updated_at": now}},
+        )
+        if claim_result is not None and int(getattr(claim_result, "modified_count", 0)) != 1:
+            raise HTTPException(status_code=409, detail="This workout draft is already being applied")
+        try:
+            insert_result = await strength_workout_plans_collection.insert_one(insert_doc)
+        except Exception:
+            await coach_victor_threads_collection.update_one(
+                {"_id": draft_query_id, "user_id": user_id, "workout_draft.version": draft_version, "workout_draft.status": "applying"},
+                {"$set": {"workout_draft.status": "ready", "workout_draft.updated_at": datetime.now(timezone.utc)}},
+            )
+            raise
+        await coach_victor_threads_collection.update_one(
+            {"_id": draft_query_id, "user_id": user_id, "workout_draft.version": draft_version, "workout_draft.status": "applying"},
+            {"$set": {"workout_draft.status": "applied", "workout_draft.applied_at": now}},
+        )
+        return {**insert_doc, "_id": insert_result.inserted_id}
+
+    generated_plan_text = str(generated_reply or "").strip()
+    import_text = generated_plan_text or source_prompt
+    should_import_exact_plan = bool(generated_plan_text) or is_custom_workout_import_request(source_prompt) or classify_workout_message_intent(source_prompt) == WorkoutIntent.IMPORT_EXISTING
+
+    if should_import_exact_plan:
+        parsed_custom = parse_custom_workout(import_text, user_context=user)
+        if parsed_custom.is_valid and len(parsed_custom.days) >= 1:
+            plan_data = convert_custom_plan_to_strength_plan_dict(parsed_custom, user)
+            is_valid, validation_errors = validate_strength_plan_structure(
+                plan_data,
+                expected_days_count=len(parsed_custom.days),
+                min_duration_minutes=parsed_custom.expected_duration,
+            )
+            if not is_valid:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={
+                        "message": "Imported workout plan failed structural validation.",
+                        "errors": validation_errors,
+                    },
+                )
+            day_keys = [d.day_key for d in parsed_custom.days]
+            insert_doc = {
+                "user_id": user_id,
+                "input": {
+                    "goal": "Custom Routine",
+                    "level": "Intermediate",
+                    "split": parsed_custom.plan_name,
+                    "muscle_group": "Full Body",
+                    "duration_minutes": str(parsed_custom.expected_duration or 90),
+                    "equipment": parsed_custom.equipment or ["Gym", "Barbell", "Dumbbells"],
+                    "frequency": str(len(parsed_custom.days)),
+                    "days": day_keys,
+                    "source": "coach_generated_import" if generated_plan_text else "coach_custom_import",
+                    "coach_message": str(source_prompt or "")[:4000],
+                    "coach_generated_reply": generated_plan_text[:20000],
+                },
+                "plan": plan_data,
+                "progress": [],
+                "created_at": now,
+                "updated_at": now,
+            }
+            insert_result = await strength_workout_plans_collection.insert_one(insert_doc)
+            return {
+                "_id": insert_result.inserted_id,
+                "plan": plan_data,
+                "progress": [],
+                "created_at": now,
+            }
+        if generated_plan_text:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": "The generated coach plan could not be imported exactly.",
+                    "errors": parsed_custom.parsing_uncertainty or [parsed_custom.error_message or "No complete workout days were detected."],
+                },
+            )
+
     clean_days = [day for day in (target_days or []) if day in DAY_ORDER]
     prompt_with_constraints = source_prompt
     if target_minutes:
@@ -293,6 +622,21 @@ async def _apply_coach_workout_plan_action(
         next_days.sort(key=lambda item: _day_sort_key(str(item.get("day") or "")))
         next_plan = {**base_plan, "days": next_days}
         next_plan["summary"] = str(generated_plan.get("summary") or base_plan.get("summary") or "").strip()
+
+        is_valid, validation_errors = validate_strength_plan_structure(
+            next_plan,
+            expected_days_count=len(next_plan.get("days") or []),
+            min_duration_minutes=target_minutes,
+        )
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": "Generated workout plan failed structural validation.",
+                    "errors": validation_errors,
+                },
+            )
+
         insert_doc = {
             "user_id": user_id,
             "input": {
@@ -321,6 +665,22 @@ async def _apply_coach_workout_plan_action(
                 )
         if normalized_generated_days:
             generated_plan = {**generated_plan, "days": normalized_generated_days}
+
+        expected_count = len(clean_days) if clean_days else (int(hydrated_input.frequency) if hydrated_input.frequency else len(generated_plan.get("days") or []))
+        is_valid, validation_errors = validate_strength_plan_structure(
+            generated_plan,
+            expected_days_count=expected_count,
+            min_duration_minutes=int(hydrated_input.duration_minutes) if hydrated_input.duration_minutes else target_minutes,
+        )
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "message": "Generated workout plan failed structural validation.",
+                    "errors": validation_errors,
+                },
+            )
+
         insert_doc = {
             "user_id": user_id,
             "input": _plan_input_document(hydrated_input, "coach_adjustment", source_prompt),
@@ -391,14 +751,22 @@ def _coach_plan_payload_from_message(message: str) -> StrengthWorkoutPlanRequest
     text = str(message or "")
     lowered = text.lower()
 
-    if any(term in lowered for term in ("lose weight", "fat loss", "cut", "recomp")):
+    if any(term in lowered for term in ("lose weight", "fat loss", "cut", "recomp", "tone")):
         goal = "Body Recomp"
-    elif any(term in lowered for term in ("strength", "stronger", "heavy")):
+    elif any(term in lowered for term in ("pure strength", "heavy strength", "powerlift", "strength", "stronger", "heavy")):
         goal = "Pure Strength"
-    elif any(term in lowered for term in ("speed", "power", "athletic", "endurance")):
+    elif any(term in lowered for term in ("speed", "power", "athletic", "endurance", "stamina")):
         goal = "Power & Speed"
     else:
         goal = "Hypertrophy"
+
+    level = None
+    if any(term in lowered for term in ("beginner", "novice", "starting out", "new to lifting")):
+        level = "Beginner"
+    elif any(term in lowered for term in ("advanced", "experienced", "athlete")):
+        level = "Advanced"
+    elif any(term in lowered for term in ("intermediate", "moderate")):
+        level = "Intermediate"
 
     if "push" in lowered and "pull" in lowered and "leg" in lowered:
         split = "Push Pull Legs"
@@ -409,19 +777,19 @@ def _coach_plan_payload_from_message(message: str) -> StrengthWorkoutPlanRequest
 
     if any(term in lowered for term in ("bodyweight", "no equipment", "nothing at all")):
         equipment = ["No equipment"]
-    elif "dumbbell" in lowered:
+    elif any(term in lowered for term in ("dumbbell", "dumbbells")):
         equipment = ["Dumbbells"]
     elif any(term in lowered for term in ("home gym", "bands", "pull-up", "pull up")):
         equipment = ["Dumbbells", "Bands"]
-    elif "gym" in lowered or "barbell" in lowered:
+    elif any(term in lowered for term in ("full gym", "gym", "barbell")):
         equipment = ["Gym", "Barbell", "Dumbbells", "Cables", "Machines"]
     else:
         equipment = []
 
     duration_match = re.search(r"(\d{2,3})\s*(?:min|minute)", lowered)
     duration_minutes = duration_match.group(1) if duration_match else None
-    day_count_match = re.search(r"(\d)\s*(?:day|days)", lowered)
-    frequency = day_count_match.group(1) if day_count_match else "7"
+    day_count_match = re.search(r"\b([1-7])[\s-]*(?:training[\s-]*)?days?\b", lowered)
+    frequency = day_count_match.group(1) if day_count_match else None
 
     day_aliases = [
         ("mon", "Mon"), ("monday", "Mon"),
@@ -436,15 +804,26 @@ def _coach_plan_payload_from_message(message: str) -> StrengthWorkoutPlanRequest
     for needle, day in day_aliases:
         if needle in lowered and day not in days:
             days.append(day)
-    if not days and frequency == "7":
-        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    if not days and frequency:
+        freq_int = int(frequency)
+        default_days_map = {
+            1: ["Mon"],
+            2: ["Mon", "Thu"],
+            3: ["Mon", "Wed", "Fri"],
+            4: ["Mon", "Tue", "Thu", "Fri"],
+            5: ["Mon", "Tue", "Wed", "Fri", "Sat"],
+            6: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"],
+            7: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+        }
+        days = default_days_map.get(freq_int, ["Mon", "Tue", "Thu", "Fri"])
 
     return StrengthWorkoutPlanRequest(
         goal=goal,
+        level=level,
         split=split,
         duration_minutes=duration_minutes,
         equipment=equipment,
-        frequency=frequency,
+        frequency=frequency or "4",
         days=days,
         muscle_group="Full Body",
     )
@@ -457,6 +836,16 @@ async def _maybe_apply_coach_workout_plan_update(user: dict, user_id: str, messa
     hydrated_input = _hydrate_strength_plan_input(payload, user)
     hydrated_input.custom_notes = str(message or "").strip()[:4000]
     plan_data = generate_strength_workout_plan(hydrated_input)
+
+    is_valid, validation_errors = validate_strength_plan_structure(
+        plan_data,
+        expected_days_count=int(hydrated_input.frequency) if hydrated_input.frequency else len(plan_data.get("days") or []),
+        min_duration_minutes=int(hydrated_input.duration_minutes) if hydrated_input.duration_minutes else None,
+    )
+    if not is_valid:
+        logger.warning("Auto-applied strength plan failed validation: %s", validation_errors)
+        return False
+
     now = datetime.now(timezone.utc)
     await strength_workout_plans_collection.insert_one(
         {
@@ -713,7 +1102,7 @@ async def coach_victor_chat(
         {"user_id": user_id},
         sort=[("updated_at", -1)],
     )
-    full_thread_messages = list(thread.get("messages", [])) if thread else []
+    full_thread_messages = await _get_full_thread_messages(thread)
     existing_messages = full_thread_messages[-10:]
     chat_history = [
         {"role": item["role"], "content": item["content"]}
@@ -721,6 +1110,9 @@ async def coach_victor_chat(
     ]
     chat_history.append({"role": "user", "content": payload.message})
     user_context = await _coach_user_context(user, existing_messages)
+    if thread and isinstance(thread.get("workout_draft"), dict):
+        user_context["workout_draft"] = dict(thread["workout_draft"].get("preview") or {})
+        user_context["workout_draft_state"] = dict(thread["workout_draft"])
     if payload.language_override:
         user_context["preferred_language"] = str(payload.language_override).strip().lower()
     req_lang = request.headers.get("accept-language", "").split(",")[0].split(";")[0].strip().lower()
@@ -744,14 +1136,24 @@ async def coach_victor_chat(
         "created_at": now,
     }
     reply_text = result.reply
+    if user_context.get("workout_draft_state") and _confirms_workout_draft(payload.message):
+        reply_text = "Your workout draft is ready. Review the complete plan card below, then tap Apply to Home plan to make it active."
 
+    thread_object_id = thread["_id"] if thread else ObjectId()
+    plan_action = _insertable_coach_plan_action(payload.message, reply_text, user_context)
+    workout_draft, plan_action = _build_versioned_workout_draft(
+        thread,
+        plan_action,
+        draft_id=str(thread_object_id),
+        now=now,
+    )
     assistant_message = {
         "id": str(ObjectId()),
         "role": "assistant",
         "content": reply_text,
         "created_at": now,
+        "plan_action": plan_action,
     }
-    plan_action = _coach_plan_action_from_message(payload.message, user_context)
     next_full_messages = [*full_thread_messages, user_message, assistant_message]
 
     if thread:
@@ -761,6 +1163,8 @@ async def coach_victor_chat(
             messages=next_full_messages,
             updated_at=now,
         )
+        if workout_draft:
+            update_doc["$set"]["workout_draft"] = workout_draft
         await coach_victor_threads_collection.update_one(
             {"_id": thread["_id"]},
             update_doc,
@@ -772,6 +1176,9 @@ async def coach_victor_chat(
             messages=next_full_messages,
             created_at=now,
         )
+        thread_doc["_id"] = thread_object_id
+        if workout_draft:
+            thread_doc["workout_draft"] = workout_draft
         insert_result = await coach_victor_threads_collection.insert_one(thread_doc)
         thread_id = str(insert_result.inserted_id)
 
@@ -793,9 +1200,12 @@ async def apply_coach_workout_plan_action(
     record = await _apply_coach_workout_plan_action(
         user,
         source_prompt=payload.source_prompt,
+        generated_reply=payload.generated_reply,
         scope=payload.scope,
         target_days=payload.target_days,
         target_minutes=payload.target_minutes,
+        draft_id=payload.draft_id,
+        draft_version=payload.draft_version,
     )
     return _serialize_strength_workout_plan_record(record)
 
@@ -815,7 +1225,7 @@ async def coach_victor_stream(
         {"user_id": user_id},
         sort=[("updated_at", -1)],
     )
-    full_thread_messages = list(thread.get("messages", [])) if thread else []
+    full_thread_messages = await _get_full_thread_messages(thread)
     existing_messages = full_thread_messages[-10:]
     chat_history = [
         {"role": item["role"], "content": item["content"]}
@@ -823,6 +1233,9 @@ async def coach_victor_stream(
     ]
     chat_history.append({"role": "user", "content": payload.message})
     user_context = await _coach_user_context(user, existing_messages)
+    if thread and isinstance(thread.get("workout_draft"), dict):
+        user_context["workout_draft"] = dict(thread["workout_draft"].get("preview") or {})
+        user_context["workout_draft_state"] = dict(thread["workout_draft"])
     if payload.language_override:
         user_context["preferred_language"] = str(payload.language_override).strip().lower()
     req_lang = request.headers.get("accept-language", "").split(",")[0].split(";")[0].strip().lower()
@@ -850,6 +1263,8 @@ async def coach_victor_stream(
             user_context=user_context,
             last_user_message=payload.message,
         )
+        if user_context.get("workout_draft_state") and _confirms_workout_draft(payload.message):
+            full_reply_text = "Your workout draft is ready. Review the complete plan card below, then tap Apply to Home plan to make it active."
         now = datetime.now(timezone.utc)
         user_msg = {
             "id": str(ObjectId()),
@@ -857,11 +1272,20 @@ async def coach_victor_stream(
             "content": payload.message,
             "created_at": now,
         }
+        thread_object_id = thread["_id"] if thread else ObjectId()
+        plan_action = _insertable_coach_plan_action(payload.message, full_reply_text, user_context)
+        workout_draft, plan_action = _build_versioned_workout_draft(
+            thread,
+            plan_action,
+            draft_id=str(thread_object_id),
+            now=now,
+        )
         asst_msg = {
             "id": str(ObjectId()),
             "role": "assistant",
             "content": full_reply_text,
             "created_at": now,
+            "plan_action": plan_action,
         }
         next_messages = [*full_thread_messages, user_msg, asst_msg]
 
@@ -872,6 +1296,8 @@ async def coach_victor_stream(
                 messages=next_messages,
                 updated_at=now,
             )
+            if workout_draft:
+                update_doc["$set"]["workout_draft"] = workout_draft
             await coach_victor_threads_collection.update_one(
                 {"_id": thread["_id"]},
                 update_doc,
@@ -883,10 +1309,12 @@ async def coach_victor_stream(
                 messages=next_messages,
                 created_at=now,
             )
+            thread_doc["_id"] = thread_object_id
+            if workout_draft:
+                thread_doc["workout_draft"] = workout_draft
             insert_res = await coach_victor_threads_collection.insert_one(thread_doc)
             final_thread_id = str(insert_res.inserted_id)
 
-        plan_action = _coach_plan_action_from_message(payload.message, user_context)
         done_data = json.dumps({"type": "done", "reply": full_reply_text, "thread_id": final_thread_id, "plan_action": plan_action})
         yield f"data: {done_data}\n\n"
         yield "data: [DONE]\n\n"
@@ -919,6 +1347,7 @@ async def coach_victor_history(
                 "role": item["role"],
                 "content": item["content"],
                 "created_at": item["created_at"],
+                "plan_action": item.get("plan_action"),
             }
             for item in all_messages
         ],
