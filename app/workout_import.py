@@ -190,8 +190,17 @@ def classify_workout_message_intent(message: str, user_context: dict[str, Any] |
         return WorkoutIntent.CREATE_NEW
 
     # 3. Check for ADJUST_CURRENT: User asks to modify active workout / session
-    adjust_terms = ("adjust", "tweak", "swap", "modify", "shorten", "change today", "tonight", "current session", "tight", "hurts", "sore")
-    if any(term in lowered for term in adjust_terms) and any(p in lowered for p in ("workout", "session", "exercise", "routine", "minutes", "min")):
+    adjust_terms = (
+        "adjust", "tweak", "swap", "replace", "modify", "shorten", "lengthen",
+        "change", "reduce", "increase", "remove", "add", "move", "only have",
+        "tonight", "current session", "tight", "hurts", "sore",
+    )
+    workout_terms = (
+        "workout", "session", "exercise", "routine", "plan", "split", "minutes", "min",
+        "sets", "reps", "volume", "weight", "bench", "squat", "deadlift", "press",
+        "row", "curl", "pull-up", "pullup", "equipment", "gym", "bodyweight",
+    )
+    if any(term in lowered for term in adjust_terms) and any(p in lowered for p in workout_terms):
         return WorkoutIntent.ADJUST_CURRENT
 
     if "build my plan" in lowered or "create my plan" in lowered or "make my plan" in lowered:
@@ -254,14 +263,20 @@ def extract_equipment_from_text(text: str) -> list[str]:
     return found
 
 
+def _strip_markdown_line(line: str) -> str:
+    """Remove presentation-only Markdown around a single plan line."""
+    cleaned = re.sub(r"^\s*#{1,6}\s*", "", str(line or "").strip())
+    return cleaned.strip().strip("*_` ").strip()
+
+
 def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
     """Parses a single line of text into a structured CustomWorkoutExercise."""
-    raw = line.strip()
+    raw = _strip_markdown_line(line)
     if not raw:
         return None
 
     # Skip day headers, bullet markers, or section headers
-    if re.match(r"(?i)^(?:###?\s*)?(?:day\s*\d+|session\s*\d+|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", raw):
+    if re.match(r"(?i)^(?:day\s*\d+|session\s*\d+|mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", raw):
         return None
     if re.match(r"(?i)^rest\b|^rest\s*day", raw):
         return None
@@ -383,7 +398,7 @@ def parse_custom_workout_deterministic(text: str) -> CustomWorkoutPlan:
 
     # Day header regex
     day_regex = re.compile(
-        r"(?i)^(?:###?\s*)?(?:day\s*([0-9]+)|session\s*([0-9]+)|workout\s*([a-g])|(monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b[:\s\-–—]*(.*)$"
+        r"(?i)^(?:day\s*([0-9]+)|session\s*([0-9]+)|workout\s*([a-g])|(mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?))\b[:\s\-–—]*(.*)$"
     )
 
     day_blocks: list[tuple[str, str, list[str]]] = []  # (header_tag, extra_title, lines)
@@ -392,7 +407,7 @@ def parse_custom_workout_deterministic(text: str) -> CustomWorkoutPlan:
     current_lines: list[str] = []
 
     for line in lines:
-        stripped = line.strip()
+        stripped = _strip_markdown_line(line)
         if not stripped:
             continue
         m = day_regex.match(stripped)

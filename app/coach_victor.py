@@ -280,7 +280,9 @@ def build_coach_victor_system_prompt(
         "Treat awkward phrases like '10 day per day, 10 minutes per day' as the user meaning 10 minutes per day, not 10 exercises or 10 sessions. "
         "If something is missing, make one conservative assumption and state it briefly. Ask at most ONE short clarification only if the request is impossible or medically unsafe.\n"
         "The plan must be compatible with the Home workout plan data model: day key (Mon/Tue/Wed/Thu/Fri/Sat/Sun), title, estimated time, intensity, and exercises with sets, reps, rest, weight/equipment label, and type. "
-        "Write the plan in a clean, scan-friendly format: short summary, then each day with 3-6 exercises. "
+        "Write the plan in a clean, scan-friendly and machine-readable format: short summary, then each day with 3-6 exercises. "
+        "Every training day MUST start on its own line exactly as 'Day N (Mon): Title' (using the correct weekday), followed by exercise bullets exactly like '- Exercise: 3 x 8-12, 90s rest, 40kg, Compound'. "
+        "Never place day headings inside a paragraph or omit sets, reps, rest, load/equipment, or exercise type. "
         "Do NOT use markdown tables or pipe-separated columns. Use short bullets like '- Push-up: 2 x 6-10, 60s rest, Bodyweight, Compound'. Keep it friendly and concise.\n"
         "You must NOT claim the plan has been saved, inserted, replaced, or applied to Home. The app will ask for explicit confirmation and show an insert button after the user confirms.\n"
         "Do not end workout-plan replies with a list of follow-up questions. Focus on the generated plan.\n\n"
@@ -505,7 +507,7 @@ def _generate_intelligent_fallback_reply(
             )
 
     # USE CASE A: CREATE A WORKOUT (Recommend new program tailored to user context)
-    if det_intent == WorkoutIntent.CREATE_NEW or _is_workout_plan_query(last_user_message):
+    if det_intent in (WorkoutIntent.CREATE_NEW, WorkoutIntent.ADJUST_CURRENT) or _is_workout_plan_query(last_user_message):
         onboarding = dict(context.get("onboarding") or {})
         personal_profile = dict(onboarding.get("personalProfile") or {})
         split = "Push Pull Legs" if det_context["frequency"] >= 5 else "Upper / Lower" if det_context["frequency"] == 4 else "Full Body"
@@ -530,7 +532,7 @@ def _generate_intelligent_fallback_reply(
         )
         built_plan = _build_strength_workout_plan(input_obj)
         plan_blocks = []
-        for day_dict in built_plan.get("days", []):
+        for day_index, day_dict in enumerate(built_plan.get("days", []), start=1):
             day_name = day_dict.get("day")
             title = day_dict.get("title")
             est_time = day_dict.get("est_time")
@@ -538,7 +540,7 @@ def _generate_intelligent_fallback_reply(
             ex_lines = []
             for ex in day_dict.get("exercises", []):
                 ex_lines.append(f"- {ex.get('name')}: {ex.get('sets')} x {ex.get('reps')}, {ex.get('rest')}, {ex.get('weight')}, {ex.get('type')}")
-            plan_blocks.append(f"**{day_name}: {title}**\n{est_time} | {intensity} intensity\n" + "\n".join(ex_lines))
+            plan_blocks.append(f"Day {day_index} ({day_name}): {title}\n{est_time} | {intensity} intensity\n" + "\n".join(ex_lines))
 
         days_count = len(built_plan.get("days", []))
         dur_mins = det_context["expected_duration_minutes"]

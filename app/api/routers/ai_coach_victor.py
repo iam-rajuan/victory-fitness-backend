@@ -93,9 +93,15 @@ def _is_full_plan_rebuild_request(message: str) -> bool:
 
 def _looks_like_home_plan_change_request(message: str) -> bool:
     lowered = str(message or "").lower()
-    action_terms = ("change", "adjust", "update", "make", "replace", "rebuild", "generate", "create", "insert", "save", "apply", "switch", "remove", "add", "only have", "have")
-    plan_terms = ("workout", "training", "routine", "plan", "session", "today", "tonight", "minutes", "no equipment", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "push", "pull", "squat", "legs")
+    action_terms = ("change", "adjust", "update", "make", "replace", "rebuild", "generate", "create", "insert", "save", "apply", "switch", "swap", "modify", "shorten", "lengthen", "reduce", "increase", "remove", "add", "move", "only have", "have")
+    plan_terms = ("workout", "training", "routine", "plan", "session", "today", "tonight", "minutes", "sets", "reps", "volume", "weight", "exercise", "equipment", "no equipment", "bodyweight", "gym", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday", "push", "pull", "bench", "press", "row", "curl", "squat", "deadlift", "legs")
     return any(term in lowered for term in action_terms) and any(term in lowered for term in plan_terms)
+
+
+def _recent_context_is_workout_plan(user_context: dict[str, Any] | None) -> bool:
+    recent_messages = list((user_context or {}).get("recent_messages") or [])[-4:]
+    recent_text = "\n".join(str(item.get("content") or "") for item in recent_messages if isinstance(item, dict)).lower()
+    return any(term in recent_text for term in ("workout plan", "training plan", "day 1", "home plan", "routine preview", "sets", "reps"))
 
 
 def _coach_plan_action_from_message(message: str, user_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -122,13 +128,16 @@ def _coach_plan_action_from_message(message: str, user_context: dict[str, Any] |
             }
 
     # USE CASE A: CREATE A WORKOUT / HOME PLAN UPDATE
-    if not _looks_like_home_plan_change_request(message) and intent != WorkoutIntent.CREATE_NEW:
+    lowered = str(message or "").lower()
+    follow_up_change = _recent_context_is_workout_plan(user_context) and any(
+        term in lowered
+        for term in ("change", "make it", "swap", "replace", "reduce", "increase", "remove", "add", "shorter", "longer", "instead", "that", "this")
+    )
+    if not _looks_like_home_plan_change_request(message) and intent != WorkoutIntent.CREATE_NEW and not follow_up_change:
         return None
 
     target_days = _extract_target_days(message)
     target_minutes = _extract_target_minutes(message)
-    lowered = str(message or "").lower()
-
     day_count_match = re.search(r"\b([1-7])[\s-]*(?:training[\s-]*)?days?\b", lowered)
     detected_freq = int(day_count_match.group(1)) if day_count_match else None
     if not target_days and detected_freq:
@@ -175,6 +184,30 @@ def _coach_plan_action_from_message(message: str, user_context: dict[str, Any] |
         "summary": " · ".join(summary_bits),
         "button_label": "Apply to Home plan" if scope == "full_plan" else f"Update {label}",
     }
+
+
+def _insertable_coach_plan_action(
+    message: str,
+    generated_reply: str,
+    user_context: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Return an action only when the generated reply is a parseable workout plan."""
+    action = _coach_plan_action_from_message(message, user_context)
+    if not action:
+        return None
+
+    parsed_plan = parse_custom_workout(generated_reply, user_context=user_context)
+    if not parsed_plan.is_valid or not parsed_plan.days:
+        return None
+
+    action = dict(action)
+    action["preview"] = parsed_plan.model_dump()
+    action["day_count"] = len(parsed_plan.days)
+    if not action.get("target_days"):
+        action["target_days"] = [day.day_key for day in parsed_plan.days]
+    if not action.get("target_minutes") and parsed_plan.expected_duration:
+        action["target_minutes"] = parsed_plan.expected_duration
+    return action
 
 
 def _plan_input_document(input_data: Any, source: str, message: str) -> dict[str, Any]:
@@ -927,7 +960,7 @@ async def coach_victor_chat(
         "content": reply_text,
         "created_at": now,
     }
-    plan_action = _coach_plan_action_from_message(payload.message, user_context)
+    plan_action = _insertable_coach_plan_action(payload.message, reply_text, user_context)
     next_full_messages = [*full_thread_messages, user_message, assistant_message]
 
     if thread:
@@ -1063,7 +1096,7 @@ async def coach_victor_stream(
             insert_res = await coach_victor_threads_collection.insert_one(thread_doc)
             final_thread_id = str(insert_res.inserted_id)
 
-        plan_action = _coach_plan_action_from_message(payload.message, user_context)
+        plan_action = _insertable_coach_plan_action(payload.message, full_reply_text, user_context)
         done_data = json.dumps({"type": "done", "reply": full_reply_text, "thread_id": final_thread_id, "plan_action": plan_action})
         yield f"data: {done_data}\n\n"
         yield "data: [DONE]\n\n"

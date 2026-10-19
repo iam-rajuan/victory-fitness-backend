@@ -1348,7 +1348,7 @@ class UserOut(BaseModel):
 
 class CoachVictorMessage(BaseModel):
     role: str = Field(pattern=r"^(user|assistant)$")
-    content: str = Field(min_length=1, max_length=4000)
+    content: str = Field(min_length=1, max_length=20000)
 
 
 class CoachVictorThreadMessage(CoachVictorMessage):
