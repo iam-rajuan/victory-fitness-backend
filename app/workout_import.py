@@ -238,12 +238,26 @@ def count_expected_days_in_input(text: str) -> int:
 
 
 def extract_expected_duration_minutes(text: str) -> int | None:
-    """Extracts session duration in minutes from text. Defaults to 90 if ~90 min indicated."""
+    """Extract session duration without confusing inter-set rest for workout length."""
     lowered = str(text or "").lower()
-    match = re.search(r"(\d{1,3})\s*(?:min|mins|minute|minutes)\b", lowered)
-    if match:
-        mins = int(match.group(1))
-        return max(15, min(mins, 240))
+
+    # Prefer explicit duration labels emitted by Coach Victor and common user phrasing.
+    labelled_patterns = (
+        r"(?:est(?:imated)?\.?\s*time|session\s*(?:duration|length)|duration)\s*[:=\-]?\s*(\d{1,3})\s*(?:min|mins|minute|minutes)\b",
+        r"(\d{1,3})\s*(?:min|mins|minute|minutes)\s*(?:/|per)\s*session\b",
+        r"(?:workout|session)\s*(?:is|of|for|around|about|approximately|approx\.?)?\s*(\d{1,3})\s*(?:min|mins|minute|minutes)\b",
+    )
+    for pattern in labelled_patterns:
+        match = re.search(pattern, lowered)
+        if match:
+            return max(15, min(int(match.group(1)), 240))
+
+    # Fall back to an ordinary minute mention, excluding values explicitly used as rest.
+    for match in re.finditer(r"(\d{1,3})\s*(?:min|mins|minute|minutes)\b", lowered):
+        trailing_context = lowered[match.end():match.end() + 16]
+        if re.match(r"\s*(?:of\s+)?rest\b", trailing_context):
+            continue
+        return max(15, min(int(match.group(1)), 240))
     if "1.5 hour" in lowered or "1.5 hr" in lowered or "1.5h" in lowered:
         return 90
     if "2 hour" in lowered or "2 hr" in lowered or "2h" in lowered:
@@ -280,15 +294,45 @@ def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
         return None
     if re.match(r"(?i)^rest\b|^rest\s*day", raw):
         return None
+    if re.match(
+        r"(?i)^(?:est(?:imated)?\.?\s*time|duration|intensity|equipment|key\s+notes?|notes?\s+for\s+this\s+week|tap\s+the|import\s+this|used\s+your)\b",
+        raw,
+    ):
+        return None
 
     # Clean leading bullets/numbering: "- ", "* ", "1. ", "1) "
     cleaned = re.sub(r"^\s*[-*•\d]+[.)\]\-:]\s*", "", raw).strip()
     if not cleaned:
         return None
 
+    # Markdown emphasis often wraps exercise names after the list marker, e.g.
+    # "- **Bench Press:** 3 × 8". It is presentation, not part of the name.
+    cleaned = cleaned.replace("**", "").replace("__", "").strip("*_` ")
+
+    has_prescription = bool(re.search(
+        r"\b\d{1,2}\s*(?:x|×|sets?\s*(?:of|x|×)?)\s*\d{1,3}(?:\s*[-–—]\s*\d{1,3})?\b",
+        cleaned,
+        re.I,
+    ))
+    looks_like_coaching_note = bool(
+        re.search(r"[.!?](?:\s|$)", cleaned)
+        or re.match(
+            r"(?i)^(?:mobilize|nudge|chase|keep|hold|report|build|progress|pick|do\s+not|don't|use|stay|manage|let|add\s+next|shoulder\s+health)\b",
+            cleaned,
+        )
+    )
+    if looks_like_coaching_note and not has_prescription:
+        return None
+
+    explicit_type = ""
+    type_match = re.search(r"(?:[,;|]\s*|\s+)(compound|isolation|accessory|core|warmup)\s*$", cleaned, re.I)
+    if type_match:
+        explicit_type = type_match.group(1).title()
+        cleaned = cleaned[:type_match.start()].rstrip(" ,;|:-")
+
     # Extract weight/load inside parentheses first: e.g. "(+10kg)", "(80kg)", "(bodyweight)"
     weight = ""
-    weight_paren = re.search(r"\(\s*(\+?\d+(?:\.\d+)?\s*(?:kg|lbs?|kilos?)|bodyweight|bw)\s*\)", cleaned, re.I)
+    weight_paren = re.search(r"\(\s*(\+?\d+(?:\.\d+)?\s*(?:kg|lbs?|kilos?)(?:\s*/\s*(?:arm|side))?|bodyweight|bw)\s*\)", cleaned, re.I)
     if weight_paren:
         w_val = weight_paren.group(1).strip()
         weight = "Bodyweight" if w_val.lower() in ("bodyweight", "bw") else w_val.replace(" ", "")
@@ -310,7 +354,7 @@ def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
 
     # Extract weight/load if not already found: e.g. "80kg", "+10kg", "@ 80kg", "Bodyweight", "BW"
     if not weight:
-        weight_match = re.search(r"(?:@\s*|(?<=[\s\-_(/])|^)(\+?\d+(?:\.\d+)?\s*(?:kg|lbs?|kilos?)|bodyweight|bw)\b", cleaned, re.I)
+        weight_match = re.search(r"(?:@\s*|(?<=[\s\-_(/])|^)(\+?\d+(?:\.\d+)?\s*(?:kg|lbs?|kilos?)(?:\s*/\s*(?:arm|side))?|bodyweight|bw)\b", cleaned, re.I)
         if weight_match:
             weight_raw = weight_match.group(1).strip()
             if weight_raw.lower() in ("bodyweight", "bw"):
@@ -322,11 +366,11 @@ def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
     # Extract sets and reps: e.g. "4x8", "4 sets x 8 reps", "4 sets of 8", "3 x 10-12"
     sets = 3
     reps = "8-12"
-    set_rep_match = re.search(r"(\d{1,2})\s*(?:x|sets?\s*(?:of|x)?)\s*(\d{1,2}(?:-\d{1,2})?)\s*(?:reps?)?", cleaned, re.I)
+    set_rep_match = re.search(r"(\d{1,2})\s*(?:x|×|sets?\s*(?:of|x|×)?)\s*(\d{1,2}(?:\s*[-–—]\s*\d{1,2})?)\s*(?:reps?)?", cleaned, re.I)
     if set_rep_match:
         try:
             sets = max(1, min(int(set_rep_match.group(1)), 20))
-            reps = set_rep_match.group(2).strip()
+            reps = re.sub(r"\s*[-–—]\s*", "-", set_rep_match.group(2).strip())
         except Exception:
             pass
         cleaned = cleaned[:set_rep_match.start()] + " " + cleaned[set_rep_match.end():]
@@ -343,9 +387,10 @@ def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
             cleaned = cleaned[:reps_only.start()] + " " + cleaned[reps_only.end():]
 
     # Clean exercise name from leftover delimiters without destroying intra-word hyphens (e.g. Pull-ups, T-Bar)
-    cleaned = re.sub(r"(?:^\s*[-–—:,|/@]+\s*|\s*[-–—:,|/@]+\s*$)", " ", cleaned)
-    cleaned = re.sub(r"\s+[-–—:,|/@]+\s+", " ", cleaned)
+    cleaned = re.sub(r"(?:^\s*[-–—:;,|/@]+\s*|\s*[-–—:;,|/@]+\s*$)", " ", cleaned)
+    cleaned = re.sub(r"\s+[-–—:;,|/@]+\s+", " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = cleaned.strip(" \t-–—:;,|/@")
     exercise_name = cleaned
     if not exercise_name:
         return None
@@ -356,7 +401,9 @@ def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
 
     # Classify type
     lowered_ex = exercise_name.lower()
-    if any(k in lowered_ex for k in CORE_KEYWORDS):
+    if explicit_type:
+        ex_type = explicit_type
+    elif any(k in lowered_ex for k in CORE_KEYWORDS):
         ex_type = "Core"
     elif any(k in lowered_ex for k in COMPOUND_KEYWORDS):
         ex_type = "Compound"
@@ -410,6 +457,12 @@ def parse_custom_workout_deterministic(text: str) -> CustomWorkoutPlan:
         stripped = _strip_markdown_line(line)
         if not stripped:
             continue
+        if current_tag and re.match(r"(?i)^(?:key\s+notes?|notes?\s+for\s+this\s+week)\b", stripped):
+            day_blocks.append((current_tag, current_title, current_lines))
+            current_tag = ""
+            current_title = ""
+            current_lines = []
+            break
         m = day_regex.match(stripped)
         if m:
             if current_tag:
