@@ -1361,6 +1361,7 @@ class CoachVictorMessage(BaseModel):
 class CoachVictorThreadMessage(CoachVictorMessage):
     id: str
     created_at: datetime
+    plan_action: dict | None = None
 
 
 class CoachVictorChatRequest(BaseModel):
@@ -1381,6 +1382,8 @@ class CoachWorkoutPlanActionApplyRequest(BaseModel):
     target_days: list[str] = Field(default_factory=list, max_length=7)
     target_minutes: int | None = Field(default=None, ge=1, le=180)
     summary: str = Field(default="", max_length=300)
+    draft_id: str | None = Field(default=None, max_length=80)
+    draft_version: int | None = Field(default=None, ge=1)
 
 
 class CoachVictorHistoryResponse(BaseModel):

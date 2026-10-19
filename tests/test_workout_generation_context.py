@@ -186,7 +186,8 @@ def test_system_prompt_includes_deterministic_layers_and_intent_boundaries() -> 
     assert "Layer 3.5 - Deterministic Workout & Coaching Context:" in prompt
     assert "user goal: Hypertrophy" in prompt or "Pure Strength" in prompt
     assert "training days (5 days/week):" in prompt
-    assert "expected workout duration: 90 minutes per session (NEVER collapse to 25 minutes!)" in prompt
+    assert "base workout duration: 90 minutes per session" in prompt
+    assert "latest user message explicitly requests a different duration" in prompt
     assert "TWO DISTINCT WORKOUT USE CASES (DO NOT MIX INTENTS):" in prompt
     assert "A. User asks AI to CREATE a workout:" in prompt
     assert "B. User asks AI to IMPORT/USE their existing workout:" in prompt

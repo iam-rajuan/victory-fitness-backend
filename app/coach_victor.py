@@ -241,6 +241,7 @@ def build_coach_victor_system_prompt(
         f"Recent 7-day nutrition actions: {_safe_text(progress.get('recent_nutrition_actions'), '0')}.\n"
         f"Latest workout adaptation note: {_safe_text(progress.get('latest_workout_feedback_summary'))}.\n"
         f"Current active Home workout plan JSON: {json.dumps(progress.get('current_home_workout_plan') or {}, ensure_ascii=False)}.\n"
+        f"Current chat workout draft JSON: {json.dumps(context.get('workout_draft') or {}, ensure_ascii=False)}. This draft, when present, is the plan being discussed and takes priority over the saved Home plan for follow-up edits.\n"
         f"Latest nutrition summary: {_safe_text(progress.get('latest_nutrition_summary'))}.\n"
         f"Latest longevity weekly plan focus: {_safe_text(progress.get('weekly_plan_focus'))}."
     )
@@ -414,7 +415,7 @@ def build_coach_victor_system_prompt(
         + (f" (Health Notes: {det_health_notes})" if det_health_notes else "")
         + (f" (Reported Injury: {det_app_injury})" if det_app_injury else "") + "\n"
         f"- training days ({det_frequency} days/week): {', '.join(det_training_days)}\n"
-        f"- expected workout duration: {det_expected_duration} minutes per session (NEVER collapse to 25 minutes!)\n"
+        f"- base workout duration: {det_expected_duration} minutes per session. Preserve it unless the latest user message explicitly requests a different duration for a targeted session or plan.\n"
         f"- existing routine: {existing_routine_summary}\n"
         f"- known weights/reps: Bench: {det_known_weights.get('bench') or 'N/A'}, Squat: {det_known_weights.get('squat') or 'N/A'}, Deadlift: {det_known_weights.get('deadlift') or 'N/A'}, Bodyweight: {det_known_weights.get('bodyweight') or 'N/A'} kg\n"
         f"- recent plan/session information: {det_recent_plan_summary or 'No active plan recorded'}\n\n"

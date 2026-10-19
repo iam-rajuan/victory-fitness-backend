@@ -95,6 +95,53 @@ def test_generated_markdown_plan_is_parseable_and_insertable() -> None:
     assert action["day_count"] == 5
 
 
+def test_dense_existing_routine_uses_structured_generated_reply_for_card() -> None:
+    dense_message = (
+        "I want exactly this 2 day workout: Day 1 bench press 100kg 3x7 and rows 90kg 3x8. "
+        "Day 2 squat 130kg 3x8 and RDL 160kg 3x8. Keep these exact weights."
+    )
+    generated_reply = """
+Day 1 (Mon): Upper
+- Bench Press: 3 x 7, 120s rest, 100kg, Compound
+- Barbell Row: 3 x 8, 90s rest, 90kg, Compound
+Est. time: 90 min
+Day 2 (Tue): Lower
+- Back Squat: 3 x 8, 120s rest, 130kg, Compound
+- RDL: 3 x 8, 120s rest, 160kg, Compound
+Est. time: 90 min
+"""
+
+    action = coach_router._insertable_coach_plan_action(dense_message, generated_reply, {})
+
+    assert action is not None
+    assert action["day_count"] == 2
+    assert len(action["preview"]["days"]) == 2
+
+
+def test_insert_confirmation_reuses_persisted_draft_instead_of_parsing_claim_text() -> None:
+    preview = {
+        "plan_name": "Five Day Plan",
+        "expected_duration": 90,
+        "equipment": ["Barbell"],
+        "days": [{"day_name": "Day 1", "day_key": "Mon", "expected_duration": 90, "equipment": ["Barbell"], "exercises": []}],
+        "is_valid": True,
+    }
+    context = {
+        "recent_messages": [{"role": "assistant", "content": "Day 1 workout plan"}],
+        "workout_draft_state": {"preview": preview, "scope": "full_plan", "version": 1},
+    }
+
+    action = coach_router._insertable_coach_plan_action(
+        "Insert it to my workout plan",
+        "Your plan is now active.",
+        context,
+    )
+
+    assert action is not None
+    assert action["preview"] == preview
+    assert action["button_label"] == "Apply to Home plan"
+
+
 @pytest.mark.parametrize(
     "message",
     [
