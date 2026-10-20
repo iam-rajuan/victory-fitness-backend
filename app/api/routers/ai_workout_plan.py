@@ -6,6 +6,7 @@ from ...models import (
     StrengthWorkoutSessionFeedbackRequest,
 )
 from ...workout_plan_ai import sanitize_workout_plan_for_injuries
+from ...workout_plan_status import newest_active_strength_plan, strength_plan_is_complete_or_expired
 
 router = APIRouter()
 
@@ -377,13 +378,11 @@ async def workout_strength_plan_latest(
 
 ) -> StrengthWorkoutPlanResponse:
 
-    record = await strength_workout_plans_collection.find_one(
-
+    records = await strength_workout_plans_collection.find(
         {"user_id": str(user["_id"])},
-
         sort=[("created_at", -1)],
-
-    )
+    ).to_list(length=100)
+    record = newest_active_strength_plan(records)
 
     if not record or not isinstance(record.get("plan"), dict):
 
@@ -406,6 +405,10 @@ async def workout_strength_plan_list(
         sort=[("created_at", -1)],
 
     ).to_list(length=100)
+
+    active_records = [record for record in records if not strength_plan_is_complete_or_expired(record)]
+    inactive_records = [record for record in records if strength_plan_is_complete_or_expired(record)]
+    records = active_records + inactive_records
 
     items: list[StrengthWorkoutPlanResponse] = []
 

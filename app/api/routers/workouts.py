@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends
 
 from ...core.legacy import *
 from ...workout_categories import WORKOUT_CATEGORY_OPTIONS
+from ...workout_plan_status import newest_active_strength_plan, strength_plan_is_complete_or_expired
 
 router = APIRouter()
 
@@ -90,27 +91,8 @@ def _build_session_counts(exercises: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
-def _as_aware_utc(value: Any) -> datetime | None:
-    if not isinstance(value, datetime):
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
 def _strength_plan_is_complete_or_expired(record: dict[str, Any], now: datetime) -> bool:
-    plan = dict(record.get("plan") or {})
-    days = [day for day in plan.get("days") or [] if isinstance(day, dict)]
-    progress = [item for item in record.get("progress") or [] if isinstance(item, dict)]
-    completed_day_keys = {str(item.get("day") or "") for item in progress if item.get("completed")}
-    if days and all(str(day.get("day") or "") in completed_day_keys for day in days):
-        return True
-
-    created_at = _as_aware_utc(record.get("created_at"))
-    if created_at and now.astimezone(timezone.utc) >= created_at + timedelta(days=7):
-        return True
-
-    return False
+    return strength_plan_is_complete_or_expired(record, now)
 
 
 def _build_strength_plan_rationale(record: dict[str, Any], selected_day: dict[str, Any], completed_count: int) -> str:
@@ -284,15 +266,15 @@ async def workout_home_plan_summary(user: dict = Depends(dependency_require_acce
 
     strength_record = None
     if strength_workout_plans_collection is not None:
-        strength_record = await strength_workout_plans_collection.find_one(
+        recent_strength_records = await strength_workout_plans_collection.find(
             {"user_id": user_id},
             sort=[("created_at", -1)],
-        )
+        ).to_list(length=100)
+        strength_record = newest_active_strength_plan(recent_strength_records, now)
 
     if (
         strength_record
         and isinstance(strength_record.get("plan"), dict)
-        and not _strength_plan_is_complete_or_expired(strength_record, now)
     ):
         plan = dict(strength_record.get("plan") or {})
         days = [day for day in plan.get("days") or [] if isinstance(day, dict)]
