@@ -3801,6 +3801,47 @@ async def _notify_challenge_chat_participants(
         if isinstance(result, Exception):
             logger.warning("challenge_chat_notification_failed challenge_id=%s error=%s", challenge_id, result)
 
+
+async def _send_challenge_milestone_notification_in_background(
+    user: dict,
+    challenge: dict,
+    day_number: int,
+    duration_days: int,
+    membership_status: str,
+) -> None:
+    """Keep optional AI copy generation out of the completion request path."""
+    try:
+        milestone_message = await asyncio.to_thread(
+            generate_challenge_milestone_message,
+            str(user.get("name") or "there"),
+            str(challenge.get("title") or "your challenge"),
+            day_number,
+            duration_days,
+            membership_status,
+        )
+        await notify_user(
+            users_collection,
+            user,
+            "Challenge milestone reached",
+            milestone_message,
+            "challenge_milestone",
+            {
+                "type": "challenge",
+                "challengeId": str(challenge["_id"]),
+                "day": day_number,
+                "totalDays": duration_days,
+                "milestone": True,
+                "route": f"/challenges/progress/{challenge['_id']}",
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "challenge_milestone_notification_failed challenge_id=%s day=%s error=%s",
+            str(challenge.get("_id") or ""),
+            day_number,
+            exc,
+        )
+
 async def _store_membership_plan_progress(
 
     *,
@@ -3986,22 +4027,14 @@ async def _store_membership_plan_progress(
         await _broadcast_challenge_chat_event("message_created", str(challenge["_id"]), message_document)
 
         if emit_milestone_notification:
-
-            milestone_message = await asyncio.to_thread(
-                generate_challenge_milestone_message,
-                str(user.get("name") or "there"),
-                str(challenge.get("title") or "your challenge"),
-                day_number,
-                duration_days,
-                next_status,
-            )
-            await notify_user(
-                users_collection,
-                user,
-                "Challenge milestone reached",
-                milestone_message,
-                "challenge_milestone",
-                {"type": "challenge", "challengeId": str(challenge["_id"]), "day": day_number, "totalDays": duration_days, "milestone": True, "route": f"/challenges/progress/{challenge['_id']}"},
+            asyncio.create_task(
+                _send_challenge_milestone_notification_in_background(
+                    user,
+                    challenge,
+                    day_number,
+                    duration_days,
+                    next_status,
+                )
             )
 
     updated_membership = await challenge_memberships_collection.find_one({"_id": membership["_id"]})
