@@ -5,6 +5,7 @@ remain in canonical English regardless of the user's language (including German)
 """
 
 from typing import Any
+import re
 
 CANONICAL_EXERCISE_NAMES = [
     # Chest / Push
@@ -177,6 +178,31 @@ GERMAN_TO_ENGLISH_MAP: dict[str, str] = {
 }
 
 _EXACT_ENGLISH_SET = {item.strip().lower(): item for item in CANONICAL_EXERCISE_NAMES + CANONICAL_WORKOUT_TITLES}
+_GENERIC_SESSION_TITLES = {"main session", "main-session", "workout", "session", "training session"}
+
+
+def _replacement_session_title(day: dict[str, Any]) -> str:
+    """Return a useful title for old/imported plans that used a generic label."""
+    names: list[str] = []
+    for exercise in day.get("exercises") or []:
+        if isinstance(exercise, dict):
+            names.append(str(exercise.get("name") or "").lower())
+    for section in day.get("sections") or []:
+        if isinstance(section, dict):
+            for exercise in section.get("exercises") or []:
+                if isinstance(exercise, dict):
+                    names.append(str(exercise.get("name") or "").lower())
+
+    movement_text = " ".join(names)
+    lower_hits = len(re.findall(r"\b(squat|deadlift|lunge|leg|calf|hamstring|hip thrust|glute)\b", movement_text))
+    upper_hits = len(re.findall(r"\b(bench|press|row|pull|curl|triceps|biceps|shoulder|chest|lat)\b", movement_text))
+    if lower_hits and upper_hits:
+        return "Full Body Strength"
+    if lower_hits:
+        return "Lower Body Strength"
+    if upper_hits:
+        return "Upper Body Strength"
+    return "Full Body Strength"
 
 
 def is_canonical_fitness_text(text: str) -> bool:
@@ -231,7 +257,10 @@ def canonicalize_strength_plan_dict(plan: dict[str, Any]) -> dict[str, Any]:
         for day in days:
             if isinstance(day, dict):
                 if "title" in day:
-                    day["title"] = canonicalize_fitness_text(str(day.get("title") or ""))
+                    title = canonicalize_fitness_text(str(day.get("title") or ""))
+                    # Generic labels are not workout names. This also repairs stored
+                    # coach/imported plans created before the title validation existed.
+                    day["title"] = _replacement_session_title(day) if title.strip().lower() in _GENERIC_SESSION_TITLES else title
                 exercises = day.get("exercises")
                 if isinstance(exercises, list):
                     for ex in exercises:

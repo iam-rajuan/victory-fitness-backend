@@ -394,6 +394,7 @@ def _strength_plan_prompt(input_data: StrengthWorkoutPlanInput) -> str:
         "- Day values must use Mon Tue Wed Thu Fri Sat Sun.\n"
         "- Training days must align with preferred training days and frequency when possible.\n"
         "- Each day needs: day, title, est_time, volume, intensity, exercises.\n"
+        "- Every day title must state the training focus (for example 'Upper Body Strength' or 'Leg Strength'). Never use generic labels such as 'Main session', 'Workout', or 'Session'.\n"
         "- Each exercise needs: id, name, sets, reps, rest, weight, type.\n"
         "- Weight should be realistic based on the user's lifts when provided, otherwise estimate conservatively.\n"
         "- Split, goal, experience level, selected muscle group, available duration, equipment, and frequency must visibly affect the plan.\n"

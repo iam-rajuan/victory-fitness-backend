@@ -72,6 +72,21 @@ def test_ai_strength_plan_prompt_enforces_english_terminology():
     assert "MUST ALWAYS remain in English" in prompt
     assert "NEVER translate workout titles" in prompt
     assert "CRITICAL CLIENT REQUIREMENT" in prompt
+    assert "Never use generic labels such as 'Main session'" in prompt
+
+
+def test_generic_main_session_title_is_repaired_from_exercise_focus():
+    plan = canonicalize_strength_plan_dict({
+        "days": [{
+            "title": "Main session",
+            "sections": [{"exercises": [
+                {"name": "Bench Press"},
+                {"name": "Lat Pulldown"},
+            ]}],
+        }],
+    })
+
+    assert plan["days"][0]["title"] == "Upper Body Strength"
 
 
 def test_serialize_public_workout_record_canonicalizes_content():

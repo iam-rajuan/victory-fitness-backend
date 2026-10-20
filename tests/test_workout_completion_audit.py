@@ -234,3 +234,41 @@ def test_strength_completion_png_generation_with_long_exercises():
     assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
     assert "Michael Krause" in share_message
     assert "Upper Body Strength" in share_message
+
+
+def test_strength_completion_share_card_excludes_warmups():
+    plan = StrengthWorkoutPlanResponse(
+        plan_id="plan-warmup",
+        summary="Upper Body Strength",
+        days=[
+            StrengthWorkoutDay(
+                day="Mon",
+                title="Upper Body Strength",
+                est_time="45 min",
+                volume="moderate",
+                intensity="moderate",
+                sections=[
+                    StrengthWorkoutSection(
+                        id="warm-up",
+                        title="Warm-up",
+                        exercises=[StrengthWorkoutExercise(id="warm-1", name="Band Pull Apart", sets=2, reps="15", rest="30s", type="warm-up")],
+                    ),
+                    StrengthWorkoutSection(
+                        id="main",
+                        title="Strength work",
+                        exercises=[StrengthWorkoutExercise(id="bench", name="Bench Press", sets=3, reps="8", rest="90s", type="compound")],
+                    ),
+                ],
+            )
+        ],
+        progress=[
+            StrengthWorkoutPlanResponse.DayProgress(
+                day="Mon", completed=True, completed_exercise_ids=["warm-1", "bench"], completed_section_ids=["warm-up", "main"]
+            )
+        ],
+    )
+
+    png_bytes, share_message = _build_strength_workout_completion_png(plan, "Test Athlete", completed_day="Mon")
+
+    assert png_bytes[:8] == b"\x89PNG\r\n\x1a\n"
+    assert "Exercises: 1/1" in share_message

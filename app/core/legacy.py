@@ -3409,6 +3409,16 @@ def _build_strength_workout_completion_png(
     identity_statement: str = "",
 ) -> tuple[bytes, str]:
     _require_pillow()
+
+    def is_warmup_exercise(exercise: Any, section_title: str = "") -> bool:
+        """Warm-ups are useful in the session, but are not share-card achievements."""
+        label = " ".join([
+            str(section_title or ""),
+            str(getattr(exercise, "type", "") or ""),
+            str(getattr(exercise, "name", "") or ""),
+        ]).lower()
+        return bool(re.search(r"\bwarm[\s-]?up\b", label))
+
     progress_by_day = {item.day: item for item in plan.progress}
     completed_days = sum(1 for item in plan.progress if item.completed)
     total_days = max(len(plan.days), 1)
@@ -3422,13 +3432,29 @@ def _build_strength_workout_completion_png(
     entries: list[str] = []
     if selected_day:
         for section in selected_day.sections:
+            shareable_exercises = [
+                exercise for exercise in section.exercises
+                if not is_warmup_exercise(exercise, section.title)
+            ]
             if section.id in completed_section_ids:
-                entries.extend(exercise.name for exercise in section.exercises)
+                entries.extend(exercise.name for exercise in shareable_exercises)
             else:
-                entries.extend(exercise.name for exercise in section.exercises if exercise.id in completed_exercise_ids)
+                entries.extend(exercise.name for exercise in shareable_exercises if exercise.id in completed_exercise_ids)
     entries = entries[:7]
-    total_exercises = sum(len(section.exercises) for day in plan.days for section in day.sections)
-    completed_exercises = sum(len(item.completed_exercise_ids) for item in plan.progress)
+    shareable_exercise_ids = {
+        exercise.id
+        for day in plan.days
+        for section in day.sections
+        for exercise in section.exercises
+        if not is_warmup_exercise(exercise, section.title)
+    }
+    total_exercises = len(shareable_exercise_ids)
+    completed_exercises = sum(
+        1
+        for item in plan.progress
+        for exercise_id in item.completed_exercise_ids
+        if exercise_id in shareable_exercise_ids
+    )
     width, height = 900, 1400
     image = Image.new("RGB", (width, height), "#03192A")
     draw = ImageDraw.Draw(image)
