@@ -332,7 +332,7 @@ def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
 
     # Extract weight/load inside parentheses first: e.g. "(+10kg)", "(80kg)", "(bodyweight)"
     weight = ""
-    weight_paren = re.search(r"\(\s*(\+?\d+(?:\.\d+)?\s*(?:kg|lbs?|kilos?)(?:\s*/\s*(?:arm|side))?|bodyweight|bw)\s*\)", cleaned, re.I)
+    weight_paren = re.search(r"\(\s*(\+?\d+(?:\.\d+)?(?:\s*[-–—]\s*\d+(?:\.\d+)?)?\s*(?:kg|lbs?|kilos?)(?:\s*/\s*(?:arm|side))?|bodyweight|bw)\s*\)", cleaned, re.I)
     if weight_paren:
         w_val = weight_paren.group(1).strip()
         weight = "Bodyweight" if w_val.lower() in ("bodyweight", "bw") else w_val.replace(" ", "")
@@ -354,7 +354,7 @@ def _parse_exercise_line(line: str) -> CustomWorkoutExercise | None:
 
     # Extract weight/load if not already found: e.g. "80kg", "+10kg", "@ 80kg", "Bodyweight", "BW"
     if not weight:
-        weight_match = re.search(r"(?:@\s*|(?<=[\s\-_(/])|^)(\+?\d+(?:\.\d+)?\s*(?:kg|lbs?|kilos?)(?:\s*/\s*(?:arm|side))?|bodyweight|bw)\b", cleaned, re.I)
+        weight_match = re.search(r"(?:@\s*|(?<=[\s\-_(/])|^)(\+?\d+(?:\.\d+)?(?:\s*[-–—]\s*\d+(?:\.\d+)?)?\s*(?:kg|lbs?|kilos?)(?:\s*/\s*(?:arm|side))?|bodyweight|bw)\b", cleaned, re.I)
         if weight_match:
             weight_raw = weight_match.group(1).strip()
             if weight_raw.lower() in ("bodyweight", "bw"):
@@ -929,15 +929,6 @@ def convert_custom_plan_to_strength_plan_dict(
     """
     days_out: list[dict[str, Any]] = []
 
-    user_weight_kg = 75
-    if user:
-        try:
-            onboarding = dict(user.get("onboarding") or {})
-            personal = dict(onboarding.get("personalProfile") or {})
-            user_weight_kg = int(personal.get("weight") or user.get("weight") or 75)
-        except Exception:
-            user_weight_kg = 75
-
     for day in plan.days:
         day_exercises: list[dict[str, Any]] = []
         total_volume_kg = 0
@@ -965,6 +956,18 @@ def convert_custom_plan_to_strength_plan_dict(
             else:
                 total_bw_reps += int(ex.sets * avg_reps)
 
+            exercise_name_lower = ex.exercise_name.strip().lower()
+            is_bodyweight = any(
+                marker in exercise_name_lower
+                for marker in (
+                    "bodyweight", "push-up", "push up", "pull-up", "pull up",
+                    "plank", "hollow hold", "mountain climber", "burpee",
+                    "inverted row", "diamond push", "pike push", "bench dip",
+                    "chair dip",
+                )
+            )
+            normalized_weight = ex.weight or ("Bodyweight" if is_bodyweight else "")
+
             day_exercises.append(
                 {
                     "id": ex_id,
@@ -972,7 +975,7 @@ def convert_custom_plan_to_strength_plan_dict(
                     "sets": ex.sets,
                     "reps": ex.reps,
                     "rest": ex.rest,
-                    "weight": ex.weight if ex.weight else ("Bodyweight" if ex.type == "Core" else f"{user_weight_kg} kg"),
+                    "weight": normalized_weight,
                     "type": ex.type,
                     "notes": ex.notes,
                 }

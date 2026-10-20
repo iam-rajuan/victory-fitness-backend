@@ -170,6 +170,10 @@ def _normalize_strength_goal(goal: str) -> str:
         "2": "PURE STRENGTH",
         "3": "POWER & SPEED",
         "4": "BODY RECOMP",
+        "GET STRONGER": "PURE STRENGTH",
+        "LOSE WEIGHT AND KEEP MUSCLE": "BODY RECOMP",
+        "MOVE WITHOUT PAIN": "PAIN-FREE STRENGTH",
+        "STAY CONSISTENT": "HYPERTROPHY",
     }
     return goal_map.get(value, value)
 
@@ -204,24 +208,23 @@ def _build_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
     preferred_days = _normalize_preferred_days(input_data.days)
     active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
     title_cycle = _strength_title_cycle(input_data.split, input_data.goal, input_data.muscle_group)
-    exercise_pool = _strength_exercise_pool(input_data.goal, input_data.equipment, input_data.muscle_group, input_data.duration_minutes, input_data.level)
+    exercise_pool = _strength_exercise_pool(
+        input_data.goal,
+        input_data.equipment,
+        input_data.muscle_group,
+        input_data.duration_minutes,
+        input_data.level,
+        input_data.split,
+    )
 
     frequency = _safe_int(input_data.frequency, 4, minimum=1, maximum=7)
 
     injury_list = [str(item).lower() for item in getattr(input_data, "injury_flags", []) if str(item).strip()]
-    if "knee" in injury_list:
-        safe_pool = []
-        for day_exercises in exercise_pool:
-            safe_day = []
-            for ex in day_exercises:
-                ex_name = ex["name"]
-                alt_name = _replacement_for_injury(ex_name, injury_list)
-                if alt_name:
-                    safe_day.append({**ex, "name": alt_name, "type": "Compound" if "Deadlift" in alt_name else "Isolation"})
-                else:
-                    safe_day.append(ex)
-            safe_pool.append(safe_day)
-        exercise_pool = safe_pool
+    if injury_list:
+        exercise_pool = [
+            _sanitize_and_refill_day_exercises(day_exercises, input_data, day_index)
+            for day_index, day_exercises in enumerate(exercise_pool)
+        ]
 
     intensity = _strength_intensity_label(input_data.goal, input_data.level)
 
@@ -265,12 +268,10 @@ def _build_strength_workout_plan(input_data: StrengthWorkoutPlanInput) -> dict:
             }
         )
 
-    focus = _normalize_muscle_group(input_data.muscle_group)
-    focus_label = "full-body" if focus == "full_body" else focus.replace("_", " ")
     duration = _requested_duration_minutes(input_data.duration_minutes)
     duration_text = f" around {duration} minutes per session" if duration else ""
     summary = (
-        f"{input_data.level or 'Intermediate'} {input_data.goal or 'strength'} plan focused on {focus_label}, using a "
+        f"{input_data.level or 'Intermediate'} {input_data.goal or 'strength'} plan using a "
         f"{input_data.split or 'balanced'} split with {frequency} main training days{duration_text}."
     )
     return {"summary": summary, "days": days}
@@ -581,7 +582,7 @@ def _strength_title_cycle(split: str, goal: str, muscle_group: str = "") -> list
 
     split_map = {
         "FULL BODY": ["Full Body Strength", "Full Body Hypertrophy", "Full Body Power"],
-        "UPPER / LOWER": ["Upper Body Strength", "Lower Body Strength", "Upper Body Volume", "Lower Body Power"],
+        "UPPER / LOWER": ["Upper Body Strength", "Lower Body Strength", "Upper Body Volume", "Lower Body Volume"],
         "PUSH PULL LEGS": ["Push Strength", "Pull Strength", "Leg Strength", "Push Hypertrophy", "Pull Hypertrophy"],
     }
     normalized_split = _normalize_strength_split(split)
@@ -665,8 +666,9 @@ def _calculate_day_est_time(exercises: list[dict], target_duration_minutes: str 
     calculated_mins = int((total_sec + 59) // 60) + warmup_cooldown
 
     if target_mins:
-        # Strictly preserve user's requested session duration (e.g. 90 min, 60 min, 45 min); never collapse to 25 minutes
-        mins = max(calculated_mins, target_mins)
+        # The plan fitter keeps work inside the allowed window; the displayed label
+        # remains the duration explicitly selected in the four-question builder.
+        mins = target_mins
     else:
         mins = max(calculated_mins, 25)
 
@@ -775,6 +777,134 @@ def _catalog_candidates(goal: str, equipment: list[str], focus: str) -> list[dic
     return candidates
 
 
+def _split_focus_cycle(split: str) -> list[str]:
+    normalized = _normalize_strength_split(split)
+    if normalized == "UPPER / LOWER":
+        return ["upper", "lower", "upper", "lower"]
+    if normalized == "PUSH PULL LEGS":
+        return ["push", "pull", "legs", "push", "pull", "legs"]
+    return ["full_body"]
+
+
+def _exercise_matches_session_focus(exercise_name: str, session_focus: str) -> bool:
+    if session_focus == "full_body":
+        return True
+    metadata = EXERCISE_BY_NAME.get(str(exercise_name or "").strip().lower())
+    if not metadata:
+        return False
+    muscles = {str(value).lower() for value in metadata.get("muscles", [])}
+    lower = {"legs", "quads", "hamstrings", "glutes", "calves"}
+    if session_focus == "upper":
+        return bool(muscles & {"chest", "back", "shoulders", "arms", "biceps", "triceps"}) and not bool(muscles & lower)
+    if session_focus == "lower" or session_focus == "legs":
+        return bool(muscles & lower) and not bool(muscles & {"chest", "back", "shoulders", "arms", "biceps", "triceps"})
+    if session_focus == "push":
+        return bool(muscles & {"chest", "shoulders", "triceps"}) and "back" not in muscles and "biceps" not in muscles
+    if session_focus == "pull":
+        return bool(muscles & {"back", "biceps"}) and "chest" not in muscles and "triceps" not in muscles
+    return True
+
+
+def _exercise_movement_family(exercise_name: str) -> str:
+    lowered = str(exercise_name or "").strip().lower()
+    if "deadlift" in lowered or re.search(r"\brdl\b", lowered):
+        return "deadlift"
+    if "row" in lowered:
+        return "row"
+    if "squat" in lowered or "leg press" in lowered:
+        return "squat"
+    if "lunge" in lowered or "split squat" in lowered:
+        return "lunge"
+    return lowered
+
+
+def _session_candidates(goal: str, equipment: list[str], session_focus: str) -> list[dict]:
+    candidates = _catalog_candidates(goal, equipment, "full_body")
+    if _normalize_strength_goal(goal) == "PAIN-FREE STRENGTH":
+        candidates = [
+            item for item in candidates
+            if not any(term in str(item.get("name") or "").lower() for term in ("jump", "burpee", "mountain climber"))
+        ]
+    focused = [item for item in candidates if _exercise_matches_session_focus(str(item.get("name") or ""), session_focus)]
+    if session_focus in {"upper", "lower", "legs"}:
+        core = [
+            item for item in candidates
+            if set(str(value).lower() for value in item.get("muscles", [])) == {"core"}
+        ]
+        focused.extend(item for item in core if item not in focused)
+    return focused
+
+
+def _build_split_aligned_pool(
+    goal: str,
+    equipment: list[str],
+    split: str,
+    duration_minutes: str | int | None,
+    level: str,
+) -> list[list[dict]]:
+    target_count = _target_exercise_count(duration_minutes)
+    focuses = _split_focus_cycle(split)
+    result = []
+    for day_index, session_focus in enumerate(focuses):
+        candidates = _session_candidates(goal, equipment, session_focus)
+        ordered = candidates[day_index:] + candidates[:day_index]
+        chosen = []
+        seen_families: set[str] = set()
+        for candidate in ordered:
+            family = _exercise_movement_family(str(candidate.get("name") or ""))
+            if family in seen_families:
+                continue
+            seen_families.add(family)
+            chosen.append(candidate)
+            if len(chosen) >= target_count:
+                break
+        result.append([_prescribe_exercise(item, goal, level, duration_minutes) for item in chosen])
+    return result
+
+
+def _sanitize_and_refill_day_exercises(
+    exercises: list[dict],
+    input_data: StrengthWorkoutPlanInput,
+    day_index: int,
+) -> list[dict]:
+    injury_flags = [str(item).lower() for item in input_data.injury_flags if str(item).strip()]
+    focus_cycle = _split_focus_cycle(input_data.split) if _normalize_muscle_group(input_data.muscle_group) == "full_body" else ["full_body"]
+    session_focus = focus_cycle[day_index % len(focus_cycle)]
+    target_count = min(_target_exercise_count(input_data.duration_minutes), len(exercises))
+    sanitized: list[dict] = []
+    seen: set[str] = set()
+    seen_families: set[str] = set()
+
+    def add_exercise(source: dict) -> None:
+        name = str(source.get("name") or "").strip()
+        replacement = _replacement_for_injury(name, injury_flags)
+        if replacement:
+            metadata = EXERCISE_BY_NAME.get(replacement.lower(), {})
+            source = {
+                **_prescribe_exercise(metadata or source, input_data.goal, input_data.level, input_data.duration_minutes),
+                "name": replacement,
+            }
+            name = replacement
+        key = name.lower()
+        family = _exercise_movement_family(name)
+        if not name or key in seen or family in seen_families or not _exercise_matches_session_focus(name, session_focus):
+            return
+        seen.add(key)
+        seen_families.add(family)
+        sanitized.append(source)
+
+    for exercise in exercises:
+        add_exercise(dict(exercise))
+
+    for candidate in _session_candidates(input_data.goal, input_data.equipment, session_focus):
+        if len(sanitized) >= target_count:
+            break
+        if _replacement_for_injury(str(candidate.get("name") or ""), injury_flags):
+            continue
+        add_exercise(_prescribe_exercise(candidate, input_data.goal, input_data.level, input_data.duration_minutes))
+    return sanitized
+
+
 def _exercise_priority(item: dict, equip_type: str, goal: str) -> tuple[int, int, str]:
     name = str(item.get("name") or "").lower()
     metadata_equipment = set(item.get("equipment") or [])
@@ -800,8 +930,6 @@ def _rotate_candidates(candidates: list[dict], day_index: int, count: int) -> li
     if not candidates:
         return []
     ordered = candidates[day_index:] + candidates[:day_index]
-    while len(ordered) < count:
-        ordered.extend(candidates)
     return ordered[:count]
 
 
@@ -824,6 +952,10 @@ def _prescribe_exercise(source: dict, goal: str, level: str, duration_minutes: s
         sets = 3
         reps = "10-15"
         rest = "60s"
+    elif normalized_goal == "PAIN-FREE STRENGTH":
+        sets = 3
+        reps = "8-12 controlled"
+        rest = "75s"
     else:
         sets = 4 if is_compound else 3
         reps = "8-12" if is_compound else "12-15"
@@ -859,22 +991,29 @@ def _validate_and_correct_strength_plan(plan: dict, input_data: StrengthWorkoutP
     preferred_days = _normalize_preferred_days(input_data.days)
     active_days = preferred_days[:frequency] if preferred_days else DAY_ORDER[:frequency]
     fallback = _build_strength_workout_plan(input_data)
+    title_cycle = _strength_title_cycle(input_data.split, input_data.goal, input_data.muscle_group)
+    focus_cycle = _split_focus_cycle(input_data.split) if _normalize_muscle_group(input_data.muscle_group) == "full_body" else ["full_body"]
     fallback_by_day = {str(day.get("day")): day for day in fallback.get("days", []) if isinstance(day, dict)}
     incoming_by_day = {str(day.get("day")): day for day in plan.get("days", []) if isinstance(day, dict)}
 
     corrected_days = []
     for day_index, day_name in enumerate(active_days):
+        session_focus = focus_cycle[day_index % len(focus_cycle)]
         incoming = dict(incoming_by_day.get(day_name) or {})
         fallback_day = dict(fallback_by_day.get(day_name) or fallback["days"][day_index % len(fallback["days"])])
         clean_exercises = []
         seen_names = set()
+        seen_families = set()
         for raw_exercise in incoming.get("exercises") or []:
             if not isinstance(raw_exercise, dict):
                 continue
             name = str(raw_exercise.get("name") or "").strip()
-            if not name or name.lower() in seen_names:
+            family = _exercise_movement_family(name)
+            if not name or name.lower() in seen_names or family in seen_families:
                 continue
             if not _exercise_matches_constraints(name, input_data):
+                continue
+            if not _exercise_matches_session_focus(name, session_focus):
                 continue
             metadata = EXERCISE_BY_NAME[name.lower()]
             prescribed = _prescribe_exercise(metadata, input_data.goal, input_data.level, input_data.duration_minutes)
@@ -890,20 +1029,23 @@ def _validate_and_correct_strength_plan(plan: dict, input_data: StrengthWorkoutP
                 }
             )
             seen_names.add(name.lower())
+            seen_families.add(family)
 
         target_count = _target_exercise_count(input_data.duration_minutes)
         for fallback_exercise in fallback_day.get("exercises") or []:
             if len(clean_exercises) >= target_count:
                 break
             name = str(fallback_exercise.get("name") or "").strip()
-            if not name or name.lower() in seen_names:
+            family = _exercise_movement_family(name)
+            if not name or name.lower() in seen_names or family in seen_families:
                 continue
             clean_exercises.append({**fallback_exercise, "id": f"{day_name.lower()}-{len(clean_exercises) + 1}"})
             seen_names.add(name.lower())
+            seen_families.add(family)
 
         corrected_day = {
             "day": day_name,
-            "title": str(incoming.get("title") or fallback_day.get("title") or f"{day_name} Strength"),
+            "title": title_cycle[day_index % len(title_cycle)],
             "est_time": _calculate_day_est_time(_fit_exercises_to_duration(clean_exercises, input_data.duration_minutes), input_data.duration_minutes),
             "volume": str(fallback_day.get("volume") or incoming.get("volume") or ""),
             "intensity": _strength_intensity_label(input_data.goal, input_data.level),
@@ -921,10 +1063,13 @@ def _strength_exercise_pool(
     muscle_group: str = "",
     duration_minutes: str | int = "",
     level: str = "",
+    split: str = "",
 ) -> list[list[dict]]:
     normalized_goal = _normalize_strength_goal(goal)
     equip_type = _classify_equipment(equipment)
     focus = _normalize_muscle_group(muscle_group)
+    if focus == "full_body" and _normalize_strength_split(split) in {"UPPER / LOWER", "PUSH PULL LEGS"}:
+        return _build_split_aligned_pool(goal, equipment, split, duration_minutes, level)
     if focus != "full_body":
         candidates = _catalog_candidates(goal, equipment, focus)
         if not candidates:
@@ -1166,32 +1311,34 @@ def _exercise_weight_label(exercise_name: str, input_data: StrengthWorkoutPlanIn
             return "-"
         return "Bodyweight"
 
-    # If dumbbells only
+    # Never invent precise loads. The builder does not collect lift baselines, so
+    # users without a verified number choose their starting load during session setup.
     if equip_type == "dumbbells_only" or "dumbbell" in name:
-        if "squat" in name or "deadlift" in name or "rdl" in name:
-            return "12-16kg DB"
-        if "press" in name or "row" in name:
-            return "10-14kg DB"
-        return "6-10kg DB"
+        return "Set starting weight"
 
     # Full Gym Barbell / Machine Lifts
     if "bench" in name:
-        value = _safe_int(input_data.bench, 60, minimum=20, maximum=250)
+        if not re.search(r"\d", str(input_data.bench or "")):
+            return "Set starting weight"
+        value = _safe_int(input_data.bench, 0, minimum=1, maximum=250)
         return f"{max(int(round(value * 0.72)), 15)}kg"
     if "squat" in name or "leg press" in name:
-        value = _safe_int(input_data.squat, 90, minimum=30, maximum=320)
+        if not re.search(r"\d", str(input_data.squat or "")):
+            return "Set starting weight"
+        value = _safe_int(input_data.squat, 0, minimum=1, maximum=320)
         multiplier = 0.7 if "squat" in name else 1.25
         return f"{max(int(round(value * multiplier)), 20)}kg"
     if "deadlift" in name or "romanian" in name:
-        value = _safe_int(input_data.deadlift, 100, minimum=40, maximum=350)
+        if not re.search(r"\d", str(input_data.deadlift or "")):
+            return "Set starting weight"
+        value = _safe_int(input_data.deadlift, 0, minimum=1, maximum=350)
         multiplier = 0.68 if "romanian" in name else 0.82
         return f"{max(int(round(value * multiplier)), 20)}kg"
     if "pull-up" in name:
         return "Bodyweight"
     if "plank" in name or "hold" in name or "carry" in name:
         return "-"
-    weight = _safe_int(input_data.weight, 75, minimum=40, maximum=180)
-    return f"{max(int(round(weight * 0.45)), 10)}kg"
+    return "Set starting weight"
 
 
 

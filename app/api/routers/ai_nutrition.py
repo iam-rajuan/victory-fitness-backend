@@ -3,6 +3,7 @@ from fastapi import APIRouter
 from ...core.legacy import *
 from ...country_food_data import get_country_food_dataset
 from ...nutrition_ai import _normalize_nutrition_plan
+from ...utils.currency import normalize_weekly_food_budget
 
 router = APIRouter()
 
@@ -35,7 +36,7 @@ def _nutrition_payload_with_user_country(payload_data: dict, user: dict) -> dict
         enriched["country"] = country
     if country_code:
         enriched["country_code"] = country_code
-    return enriched
+    return normalize_weekly_food_budget(enriched, country_code=country_code, country=country)
 
 
 def _validate_nutrition_favorites_or_country_dataset(payload_data: dict) -> None:

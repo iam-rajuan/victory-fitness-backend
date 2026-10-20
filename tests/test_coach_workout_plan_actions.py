@@ -118,6 +118,57 @@ Est. time: 90 min
     assert len(action["preview"]["days"]) == 2
 
 
+def test_valid_source_workout_keeps_import_action_when_ai_reply_is_not_machine_parseable() -> None:
+    source = """
+    Import my workout routine:
+    Day 1 (Mon): Legs
+    - Quad Extension: 3 x 10, 90s rest, 90-95kg, Isolation
+    - Leg Press: 3 x 8, 120s rest, 160kg, Compound
+    - Seated Hamstring Curl: 3 x 8-10, 90s rest, 72.5kg, Isolation
+    """
+    prose_reply = """
+    Main session:
+    • Quad extension: 90–95kg×10×3
+    • Leg press: 160kg×8×3
+    • Seated hamstring curl: 72.5kg×8–10
+
+    To lock this into your Home workout plan, tap the Import button below.
+    """
+
+    action = coach_router._insertable_coach_plan_action(source, prose_reply, {})
+
+    assert action is not None
+    assert action["type"] == "custom_workout_import"
+    assert action["day_count"] == 1
+    weights = [exercise["weight"] for exercise in action["preview"]["days"][0]["exercises"]]
+    assert weights == ["90-95kg", "160kg", "72.5kg"]
+
+
+def test_import_button_promise_is_removed_without_structured_action() -> None:
+    reply = "Your session looks good.\n\nTo lock this into your Home workout plan, tap the Import button below."
+
+    cleaned = coach_router._remove_unavailable_import_promises(reply, None)
+
+    assert cleaned == "Your session looks good."
+    assert "Import button" not in cleaned
+
+
+def test_fallback_import_reply_uses_real_parser_fields_without_promising_ui() -> None:
+    source = """
+    Import my workout routine:
+    Day 1 (Mon): Legs
+    - Leg Press: 3 x 8, 120s rest, 160kg, Compound
+    - Hamstring Curl: 3 x 10, 90s rest, 72.5kg, Isolation
+    """
+
+    reply = _generate_intelligent_fallback_reply([{"role": "user", "content": source}], user_context={})
+
+    assert "Leg Press: 3 x 8" in reply
+    assert "160kg" in reply
+    assert "72.5kg" in reply
+    assert "Import button" not in reply
+
+
 def test_insert_confirmation_reuses_persisted_draft_instead_of_parsing_claim_text() -> None:
     preview = {
         "plan_name": "Five Day Plan",

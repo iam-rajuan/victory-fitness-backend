@@ -228,6 +228,19 @@ def _insertable_coach_plan_action(
     if not action:
         return None
 
+    # For an existing routine, the deterministic parser output from the user's
+    # message is authoritative. Do not throw it away and then depend on the LLM
+    # reproducing the same plan in a second, perfectly machine-readable format.
+    source_preview = action.get("preview")
+    if action.get("type") == "custom_workout_import" and isinstance(source_preview, dict):
+        try:
+            source_plan = CustomWorkoutPlan(**source_preview)
+        except Exception:
+            return None
+        if source_plan.is_valid and source_plan.days and all(day.exercises for day in source_plan.days):
+            return action
+        return None
+
     draft_state = dict((user_context or {}).get("workout_draft_state") or {})
     confirms_existing_draft = _confirms_workout_draft(message)
     if confirms_existing_draft and isinstance(draft_state.get("preview"), dict):
@@ -255,6 +268,24 @@ def _insertable_coach_plan_action(
     if not action.get("target_minutes") and parsed_plan.expected_duration:
         action["target_minutes"] = parsed_plan.expected_duration
     return action
+
+
+def _remove_unavailable_import_promises(reply: str, plan_action: dict[str, Any] | None) -> str:
+    """Prevent model prose from promising UI that structured state cannot render."""
+    text = str(reply or "")
+    if plan_action and isinstance(plan_action.get("preview"), dict):
+        return text
+
+    kept_lines = []
+    for line in text.splitlines():
+        lowered = line.lower()
+        promises_import_button = (
+            ("import" in lowered and "button" in lowered and any(term in lowered for term in ("tap", "press", "below")))
+            or ("import" in lowered and "tippe" in lowered and "unten" in lowered)
+        )
+        if not promises_import_button:
+            kept_lines.append(line)
+    return "\n".join(kept_lines).strip()
 
 
 def _build_versioned_workout_draft(
@@ -1147,6 +1178,7 @@ async def coach_victor_chat(
         draft_id=str(thread_object_id),
         now=now,
     )
+    reply_text = _remove_unavailable_import_promises(reply_text, plan_action)
     assistant_message = {
         "id": str(ObjectId()),
         "role": "assistant",
@@ -1280,6 +1312,7 @@ async def coach_victor_stream(
             draft_id=str(thread_object_id),
             now=now,
         )
+        full_reply_text = _remove_unavailable_import_promises(full_reply_text, plan_action)
         asst_msg = {
             "id": str(ObjectId()),
             "role": "assistant",

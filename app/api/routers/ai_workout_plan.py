@@ -349,6 +349,8 @@ async def workout_home_seven_day_plan(
                 "days": hydrated_input.days,
                 "age": hydrated_input.age,
                 "weight": hydrated_input.weight,
+                "injury_flags": hydrated_input.injury_flags,
+                "custom_notes": hydrated_input.custom_notes,
                 "source": "home_seven_day",
             },
             "plan": plan_data,

@@ -402,6 +402,8 @@ def build_nutrition_plan_signature(payload: dict) -> str:
         "cooking_time_weekday": _normalize_text(payload.get("cooking_time_weekday"), ""),
         "people_cooking_for": _normalize_text(payload.get("people_cooking_for"), ""),
         "weekly_food_budget": _normalize_text(payload.get("weekly_food_budget"), ""),
+        "weekly_food_budget_amount": payload.get("weekly_food_budget_amount"),
+        "weekly_food_budget_currency": _normalize_text(payload.get("weekly_food_budget_currency"), "").upper(),
         "language": _normalize_text(payload.get("language") or payload.get("preferred_language"), "en").lower(),
         "health_conditions": sorted(
             {
@@ -585,7 +587,13 @@ def _protein_target_instruction(payload: dict) -> str:
 def _meal_plan_practical_constraints_instruction(payload: dict) -> str:
     cooking_time = str(payload.get("cooking_time_weekday") or "").strip()
     people = str(payload.get("people_cooking_for") or "").strip()
-    budget = str(payload.get("weekly_food_budget") or "").strip()
+    budget_amount = payload.get("weekly_food_budget_amount")
+    budget_currency = str(payload.get("weekly_food_budget_currency") or "").strip().upper()
+    budget = (
+        f"{budget_amount} {budget_currency}"
+        if budget_amount is not None and budget_currency
+        else str(payload.get("weekly_food_budget") or "").strip()
+    )
     instructions = ["PRACTICAL WEEKLY PLANNING CONSTRAINTS:"]
     if cooking_time:
         instructions.append(f"- Weekday cooking/prep time target: {cooking_time}. Keep weekday meals at or below this where possible.")

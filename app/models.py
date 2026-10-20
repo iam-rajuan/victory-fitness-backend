@@ -1553,6 +1553,8 @@ class NutritionPlanRequest(BaseModel):
     cooking_time_weekday: str | None = None
     people_cooking_for: str | None = None
     weekly_food_budget: str | None = None
+    weekly_food_budget_amount: float | None = Field(default=None, ge=0)
+    weekly_food_budget_currency: str | None = Field(default=None, min_length=3, max_length=3)
     regenerate: bool = False
     force_refresh: bool = False
 

@@ -270,7 +270,7 @@ def build_coach_victor_system_prompt(
         "2. If the user provided 5 days, confirm all 5 days. Never drop days or output fewer days. "
         "3. If the user specified 90 minutes, confirm 90-minute sessions. NEVER silently convert to 25 minutes. "
         "4. Preserve their exact weights (e.g. 80kg Bench Press) and exercise choices. Do not replace their exercises with unrelated catalog templates. "
-        "5. Present a clean, scan-friendly summary of each day with its exercises, sets, reps, loads, and rest, and tell them to tap the Import button below to lock it into their Home workout plan.\n"
+        "5. Present a clean, scan-friendly summary of each day with its exercises, sets, reps, loads, and rest. Do not promise or describe an Import button; the application renders actions only after deterministic validation.\n"
         "When the user asks you to build, change, rebuild, apply, or create any workout/training plan from scratch, DO NOT interview them with multiple questions. "
         "Generate a usable plan immediately using their message, recent chat context, profile goal, level, time, available days, equipment, and pain/injury info. "
         "If the user says adjust/change/current routine/current plan/my plan, use the Current active Home workout plan JSON as the starting point and explain only the changed routine. "
@@ -486,9 +486,9 @@ def _generate_intelligent_fallback_reply(
             for day in parsed.days:
                 ex_lines = []
                 for ex in day.exercises:
-                    load_part = f" @ {ex.weight_kg}kg" if ex.weight_kg else (f" ({ex.load})" if ex.load else "")
-                    rest_part = f", {ex.rest_seconds}s rest" if ex.rest_seconds else ""
-                    ex_lines.append(f"- {ex.exercise_name}: {ex.sets} x {ex.reps}{load_part}{rest_part}")
+                    load_part = f", {ex.weight}" if ex.weight else ""
+                    rest_part = f", {ex.rest} rest" if ex.rest else ""
+                    ex_lines.append(f"- {ex.exercise_name}: {ex.sets} x {ex.reps}{rest_part}{load_part}, {ex.type}")
                 plan_blocks.append(
                     f"**{day.day_name} ({day.day_key})**\n"
                     f"{dur} min | Custom Routine\n"
@@ -499,12 +499,10 @@ def _generate_intelligent_fallback_reply(
                 return (
                     f"Ich habe deinen {len(parsed.days)}-Tage-Plan exakt übernommen ({dur} Min/Einheit):\n\n"
                     + "\n\n".join(plan_blocks)
-                    + "\n\nTippe unten auf den Button, um deinen Plan ohne Änderungen in deinen Home-Plan zu importieren."
                 )
             return (
                 f"I've verified and preserved your {len(parsed.days)}-day custom routine exactly as provided ({dur} min/session):\n\n"
                 + "\n\n".join(plan_blocks)
-                + "\n\nTap the **Import** button below to lock this plan into your workout schedule without changes."
             )
 
     # USE CASE A: CREATE A WORKOUT (Recommend new program tailored to user context)
