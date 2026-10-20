@@ -10660,9 +10660,41 @@ def _serialize_admin_user_record(record: dict, activity_map: dict[str, datetime]
     if is_beta_tester and normalized_tier not in {"NONE", "GOLD_BETA"}:
         tier_label = f"TRIAL · {normalized_tier}"
 
+    onboarding_state = dict(record.get("onboarding_state") or {})
+    personal_profile = dict(onboarding_state.get("personalProfile") or {})
+    anamnese = dict(onboarding_state.get("anamnese") or {})
+    body_metrics = dict(record.get("body_metrics") or {})
+    user_age = str(personal_profile.get("age") or body_metrics.get("age") or "").strip()
+    user_height = str(personal_profile.get("height") or body_metrics.get("height") or "").strip()
+    user_weight = str(personal_profile.get("weight") or body_metrics.get("weight") or "").strip()
+    user_gender = str(personal_profile.get("gender") or body_metrics.get("gender") or "").strip()
+    user_primary_goal = str(anamnese.get("primaryGoal") or (anamnese.get("primaryGoals") or [""])[0] or "").strip()
+    user_days_per_week = str(anamnese.get("daysPerWeek") or "").strip()
+    user_time_per_session = str(anamnese.get("timePerSession") or "").strip()
+    user_equipment_access = str(anamnese.get("equipmentAccess") or "").strip()
+    user_activity_level = str(anamnese.get("activityLevel") or "").strip()
+
     return {
 
         "id": str(record["_id"]),
+
+        "age": user_age,
+
+        "height": user_height,
+
+        "weight": user_weight,
+
+        "gender": user_gender,
+
+        "primaryGoal": user_primary_goal,
+
+        "daysPerWeek": user_days_per_week,
+
+        "timePerSession": user_time_per_session,
+
+        "equipmentAccess": user_equipment_access,
+
+        "activityLevel": user_activity_level,
 
         "fullName": str(record.get("name") or "Unknown"),
 

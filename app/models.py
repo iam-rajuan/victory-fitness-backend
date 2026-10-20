@@ -2018,6 +2018,15 @@ class AdminUserListItem(BaseModel):
     blockedAt: datetime | None = None
     deletedAt: datetime | None = None
     blockedReason: str = ""
+    age: str = ""
+    height: str = ""
+    weight: str = ""
+    gender: str = ""
+    primaryGoal: str = ""
+    daysPerWeek: str = ""
+    timePerSession: str = ""
+    equipmentAccess: str = ""
+    activityLevel: str = ""
 
 
 class AdminUserDetailResponse(AdminUserListItem):
@@ -2391,6 +2400,15 @@ class AdminUserUpdateRequest(BaseModel):
     contactNumber: str | None = Field(default=None, max_length=40)
     country: str | None = Field(default=None, max_length=80)
     profileImage: str | None = Field(default=None, max_length=500)
+    age: str | None = Field(default=None, max_length=10)
+    height: str | None = Field(default=None, max_length=20)
+    weight: str | None = Field(default=None, max_length=20)
+    gender: str | None = Field(default=None, max_length=30)
+    primaryGoal: str | None = Field(default=None, max_length=200)
+    daysPerWeek: str | None = Field(default=None, max_length=10)
+    timePerSession: str | None = Field(default=None, max_length=20)
+    equipmentAccess: str | None = Field(default=None, max_length=100)
+    activityLevel: str | None = Field(default=None, max_length=100)
 
 
 class AdminUserCreateRequest(BaseModel):
@@ -2401,6 +2419,11 @@ class AdminUserCreateRequest(BaseModel):
     contactNumber: str | None = Field(default=None, max_length=40)
     country: str | None = Field(default=None, max_length=80)
     profileImage: str | None = Field(default=None, max_length=500)
+    age: str | None = Field(default=None, max_length=10)
+    height: str | None = Field(default=None, max_length=20)
+    weight: str | None = Field(default=None, max_length=20)
+    gender: str | None = Field(default=None, max_length=30)
+    primaryGoal: str | None = Field(default=None, max_length=200)
 
 
 class WorkoutMovementInput(BaseModel):

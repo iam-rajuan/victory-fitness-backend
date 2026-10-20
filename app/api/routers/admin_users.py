@@ -96,6 +96,24 @@ async def admin_create_user(
         "subscription_status": "NONE",
         "admin_invited": True,
         "must_reset_password": True,
+        "body_metrics": {
+            "age": (payload.age or "").strip(),
+            "height": (payload.height or "").strip(),
+            "weight": (payload.weight or "").strip(),
+            "gender": (payload.gender or "").strip(),
+        },
+        "onboarding_state": {
+            "personalProfile": {
+                "age": (payload.age or "").strip(),
+                "height": (payload.height or "").strip(),
+                "weight": (payload.weight or "").strip(),
+                "gender": (payload.gender or "").strip(),
+            },
+            "anamnese": {
+                "primaryGoal": (payload.primaryGoal or "").strip(),
+                "primaryGoals": [(payload.primaryGoal or "").strip()] if (payload.primaryGoal or "").strip() else [],
+            },
+        },
         "created_at": now,
         "updated_at": now,
     }
@@ -226,6 +244,54 @@ async def admin_update_user(
         update_doc["is_verified"] = payload.isVerified
 
         update_doc["status"] = "ACTIVE" if payload.isVerified else "PENDING"
+
+    body_metrics_update: dict = {}
+    personal_profile_update: dict = {}
+    anamnese_update: dict = {}
+
+    if payload.age is not None:
+        val = payload.age.strip()
+        body_metrics_update["age"] = val
+        personal_profile_update["age"] = val
+    if payload.height is not None:
+        val = payload.height.strip()
+        body_metrics_update["height"] = val
+        personal_profile_update["height"] = val
+    if payload.weight is not None:
+        val = payload.weight.strip()
+        body_metrics_update["weight"] = val
+        personal_profile_update["weight"] = val
+    if payload.gender is not None:
+        val = payload.gender.strip()
+        body_metrics_update["gender"] = val
+        personal_profile_update["gender"] = val
+    if payload.primaryGoal is not None:
+        val = payload.primaryGoal.strip()
+        anamnese_update["primaryGoal"] = val
+        anamnese_update["primaryGoals"] = [val] if val else []
+    if payload.daysPerWeek is not None:
+        anamnese_update["daysPerWeek"] = payload.daysPerWeek.strip()
+    if payload.timePerSession is not None:
+        anamnese_update["timePerSession"] = payload.timePerSession.strip()
+    if payload.equipmentAccess is not None:
+        anamnese_update["equipmentAccess"] = payload.equipmentAccess.strip()
+    if payload.activityLevel is not None:
+        anamnese_update["activityLevel"] = payload.activityLevel.strip()
+
+    if body_metrics_update:
+        current_metrics = dict(record.get("body_metrics") or {})
+        current_metrics.update(body_metrics_update)
+        update_doc["body_metrics"] = current_metrics
+
+    if personal_profile_update or anamnese_update:
+        current_onboarding = dict(record.get("onboarding_state") or {})
+        current_personal = dict(current_onboarding.get("personalProfile") or {})
+        current_personal.update(personal_profile_update)
+        current_anamnese = dict(current_onboarding.get("anamnese") or {})
+        current_anamnese.update(anamnese_update)
+        current_onboarding["personalProfile"] = current_personal
+        current_onboarding["anamnese"] = current_anamnese
+        update_doc["onboarding_state"] = current_onboarding
 
     if not update_doc:
 
