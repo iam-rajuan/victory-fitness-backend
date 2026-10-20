@@ -1,4 +1,7 @@
 import html
+import hashlib
+import secrets
+from starlette.concurrency import run_in_threadpool
 import json
 from datetime import timedelta
 from urllib.parse import quote, urlencode, urlparse
@@ -527,6 +530,116 @@ async def verify_email(payload: VerifyEmailRequest, response: Response) -> Token
 
     return await _issue_tokens(user, response)
 
+def _seed_admin_emails() -> set[str]:
+    return {
+        str(account.get("email") or "").strip().lower()
+        for account in settings.admin_seed_accounts
+        if account.get("email")
+    }
+
+
+def _is_admin_recovery_account(user: dict) -> bool:
+    return bool(user.get("is_admin") or str(user.get("role") or "").lower() == "admin"
+                or str(user.get("email") or "").lower() in _seed_admin_emails())
+
+
+async def _require_seed_recovery_user(email: str) -> dict:
+    email = email.strip().lower()
+    if email not in _seed_admin_emails():
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    user = await users_collection.find_one({"email": email, "is_verified": True})
+    if not user or not (user.get("is_admin") or user.get("role") == "admin") or _is_auth_blocked_user(user):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
+
+@router.post("/admin/auth/forgot-password")
+async def admin_forgot_password(payload: ForgotPasswordRequest) -> dict[str, str]:
+    user = await _require_seed_recovery_user(str(payload.email))
+    now = datetime.now(timezone.utc)
+    code = create_verification_code()
+    code_hash = hash_password(code)
+    # Reserve the send atomically: concurrent clicks cannot bypass the cooldown.
+    result = await users_collection.update_one(
+        {"_id": user["_id"], "$or": [
+            {"admin_reset_sent_at": {"$exists": False}},
+            {"admin_reset_sent_at": {"$lte": now - timedelta(seconds=30)}},
+        ]},
+        {"$set": {"admin_reset_code_hash": code_hash,
+                  "admin_reset_code_expires_at": now + timedelta(minutes=10),
+                  "admin_reset_sent_at": now, "admin_reset_attempts": 0},
+         "$unset": {"admin_reset_token_hash": "", "admin_reset_token_expires_at": "",
+                    "reset_code_hash": "", "reset_code_expires_at": "", "password_reset_token_hash": ""}},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=429, detail="Please wait 30 seconds before requesting another code")
+    try:
+        await run_in_threadpool(send_password_reset_email, user["email"], code)
+    except RuntimeError as exc:
+        await users_collection.update_one(
+            {"_id": user["_id"], "admin_reset_code_hash": code_hash},
+            {"$unset": {"admin_reset_code_hash": "", "admin_reset_code_expires_at": "",
+                        "admin_reset_sent_at": "", "admin_reset_attempts": ""}},
+        )
+        raise HTTPException(status_code=503, detail="Unable to send reset code. Please try again.") from exc
+    return {"message": "Reset code sent", "email": user["email"]}
+
+
+@router.post("/admin/auth/verify-reset-code")
+async def admin_verify_reset_code(payload: VerifyResetCodeRequest) -> dict[str, str]:
+    user = await _require_seed_recovery_user(str(payload.email))
+    now = datetime.now(timezone.utc)
+    # Reserve each attempt before checking the code, including concurrent requests.
+    challenge = await users_collection.find_one_and_update(
+        {"_id": user["_id"], "admin_reset_code_expires_at": {"$gt": now},
+         "admin_reset_code_hash": {"$exists": True}, "admin_reset_attempts": {"$lt": 5}},
+        {"$inc": {"admin_reset_attempts": 1}},
+    )
+    if not challenge:
+        raise HTTPException(status_code=400, detail="Reset code expired or attempts exhausted. Request a new code.")
+    code_hash = challenge["admin_reset_code_hash"]
+    if not verify_password(payload.code, code_hash):
+        raise HTTPException(status_code=400, detail="Invalid reset code")
+    token = secrets.token_urlsafe(32)
+    result = await users_collection.update_one(
+        {"_id": user["_id"], "admin_reset_code_hash": code_hash,
+         "admin_reset_code_expires_at": {"$gt": datetime.now(timezone.utc)}},
+        {"$set": {"admin_reset_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                  "admin_reset_token_expires_at": now + timedelta(minutes=15)},
+         "$unset": {"admin_reset_code_hash": "", "admin_reset_code_expires_at": ""}},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=400, detail="Reset code already used or replaced. Request a new code.")
+    return {"message": "Reset code verified", "reset_token": token}
+
+
+@router.post("/admin/auth/reset-password")
+async def admin_reset_password(payload: ResetPasswordRequest) -> dict[str, str]:
+    now = datetime.now(timezone.utc)
+    token_hash = hashlib.sha256(payload.reset_token.encode()).hexdigest()
+    token_filter = {"admin_reset_token_hash": token_hash, "admin_reset_token_expires_at": {"$gt": now}}
+    user = await users_collection.find_one(token_filter)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired reset token")
+    await _require_seed_recovery_user(user["email"])
+    if len(payload.new_password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password must be at most 72 UTF-8 bytes")
+    result = await users_collection.update_one(
+        {"_id": user["_id"], **token_filter},
+        {"$set": {"password_hash": hash_password(payload.new_password),
+                  "password_changed_at": now, "updated_at": now},
+         "$inc": {"auth_session_version": 1},
+         "$unset": {"admin_reset_token_hash": "", "admin_reset_token_expires_at": "",
+                    "admin_reset_code_hash": "", "admin_reset_code_expires_at": "",
+                    "admin_reset_attempts": "", "reset_code_hash": "",
+                    "reset_code_expires_at": "", "password_reset_token_hash": ""}},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=401, detail="Invalid or already used reset token")
+    logger.info("admin_password_reset_success user_id=%s", str(user["_id"]))
+    return {"message": "Password reset successful"}
+
+
 @router.post("/auth/forgot-password")
 
 async def forgot_password(payload: ForgotPasswordRequest) -> dict[str, str]:
@@ -536,6 +649,9 @@ async def forgot_password(payload: ForgotPasswordRequest) -> dict[str, str]:
     logger.info("auth_forgot_password_attempt email=%s", email)
 
     user = await users_collection.find_one({"email": email, "is_verified": True})
+
+    if user and _is_admin_recovery_account(user):
+        raise HTTPException(status_code=401, detail="Invalid credentials. Use administrator password recovery.")
 
     if not user:
 
@@ -588,6 +704,9 @@ async def verify_reset_code(payload: VerifyResetCodeRequest) -> dict[str, str]:
     logger.info("auth_verify_reset_attempt email=%s", email)
 
     user = await users_collection.find_one({"email": email, "is_verified": True})
+
+    if user and _is_admin_recovery_account(user):
+        raise HTTPException(status_code=401, detail="Invalid credentials. Use administrator password recovery.")
 
     if not user:
 
@@ -646,6 +765,9 @@ async def reset_password(payload: ResetPasswordRequest) -> dict[str, str]:
         raise HTTPException(status_code=401, detail="Invalid reset token") from exc
 
     user = await users_collection.find_one({"_id": user_id, "is_verified": True})
+
+    if user and _is_admin_recovery_account(user):
+        raise HTTPException(status_code=401, detail="Invalid credentials. Use administrator password recovery.")
 
     if not user:
 

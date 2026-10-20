@@ -9559,7 +9559,11 @@ async def _seed_admin_user() -> None:
         if existing_user:
             current_password_hash = str(existing_user.get("password_hash") or "").strip()
             password_matches_seed = bool(current_password_hash) and verify_password(admin_password, current_password_hash)
-            should_sync_password = settings.admin_seed_sync_password and not password_matches_seed
+            should_sync_password = (
+                settings.admin_seed_sync_password
+                and not password_matches_seed
+                and not existing_user.get("password_changed_at")
+            )
 
             logger.info(
                 "admin_seed_validation email=%s exists=true password_hash_present=%s password_matches_seed=%s sync_password=%s",
@@ -9599,8 +9603,6 @@ async def _seed_admin_user() -> None:
 
                         "subscription_purchase_source": "admin_seed",
 
-                        "password_hash": hash_password(admin_password) if should_sync_password else current_password_hash,
-
                         "updated_at": now,
 
                     },
@@ -9616,6 +9618,15 @@ async def _seed_admin_user() -> None:
                 },
 
             )
+
+            if should_sync_password:
+                # Do not overwrite a password changed while startup was reading the account.
+                await users_collection.update_one(
+                    {"_id": existing_user["_id"],
+                     "password_hash": existing_user.get("password_hash"),
+                     "password_changed_at": {"$exists": False}},
+                    {"$set": {"password_hash": hash_password(admin_password)}},
+                )
 
             logger.info(
                 "admin_seed_exists email=%s login_ready=%s",

@@ -376,3 +376,25 @@ If `pip install -r requirements.txt` fails while building `Pillow` and the outpu
 - Keep secrets in `.env` locally and in deployment environment variables for hosted environments.
 - Use `/health` after each deployment to confirm the API started successfully.
 - Use `/docs` to inspect current route contracts before integrating frontend changes.
+
+### Administrator password recovery
+
+The dashboard uses `/admin/auth/forgot-password`, `/admin/auth/verify-reset-code`,
+and `/admin/auth/reset-password`. Recovery is allowed only for verified, active
+administrator accounts listed in the backend's configured `admin_seed_accounts`
+(the `ADMIN_EMAIL_Primary` / `ADMIN_EMAIL_PRIMARY` and `ADMIN_EMAIL_DEV` seed
+credentials). Other addresses receive `401 Invalid credentials` without an email.
+The ordinary member recovery endpoints reject administrator accounts.
+
+Codes expire after 10 minutes, allow five verification attempts, and are consumed
+on successful verification. Resending has a 30-second cooldown and invalidates
+previous codes and reset tokens. The resulting opaque reset token expires after
+15 minutes and can update the password only once. A successful reset records
+`password_changed_at` and invalidates existing authentication sessions.
+
+Set `ADMIN_SEED_SYNC_PASSWORD=false` in production so startup does not overwrite
+existing passwords from environment seed values. Passwords with a
+`password_changed_at` timestamp are also protected from seed synchronization.
+
+Regression checks: `python -m unittest tests.test_admin_password_recovery
+ tests.test_integrations.AdminSeedTests tests.test_google_auth` (run as one line).

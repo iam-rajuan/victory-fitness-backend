@@ -780,13 +780,14 @@ class AdminSeedTests(unittest.IsolatedAsyncioTestCase):
                 admin_name="Victory Admin",
                 admin_email="admin@example.com",
                 admin_password="Secret123!",
+                admin_seed_accounts=[{"email": "admin@example.com", "password": "Secret123!"}],
                 admin_seed_sync_password=False,
             ),
         ):
             await backend_module._seed_admin_user()
 
         update_doc = update_one.await_args.args[1]
-        self.assertEqual(update_doc["$set"]["password_hash"], existing_user["password_hash"])
+        self.assertNotIn("password_hash", update_doc["$set"])
 
     async def test_seed_admin_user_syncs_password_when_enabled(self) -> None:
         existing_user = {
@@ -813,6 +814,7 @@ class AdminSeedTests(unittest.IsolatedAsyncioTestCase):
                 admin_name="Victory Admin",
                 admin_email="admin@example.com",
                 admin_password="Secret123!",
+                admin_seed_accounts=[{"email": "admin@example.com", "password": "Secret123!"}],
                 admin_seed_sync_password=True,
             ),
         ):

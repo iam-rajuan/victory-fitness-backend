@@ -152,6 +152,7 @@ async def change_admin_password(
             "$set": {
 
                 "password_hash": hash_password(payload.new_password),
+                "password_changed_at": datetime.now(timezone.utc),
 
                 "updated_at": datetime.now(timezone.utc),
 
