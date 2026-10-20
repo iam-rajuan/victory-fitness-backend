@@ -1634,6 +1634,9 @@ class NutritionPlanResponse(BaseModel):
     meal_completions: dict[str, dict[str, bool]] = Field(default_factory=dict)
     profile: dict | None = None
     daily_protein_target: int | None = None
+    daily_calorie_target: int | None = None
+    daily_carbs_target: int | None = None
+    daily_fat_target: int | None = None
     protein_per_kg: float | None = None
     baseline_weight: float | None = None
 

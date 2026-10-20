@@ -40,6 +40,13 @@ class _FakeNutritionPlansCollection:
         self.records.append(record)
         return SimpleNamespace(inserted_id=record["_id"])
 
+    async def update_one(self, query, update):
+        for record in self.records:
+            if record.get("_id") == query.get("_id"):
+                record.update(dict(update.get("$set") or {}))
+                return SimpleNamespace(modified_count=1)
+        return SimpleNamespace(modified_count=0)
+
 
 class _FakeUsersCollection:
     def __init__(self) -> None:

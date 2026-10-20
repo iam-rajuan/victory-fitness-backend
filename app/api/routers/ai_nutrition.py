@@ -30,6 +30,33 @@ def _serialize_nutrition_meal_log(record: dict) -> NutritionMealLogResponse:
 
 def _nutrition_payload_with_user_country(payload_data: dict, user: dict) -> dict:
     enriched = dict(payload_data)
+    onboarding = user.get("onboarding_state") if isinstance(user.get("onboarding_state"), dict) else {}
+    personal = onboarding.get("personalProfile") if isinstance(onboarding.get("personalProfile"), dict) else {}
+    anamnese = onboarding.get("anamnese") if isinstance(onboarding.get("anamnese"), dict) else {}
+    metrics = user.get("body_metrics") if isinstance(user.get("body_metrics"), dict) else {}
+
+    # The food questionnaire controls food preferences, not the member's training
+    # objective or body data. Those always come from the current saved profile.
+    for key in ("weight", "height", "age", "gender"):
+        value = metrics.get(key) or personal.get(key)
+        if value not in (None, ""):
+            enriched[key] = str(value)
+    if anamnese.get("activityLevel"):
+        enriched["activity_level"] = str(anamnese["activityLevel"])
+
+    selected_goals = anamnese.get("primaryGoals") if isinstance(anamnese.get("primaryGoals"), list) else []
+    goal_text = " ".join(str(value) for value in [anamnese.get("primaryGoal"), *selected_goals] if value).lower()
+    if any(term in goal_text for term in ("visible muscle", "build muscle", "muscle", "hypertrophy")):
+        enriched["goal"] = "g2"
+    elif any(term in goal_text for term in ("lose weight", "weight loss", "fat loss", "weight reduction")):
+        enriched["goal"] = "g1"
+    elif any(term in goal_text for term in ("mobility", "flexibility", "pain")):
+        enriched["goal"] = "g4"
+    elif any(term in goal_text for term in ("endurance", "energy", "keep up")):
+        enriched["goal"] = "g5"
+    elif goal_text:
+        enriched["goal"] = "g3"
+
     country = str(enriched.get("country") or user.get("country") or "").strip()
     country_code = str(enriched.get("country_code") or enriched.get("countryCode") or user.get("country_code") or "").strip().upper()
     if country:
@@ -377,8 +404,19 @@ async def nutrition_latest_plan(
         return None
 
     plan_raw = dict(record["plan"])
+    current_profile = _nutrition_payload_with_user_country({}, user)
+    has_current_profile = any(
+        current_profile.get(key) not in (None, "")
+        for key in ("weight", "height", "age", "gender", "activity_level", "goal")
+    )
     # Normalize plan to guarantee pre_workout and post_workout are populated even on legacy saved records
-    plan_dict = _normalize_nutrition_plan(plan_raw)
+    plan_dict = _normalize_nutrition_plan(plan_raw, payload=current_profile if has_current_profile else None)
+    plan_dict["profile"] = current_profile if has_current_profile else dict(plan_raw.get("profile") or {})
+    if plan_dict != plan_raw:
+        await nutrition_plans_collection.update_one(
+            {"_id": record["_id"]},
+            {"$set": {"plan": plan_dict, "updated_at": datetime.now(timezone.utc)}},
+        )
     plan_data = dict(plan_dict)
     plan_data["plan_id"] = str(record["_id"])
     if plan_raw.get("profile"):

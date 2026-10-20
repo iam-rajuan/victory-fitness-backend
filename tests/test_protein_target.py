@@ -5,8 +5,22 @@ from app.nutrition_ai import (
     _workout_nutrient_timing_instruction,
     _build_nutrition_plan_prompt,
     _normalize_nutrition_plan,
+    calculate_daily_macro_targets,
     _build_fallback_nutrition_plan,
 )
+
+
+def test_daily_macro_targets_match_current_muscle_building_profile():
+    targets = calculate_daily_macro_targets(77, "g2")
+
+    assert targets == {
+        "protein": 169,
+        "carbs": 292,
+        "fat": 62,
+        "calories": 2402,
+        "protein_per_kg": 2.2,
+        "weight_kg": 77.0,
+    }
 
 
 # ==============================================================================

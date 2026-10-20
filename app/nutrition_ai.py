@@ -463,6 +463,29 @@ def calculate_protein_target(weight: Any, goal: str | None = None) -> tuple[int,
     return daily_protein, multiplier
 
 
+def calculate_daily_macro_targets(weight: Any, goal: str | None = None) -> dict[str, int | float]:
+    """Return one internally consistent, profile-derived set of daily macros."""
+    weight_kg = _parse_weight_kg(weight)
+    protein, multiplier = calculate_protein_target(weight_kg, goal)
+    # Match the transparent onboarding energy baseline (31 kcal/kg), rounded to
+    # a usable planning number. Protein changes with the member's goal; carbs
+    # absorb the remaining energy after a practical 0.8 g/kg fat floor.
+    goal_code = str(goal or "").strip().lower()
+    energy_factor = 0.85 if any(term in goal_code for term in ("g1", "weight loss", "fat loss", "weight reduction", "cutting", "deficit")) else 1.0
+    calorie_target = max(int(round((weight_kg * 31 * energy_factor) / 50.0) * 50), 1600)
+    fat_target = max(int(round(weight_kg * 0.8)), 40)
+    carbs_target = max(int(round((calorie_target - (protein * 4) - (fat_target * 9)) / 4.0)), 0)
+    calculated_calories = (protein * 4) + (carbs_target * 4) + (fat_target * 9)
+    return {
+        "protein": protein,
+        "carbs": carbs_target,
+        "fat": fat_target,
+        "calories": calculated_calories,
+        "protein_per_kg": multiplier,
+        "weight_kg": weight_kg,
+    }
+
+
 def _favorite_meals_instruction(payload: dict) -> str:
     favorite_meals = [
         str(item).strip()
@@ -2309,28 +2332,35 @@ def _normalize_nutrition_plan(plan: dict, payload: dict | None = None) -> dict:
         _, fallback_mult = calculate_protein_target(70.0, user_goal_input)
         weight_kg = round(daily_protein / fallback_mult, 1)
 
-    target_p, multiplier = calculate_protein_target(weight_kg, user_goal_input) if weight_kg > 0 else (0, 1.6)
+    macro_targets = calculate_daily_macro_targets(weight_kg, user_goal_input) if weight_kg > 0 else None
+    target_p = int(macro_targets["protein"]) if macro_targets else 0
+    multiplier = float(macro_targets["protein_per_kg"]) if macro_targets else 1.6
 
-    # Ensure total protein across 7-day plan strictly hits target_p
-    if target_p > 0 and normalized_days:
+    # Reconcile every meal on every day. This makes what the Food screen shows
+    # equal the stored daily targets, rather than trusting stale or model-made
+    # macro arithmetic.
+    if macro_targets and normalized_days:
         for day in normalized_days:
-            keys = [k for k in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner") if k in day]
+            keys = [key for key in ("breakfast", "lunch", "pre_workout", "post_workout", "dinner") if isinstance(day.get(key), dict)]
             if not keys:
                 continue
-            current_sum = sum(day[k].get("p", 0) for k in keys) or 1
-            allocated_p = 0
-            for idx, k in enumerate(keys):
-                meal = day[k]
-                old_p = meal.get("p", 0)
-                if idx == len(keys) - 1:
-                    new_p = max(target_p - allocated_p, 10)
-                else:
-                    new_p = max(int(round(target_p * (old_p / current_sum))), 10)
-                    allocated_p += new_p
-                meal["p"] = new_p
-                # Strict Macro Math: kcal = (p * 4) + (c * 4) + (f * 9)
-                calc_kcal = (meal["p"] * 4) + (meal.get("c", 30) * 4) + (meal.get("f", 10) * 9)
-                meal["kcal"] = max(calc_kcal, 100)
+            for macro_key, target_key in (("p", "protein"), ("c", "carbs"), ("f", "fat")):
+                target = int(macro_targets[target_key])
+                existing_total = sum(max(int(day[key].get(macro_key, 0) or 0), 0) for key in keys)
+                allocated = 0
+                for index, key in enumerate(keys):
+                    meal = day[key]
+                    if index == len(keys) - 1:
+                        value = max(target - allocated, 0)
+                    elif existing_total > 0:
+                        value = max(int(round(target * max(int(meal.get(macro_key, 0) or 0), 0) / existing_total)), 0)
+                    else:
+                        value = target // len(keys)
+                    meal[macro_key] = value
+                    allocated += value
+            for key in keys:
+                meal = day[key]
+                meal["kcal"] = (int(meal["p"]) * 4) + (int(meal["c"]) * 4) + (int(meal["f"]) * 9)
         daily_protein = target_p
     elif target_p > 0:
         daily_protein = target_p
@@ -2340,7 +2370,9 @@ def _normalize_nutrition_plan(plan: dict, payload: dict | None = None) -> dict:
             sum(meal.get("p", 0) for k, meal in day.items() if k != "day" and isinstance(meal, dict))
             for day in normalized_days
         ) // max(len(normalized_days), 1)
-    raw_summary = _normalize_text(plan.get("summary"), "")
+    # A profile-derived reconciliation changes the targets; retain no stale
+    # headline from the original model response in that case.
+    raw_summary = "" if macro_targets else _normalize_text(plan.get("summary"), "")
     # Enforce concise structured summary: prevent long AI essays (>180 chars or missing structured metrics)
     if not raw_summary or len(raw_summary) > 180 or ("kcal/day" not in raw_summary and "•" not in raw_summary):
         final_summary = build_concise_nutrition_summary(
@@ -2360,6 +2392,9 @@ def _normalize_nutrition_plan(plan: dict, payload: dict | None = None) -> dict:
         "summary": final_summary,
         "goal_label": _normalize_text(plan.get("goal_label"), "Personalized Nutrition Plan"),
         "daily_protein_target": daily_protein,
+        "daily_calorie_target": int(macro_targets["calories"]) if macro_targets else plan.get("daily_calorie_target"),
+        "daily_carbs_target": int(macro_targets["carbs"]) if macro_targets else plan.get("daily_carbs_target"),
+        "daily_fat_target": int(macro_targets["fat"]) if macro_targets else plan.get("daily_fat_target"),
         "protein_per_kg": multiplier if weight_kg > 0 else plan.get("protein_per_kg", 1.6),
         "baseline_weight": weight_kg if weight_kg > 0 else plan.get("baseline_weight"),
         "days": normalized_days,
