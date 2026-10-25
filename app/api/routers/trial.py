@@ -2,7 +2,7 @@ from fastapi import APIRouter
 
 from ...core.legacy import *
 from ...database import beta_feedback_collection
-from ...models import BetaFeedbackCreateRequest, BetaFeedbackResponse
+from ...models import BetaFeedbackCreateRequest, BetaFeedbackResponse, PhaseOneBetaStartRequest
 
 router = APIRouter()
 
@@ -75,23 +75,33 @@ async def start_me_gold_trial(user: dict = Depends(_require_access_user)) -> Gol
     return GoldTrialStartResponse(trial=GoldTrialSummaryResponse(**_trial_summary(updated_user)))
 
 @router.post("/me/trial/phase-one-beta/start", response_model=MeResponse)
-async def start_me_phase_one_beta(user: dict = Depends(_require_access_user)) -> MeResponse:
+async def start_me_phase_one_beta(
+    payload: PhaseOneBetaStartRequest | None = None,
+    user: dict = Depends(_require_access_user),
+) -> MeResponse:
     if not _is_phase_one_beta_enabled():
         raise HTTPException(status_code=403, detail="The 21-day Phase 1 beta is not enabled")
 
     if _is_phase_one_beta_user(user):
         return MeResponse(**(await _resolve_me_payload(user)))
 
-    await _claim_phase_one_beta_slot(str(user["_id"]))
-    updated_user = await _activate_phase_one_beta_subscription(user)
-    if not updated_user:
-        raise HTTPException(status_code=404, detail="User not found")
+    requested_timezone = str(payload.timezone or "").strip() if payload else None
+    _ensure_phase_one_beta_enrollment_open(user, requested_timezone=requested_timezone)
+    user_id = str(user["_id"])
+    await _claim_phase_one_beta_slot(user_id)
+    try:
+        updated_user = await _activate_phase_one_beta_subscription(user, requested_timezone=requested_timezone)
+        if not updated_user:
+            raise HTTPException(status_code=404, detail="User not found")
+    except Exception:
+        await _release_phase_one_beta_slot(user_id)
+        raise
 
     await notify_user(
         users_collection,
         updated_user,
         "21-Day Gold Beta activated",
-        f"Hi {updated_user.get('name') or 'there'}, your 21-day Gold beta access is now active. Open your profile and start using your Gold features.",
+        f"Hi {updated_user.get('name') or 'there'}, your Gold beta access is active through November 15 in your local timezone. Open your profile and start using your Gold features.",
         "phase_one_beta_started",
         {"route": "/profile", "trialDay": 0, "tier": "gold", "trialType": PHASE_ONE_BETA_SUBSCRIPTION_SOURCE},
     )

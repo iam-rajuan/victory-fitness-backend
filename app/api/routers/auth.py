@@ -370,6 +370,7 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "country": str(payload.country or "").strip(),
             "country_code": str(payload.country_code or "").strip().upper() or None,
             "preferred_language": str(payload.preferred_language or "").strip().lower(),
+            "timezone": str(payload.timezone or "").strip() or None,
             "marketing_consent": payload.marketing_consent,
             "signup_source": payload.signup_source.strip() or "organic",
             "phase_one_beta_requested_code": normalized_beta_access_code or None,

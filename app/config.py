@@ -143,6 +143,7 @@ class Settings:
         self.phase_one_beta_enabled = _get_bool("PHASE_ONE_BETA", False)
         self.phase_one_beta_duration_days = _get_int("PHASE_ONE_BETA_DURATION_DAYS", 21)
         self.phase_one_beta_max_users = _get_int("PHASE_ONE_BETA_MAX_USERS", 300)
+        self.phase_one_beta_start_date = _get_str("PHASE_ONE_BETA_START_DATE", "2026-10-26")
         self.phase_one_beta_access_codes = _get_csv_list("PHASE_ONE_BETA_ACCESS_CODES")
         self.stripe_payments_enabled = _get_bool("STRIPE_PAYMENTS_ENABLED", not self.phase_one_beta_enabled)
         self.stripe_secret_key = _get_secret("STRIPE_SECRET_KEY")

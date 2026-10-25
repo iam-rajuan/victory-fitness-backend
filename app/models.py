@@ -20,6 +20,7 @@ class RegisterRequest(BaseModel):
     country: str | None = Field(default=None, max_length=120)
     country_code: str | None = Field(default=None, min_length=2, max_length=2)
     preferred_language: str | None = Field(default=None, max_length=10)
+    timezone: str | None = Field(default=None, max_length=100)
     inviter_id: str | None = None
     invite_id: str | None = None
     referral_code: str | None = None
@@ -48,7 +49,7 @@ class RegisterRequest(BaseModel):
             raise ValueError("must not be blank")
         return value
 
-    @field_validator("country", "country_code", "preferred_language")
+    @field_validator("country", "country_code", "preferred_language", "timezone")
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
         if value is None:
@@ -59,6 +60,10 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+
+
+class PhaseOneBetaStartRequest(BaseModel):
+    timezone: str | None = Field(default=None, max_length=100)
 
 
 class VerifyEmailRequest(BaseModel):

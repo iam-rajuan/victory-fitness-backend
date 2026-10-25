@@ -65,7 +65,7 @@ class PhaseOneBetaEntitlementTests(unittest.TestCase):
 
 class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
     async def test_activation_creates_21_day_zero_cost_gold_beta_subscription(self) -> None:
-        now = _utc_now()
+        now = datetime(2026, 10, 26, 10, 0, tzinfo=timezone.utc)
         user = {
             "_id": "user-3",
             "email": "beta@example.com",
@@ -84,25 +84,24 @@ class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
             update_one=AsyncMock(),
             find_one=AsyncMock(return_value=updated_user),
         )
-        phase_one_beta_slots_collection = SimpleNamespace(
-            find_one=AsyncMock(return_value=None),
-            find_one_and_update=AsyncMock(return_value={"slot_number": 1, "claimed_by": "user-3"}),
-        )
         settings = SimpleNamespace(
             phase_one_beta_enabled=True,
             phase_one_beta_duration_days=21,
             phase_one_beta_max_users=300,
+            phase_one_beta_start_date="2026-10-26",
             phase_one_beta_access_codes=["BETA-001"],
         )
 
         with patch.object(backend_module, "users_collection", users_collection), patch.object(
-            backend_module, "phase_one_beta_slots_collection", phase_one_beta_slots_collection
-        ), patch.object(
             backend_module, "settings", settings
         ), patch.object(
             backend_module, "_get_dashboard_subscription_plan_items", AsyncMock(return_value=[])
         ):
-            result = await backend_module._maybe_activate_phase_one_beta_subscription(user)
+            result = await backend_module._activate_phase_one_beta_subscription(
+                user,
+                now=now,
+                requested_timezone="Europe/Berlin",
+            )
 
         self.assertEqual(result["subscription_purchase_source"], "beta_trial")
         update_doc = users_collection.update_one.await_args.args[1]["$set"]
@@ -112,9 +111,70 @@ class PhaseOneBetaActivationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(update_doc["subscription"]["currency"], "EUR")
         self.assertFalse(update_doc["subscription"]["payment_required"])
         self.assertEqual(
-            update_doc["trial_end_at"] - update_doc["trial_start_at"],
-            timedelta(days=21),
+            update_doc["trial_end_at"],
+            datetime(2026, 11, 15, 23, 0, tzinfo=timezone.utc),
         )
+        self.assertEqual(update_doc["beta_phase_one"]["duration_days"], 21)
+        self.assertEqual(update_doc["timezone"], "Europe/Berlin")
+
+    async def test_late_enrollment_gets_only_remaining_campaign_days(self) -> None:
+        now = datetime(2026, 10, 28, 12, 0, tzinfo=timezone.utc)
+        user = {"_id": "late-user", "country_code": "GH", "onboarding_completed": True}
+        users_collection = SimpleNamespace(
+            update_one=AsyncMock(),
+            find_one=AsyncMock(return_value=None),
+        )
+        settings = SimpleNamespace(
+            phase_one_beta_enabled=True,
+            phase_one_beta_duration_days=21,
+            phase_one_beta_max_users=300,
+            phase_one_beta_start_date="2026-10-26",
+            phase_one_beta_access_codes=[],
+        )
+
+        with patch.object(backend_module, "users_collection", users_collection), patch.object(
+            backend_module, "settings", settings
+        ), patch.object(
+            backend_module, "_get_dashboard_subscription_plan_items", AsyncMock(return_value=[])
+        ):
+            await backend_module._activate_phase_one_beta_subscription(user, now=now)
+
+        update_doc = users_collection.update_one.await_args.args[1]["$set"]
+        self.assertEqual(update_doc["beta_phase_one"]["duration_days"], 19)
+        self.assertEqual(update_doc["trial_end_at"], datetime(2026, 11, 16, 0, 0, tzinfo=timezone.utc))
+
+
+class PhaseOneBetaCampaignWindowTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.settings = SimpleNamespace(
+            phase_one_beta_duration_days=21,
+            phase_one_beta_start_date="2026-10-26",
+        )
+
+    def test_window_uses_each_users_local_midnight(self) -> None:
+        with patch.object(backend_module, "settings", self.settings):
+            timezone_name, start_at, end_at = backend_module._phase_one_beta_campaign_window(
+                {"country_code": "DE"}
+            )
+
+        self.assertEqual(timezone_name, "Europe/Berlin")
+        self.assertEqual(start_at, datetime(2026, 10, 25, 23, 0, tzinfo=timezone.utc))
+        self.assertEqual(end_at, datetime(2026, 11, 15, 23, 0, tzinfo=timezone.utc))
+
+    def test_enrollment_is_rejected_before_start_and_at_shared_end(self) -> None:
+        user = {"timezone": "Africa/Accra"}
+        with patch.object(backend_module, "settings", self.settings):
+            with self.assertRaises(Exception) as before:
+                backend_module._ensure_phase_one_beta_enrollment_open(
+                    user, now=datetime(2026, 10, 25, 23, 59, tzinfo=timezone.utc)
+                )
+            with self.assertRaises(Exception) as ended:
+                backend_module._ensure_phase_one_beta_enrollment_open(
+                    user, now=datetime(2026, 11, 16, 0, 0, tzinfo=timezone.utc)
+                )
+
+        self.assertEqual(before.exception.status_code, 403)
+        self.assertEqual(ended.exception.status_code, 410)
 
     async def test_existing_beta_user_does_not_restart_trial_window(self) -> None:
         now = _utc_now()
@@ -358,6 +418,8 @@ class PhaseOneBetaActivationRouteTests(unittest.TestCase):
         with patch.object(trial_router_module, "_is_phase_one_beta_enabled", return_value=True), patch.object(
             trial_router_module, "_is_phase_one_beta_user", return_value=False
         ), patch.object(
+            trial_router_module, "_ensure_phase_one_beta_enrollment_open"
+        ), patch.object(
             trial_router_module, "_claim_phase_one_beta_slot", AsyncMock(return_value={"slot_number": 1})
         ), patch.object(
             trial_router_module, "_activate_phase_one_beta_subscription", AsyncMock(return_value=updated_user)
@@ -444,6 +506,8 @@ class PhaseOneBetaActivationRouteTests(unittest.TestCase):
 
         with patch.object(trial_router_module, "_is_phase_one_beta_enabled", return_value=True), patch.object(
             trial_router_module, "_is_phase_one_beta_user", return_value=False
+        ), patch.object(
+            trial_router_module, "_ensure_phase_one_beta_enrollment_open"
         ), patch.object(
             trial_router_module, "_claim_phase_one_beta_slot", AsyncMock(return_value={"slot_number": 2})
         ), patch.object(

@@ -21,6 +21,7 @@ from uuid import uuid4
 from calendar import month_abbr
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pathlib import Path
 
@@ -4673,6 +4674,81 @@ def _phase_one_beta_duration_days() -> int:
 def _phase_one_beta_max_users() -> int:
     return max(int(getattr(settings, "phase_one_beta_max_users", 300) or 300), 1)
 
+def _phase_one_beta_start_date():
+    raw = str(getattr(settings, "phase_one_beta_start_date", "2026-10-26") or "2026-10-26").strip()
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise RuntimeError("PHASE_ONE_BETA_START_DATE must use YYYY-MM-DD format") from exc
+
+_PHASE_ONE_BETA_COUNTRY_TIMEZONES = {
+    "DE": "Europe/Berlin",
+    "GH": "Africa/Accra",
+    "IN": "Asia/Kolkata",
+    "GB": "Europe/London",
+    "US": "America/New_York",
+}
+
+def _phase_one_beta_timezone(user: dict, requested_timezone: str | None = None) -> tuple[str, ZoneInfo]:
+    candidates = (
+        user.get("timezone"),
+        requested_timezone,
+        _PHASE_ONE_BETA_COUNTRY_TIMEZONES.get(str(user.get("country_code") or "").strip().upper()),
+        "UTC",
+    )
+    for candidate in candidates:
+        name = str(candidate or "").strip()
+        if not name:
+            continue
+        try:
+            return name, ZoneInfo(name)
+        except ZoneInfoNotFoundError:
+            continue
+    return "UTC", ZoneInfo("UTC")
+
+def _phase_one_beta_campaign_window(
+    user: dict,
+    *,
+    requested_timezone: str | None = None,
+) -> tuple[str, datetime, datetime]:
+    timezone_name, user_timezone = _phase_one_beta_timezone(user, requested_timezone)
+    start_date = _phase_one_beta_start_date()
+    local_start = datetime.combine(start_date, datetime.min.time(), tzinfo=user_timezone)
+    local_end = datetime.combine(
+        start_date + timedelta(days=_phase_one_beta_duration_days()),
+        datetime.min.time(),
+        tzinfo=user_timezone,
+    )
+    return timezone_name, local_start.astimezone(timezone.utc), local_end.astimezone(timezone.utc)
+
+def _phase_one_beta_remaining_days(
+    user: dict,
+    *,
+    now: datetime | None = None,
+    requested_timezone: str | None = None,
+) -> int:
+    timezone_name, _, end_at = _phase_one_beta_campaign_window(user, requested_timezone=requested_timezone)
+    user_timezone = ZoneInfo(timezone_name)
+    current = _as_utc(now or datetime.now(timezone.utc))
+    return max((end_at.astimezone(user_timezone).date() - current.astimezone(user_timezone).date()).days, 0)
+
+def _ensure_phase_one_beta_enrollment_open(
+    user: dict,
+    *,
+    now: datetime | None = None,
+    requested_timezone: str | None = None,
+) -> tuple[str, datetime, datetime]:
+    timezone_name, start_at, end_at = _phase_one_beta_campaign_window(
+        user,
+        requested_timezone=requested_timezone,
+    )
+    current = _as_utc(now or datetime.now(timezone.utc))
+    if current < start_at:
+        raise HTTPException(status_code=403, detail="The 21-day Gold Beta opens on October 26 in your local timezone")
+    if current >= end_at:
+        raise HTTPException(status_code=410, detail="The 21-day Gold Beta enrollment window has ended")
+    return timezone_name, start_at, end_at
+
 def _phase_one_beta_access_codes() -> set[str]:
     return {
         str(code).strip().upper()
@@ -4739,12 +4815,32 @@ async def _claim_phase_one_beta_slot(user_id: str, *, now: datetime | None = Non
         raise HTTPException(status_code=409, detail="Phase 1 beta enrollment capacity has been reached")
     return claimed_slot
 
-async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | None = None) -> dict:
+async def _release_phase_one_beta_slot(user_id: str) -> None:
+    await phase_one_beta_slots_collection.update_one(
+        {"campaign": "phase_one_gold_beta", "claimed_by": user_id},
+        {"$set": {"claimed_by": None, "claimed_at": None, "updated_at": datetime.now(timezone.utc)}},
+    )
+
+async def _activate_phase_one_beta_subscription(
+    user: dict,
+    *,
+    now: datetime | None = None,
+    requested_timezone: str | None = None,
+) -> dict:
     current = now or datetime.now(timezone.utc)
     if _is_phase_one_beta_user(user):
         return user
 
-    end_at = current + timedelta(days=_phase_one_beta_duration_days())
+    timezone_name, campaign_start_at, end_at = _ensure_phase_one_beta_enrollment_open(
+        user,
+        now=current,
+        requested_timezone=requested_timezone,
+    )
+    remaining_days = _phase_one_beta_remaining_days(
+        user,
+        now=current,
+        requested_timezone=timezone_name,
+    )
     feature_access = _resolve_subscription_access("GOLD")
     dashboard_plans = await _get_dashboard_subscription_plan_items()
     beta_plan = next(
@@ -4794,6 +4890,7 @@ async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | N
         "trial_tier_granted": GOLD_TRIAL_TIER,
         "trial_start_at": current,
         "trial_end_at": end_at,
+        "timezone": timezone_name,
         "trial_outcome": None,
         "trial_outcome_at": None,
         "trial_campaign_sent_days": [0],
@@ -4808,7 +4905,11 @@ async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | N
             "payment_provider": None,
             "started_at": current,
             "expires_at": end_at,
-            "duration_days": _phase_one_beta_duration_days(),
+            "campaign_started_at": campaign_start_at,
+            "campaign_ends_at": end_at,
+            "duration_days": remaining_days,
+            "campaign_duration_days": _phase_one_beta_duration_days(),
+            "timezone": timezone_name,
             "enrolled_at": current,
             "status": "active",
         },
@@ -4826,7 +4927,12 @@ async def _activate_phase_one_beta_subscription(user: dict, *, now: datetime | N
     updated_user = await users_collection.find_one({"_id": user["_id"]})
     return updated_user or {**user, **update_doc}
 
-async def _maybe_activate_phase_one_beta_subscription(user: dict, *, requested_code: str | None = None) -> dict:
+async def _maybe_activate_phase_one_beta_subscription(
+    user: dict,
+    *,
+    requested_code: str | None = None,
+    requested_timezone: str | None = None,
+) -> dict:
     if not _is_phase_one_beta_enabled():
         return user
     if _is_phase_one_beta_user(user):
@@ -4838,8 +4944,13 @@ async def _maybe_activate_phase_one_beta_subscription(user: dict, *, requested_c
     if not _is_phase_one_beta_code_valid(candidate_code):
         return user
 
-    await _claim_phase_one_beta_slot(str(user["_id"]))
-    return await _activate_phase_one_beta_subscription(user)
+    user_id = str(user["_id"])
+    await _claim_phase_one_beta_slot(user_id)
+    try:
+        return await _activate_phase_one_beta_subscription(user, requested_timezone=requested_timezone)
+    except Exception:
+        await _release_phase_one_beta_slot(user_id)
+        raise
 
 def _trial_started_at(user: dict) -> datetime | None:
     return _trial_datetime(user.get("trial_start_at") or user.get("subscription_started_at"))
