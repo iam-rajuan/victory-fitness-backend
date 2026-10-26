@@ -10600,50 +10600,57 @@ def _calculate_current_streak(completed_dates: set) -> int:
 
 async def _calculate_user_fitness_stats(user_id: str) -> dict[str, int | str]:
 
-    memberships = await challenge_memberships_collection.find(
+    async def _load_workout_logs() -> list[dict]:
+        try:
+            return await workout_logs_collection.find(
+                {"user_id": user_id, "$or": [{"status": "completed"}, {"completed": True}]},
+                projection={"started_at": 1, "completed_at": 1, "created_at": 1},
+            ).to_list(length=500)
+        except Exception:
+            return []
 
-        {"user_id": user_id},
+    async def _load_point_entries() -> list[dict]:
+        try:
+            if points_log_collection is not None:
+                return await points_log_collection.find({"user_id": user_id}).to_list(length=1000)
+        except Exception:
+            pass
+        return []
 
-        projection=FITNESS_STATS_MEMBERSHIP_PROJECTION,
+    async def _load_user_points() -> int:
+        try:
+            user_filter = {"_id": ObjectId(user_id)} if ObjectId.is_valid(user_id) else {"_id": user_id}
+            user_doc = await users_collection.find_one(user_filter, projection={"points": 1})
+            return max(int((user_doc or {}).get("points") or 0), 0)
+        except Exception:
+            return 0
 
-    ).to_list(length=None)
+    memberships, raw_logs, point_entries, user_points = await asyncio.gather(
+        challenge_memberships_collection.find(
+            {"user_id": user_id},
+            projection=FITNESS_STATS_MEMBERSHIP_PROJECTION,
+        ).to_list(length=None),
+        _load_workout_logs(),
+        _load_point_entries(),
+        _load_user_points(),
+    )
 
     points = 0
     workouts_completed = 0
     workouts_total = 0
     completed_dates: set = set()
 
-    # Query completed workout logs (independent of challenges)
-    try:
-        raw_logs = await workout_logs_collection.find(
-            {"user_id": user_id, "$or": [{"status": "completed"}, {"completed": True}]},
-            projection={"started_at": 1, "completed_at": 1, "created_at": 1}
-        ).to_list(length=500)
-        for log in raw_logs:
-            log_date = log.get("completed_at") or log.get("started_at") or log.get("created_at")
-            d = _parse_completed_activity_date(log_date)
-            if d:
-                completed_dates.add(d.date())
-                workouts_completed += 1
-    except Exception:
-        pass
+    # Completed workout logs are independent of challenge membership.
+    for log in raw_logs:
+        log_date = log.get("completed_at") or log.get("started_at") or log.get("created_at")
+        d = _parse_completed_activity_date(log_date)
+        if d:
+            completed_dates.add(d.date())
+            workouts_completed += 1
 
     extra_points = 0
-    try:
-        if points_log_collection is not None:
-            point_entries = await points_log_collection.find({"user_id": user_id}).to_list(length=1000)
-            for entry in point_entries:
-                extra_points += max(int(entry.get("points") or 0), 0)
-    except Exception:
-        pass
-    user_points = 0
-    try:
-        user_filter = {"_id": ObjectId(user_id)} if ObjectId.is_valid(user_id) else {"_id": user_id}
-        user_doc = await users_collection.find_one(user_filter, projection={"points": 1})
-        if user_doc:
-            user_points = max(int(user_doc.get("points") or 0), 0)
-    except Exception:
-        pass
+    for entry in point_entries:
+        extra_points += max(int(entry.get("points") or 0), 0)
     if user_points > extra_points:
         extra_points = user_points
     points += extra_points
