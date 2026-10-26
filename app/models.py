@@ -15,6 +15,8 @@ class RegisterRequest(BaseModel):
     mobile: str = Field(min_length=3, max_length=30)
     password: str = Field(min_length=8, max_length=128)
     marketing_consent: bool = False
+    whatsapp_consent: bool = False
+    age_confirmed: bool = False
     signup_source: str = Field(default="organic", max_length=120)
     beta_access_code: str | None = Field(default=None, min_length=3, max_length=120)
     country: str | None = Field(default=None, max_length=120)
@@ -25,6 +27,13 @@ class RegisterRequest(BaseModel):
     invite_id: str | None = None
     referral_code: str | None = None
     challenge_id: str | None = None
+
+    @field_validator("age_confirmed")
+    @classmethod
+    def require_adult_confirmation(cls, value: bool) -> bool:
+        if value is not True:
+            raise ValueError("You must confirm that you are at least 18 years old")
+        return value
 
     @field_validator("name", "surname", "mobile")
     @classmethod
@@ -60,6 +69,13 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+
+
+class ConsentChangeRequest(BaseModel):
+    consent_id: str = Field(pattern=r"^(email|whatsapp|journal)$")
+    granted: bool
+    language: str = Field(pattern=r"^(de|en)$")
+    source: str = Field(pattern=r"^(journal_dialog|app_settings|whatsapp_stop)$")
 
 
 class PhaseOneBetaStartRequest(BaseModel):

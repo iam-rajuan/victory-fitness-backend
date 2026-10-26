@@ -4,6 +4,8 @@ from ...core.legacy import *
 
 router = APIRouter()
 
+from ...consent_service import require_journal_consent
+
 @router.post("/journal/entries", response_model=JournalEntryResponse, status_code=status.HTTP_201_CREATED)
 
 async def create_journal_entry(
@@ -15,6 +17,7 @@ async def create_journal_entry(
 ) -> JournalEntryResponse:
 
     user_id = str(user["_id"])
+    await require_journal_consent(user_id)
 
     logger.info("journal_create_attempt user_id=%s", user_id)
 
@@ -67,6 +70,7 @@ async def list_journal_entries(
 ) -> JournalEntryListResponse:
 
     user_id = str(user["_id"])
+    await require_journal_consent(user_id)
 
     logger.info("journal_list_attempt user_id=%s", user_id)
 
@@ -106,6 +110,15 @@ async def list_journal_entries(
 
     return JournalEntryListResponse(entries=entries)
 
+@router.delete("/journal/entries", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_all_journal_entries(user: dict = Depends(_require_access_user)) -> Response:
+    user_id = str(user["_id"])
+    # Deletion remains available after consent withdrawal so data-subject rights
+    # never depend on continuing Art. 9 consent.
+    await journal_entries_collection.delete_many({"user_id": user_id})
+    logger.info("journal_delete_all_success user_id=%s", user_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 @router.get("/journal/entries/{entry_id}", response_model=JournalEntryResponse)
 
 async def get_journal_entry(
@@ -117,6 +130,7 @@ async def get_journal_entry(
 ) -> JournalEntryResponse:
 
     user_id = str(user["_id"])
+    await require_journal_consent(user_id)
 
     logger.info("journal_get_attempt user_id=%s entry_id=%s", user_id, entry_id)
 
@@ -165,6 +179,7 @@ async def delete_journal_entry(
 ) -> Response:
 
     user_id = str(user["_id"])
+    await require_journal_consent(user_id)
 
     logger.info("journal_delete_attempt user_id=%s entry_id=%s", user_id, entry_id)
 
@@ -199,6 +214,7 @@ async def update_journal_entry(
 ) -> JournalEntryResponse:
 
     user_id = str(user["_id"])
+    await require_journal_consent(user_id)
 
     logger.info("journal_update_attempt user_id=%s entry_id=%s", user_id, entry_id)
 
@@ -271,6 +287,7 @@ async def analyze_journal_entry(
 ) -> JournalAnalysisResponse:
 
     user_id = str(user["_id"])
+    await require_journal_consent(user_id)
 
     logger.info("journal_analyze_attempt user_id=%s", user_id)
 
@@ -295,6 +312,7 @@ async def analyze_latest_journal_entry(
 ) -> JournalLatestAnalysisResponse:
 
     user_id = str(user["_id"])
+    await require_journal_consent(user_id)
 
     logger.info("journal_analyze_latest_attempt user_id=%s", user_id)
 

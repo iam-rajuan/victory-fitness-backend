@@ -335,7 +335,10 @@ def _remember_previous_verification_code(existing_user: dict | None, now: dateti
 
 @router.post("/auth/register", status_code=status.HTTP_202_ACCEPTED)
 
-async def register(payload: RegisterRequest) -> dict[str, str]:
+async def register(payload: RegisterRequest, request: Request) -> dict[str, str]:
+
+    if not payload.age_confirmed:
+        raise HTTPException(status_code=422, detail="You must confirm that you are at least 18 years old")
 
     email = payload.email.lower()
     normalized_beta_access_code = str(payload.beta_access_code or "").strip().upper()
@@ -372,6 +375,9 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
             "preferred_language": str(payload.preferred_language or "").strip().lower(),
             "timezone": str(payload.timezone or "").strip() or None,
             "marketing_consent": payload.marketing_consent,
+            "whatsapp_consent": payload.whatsapp_consent,
+            "age_confirmed": payload.age_confirmed,
+            "age_confirmed_at": now,
             "signup_source": payload.signup_source.strip() or "organic",
             "phase_one_beta_requested_code": normalized_beta_access_code or None,
             "marketing_consent_at": now if payload.marketing_consent else None,
@@ -403,6 +409,20 @@ async def register(payload: RegisterRequest) -> dict[str, str]:
         update_doc["$unset"] = previous_code_unset
 
     await users_collection.update_one({"email": email}, update_doc, upsert=True)
+    registered_user = await users_collection.find_one({"email": email}, {"_id": 1})
+    if registered_user:
+        from ...consent_service import append_consent_event, normalize_consent_language
+        client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        client_ip = client_ip or (request.client.host if request.client else None)
+        consent_language = normalize_consent_language(payload.preferred_language)
+        await append_consent_event(
+            user_id=str(registered_user["_id"]), consent_id="email", granted=payload.marketing_consent,
+            language=consent_language, source="web_form", ip_address=client_ip,
+        )
+        await append_consent_event(
+            user_id=str(registered_user["_id"]), consent_id="whatsapp", granted=payload.whatsapp_consent,
+            language=consent_language, source="web_form", ip_address=client_ip,
+        )
 
     try:
 

@@ -53,6 +53,7 @@ if settings.mongodb_configured:
     coach_victor_threads_collection = db["coach_victor_threads"]
     coach_victor_archives_collection = db["coach_victor_archives"]
     journal_entries_collection = db["journal_entries"]
+    consents_collection = db["consents"]
     workouts_collection = db["workouts"]
     challenges_collection = db["challenges"]
     challenge_memberships_collection = db["challenge_memberships"]
@@ -110,6 +111,7 @@ else:
     coach_victor_threads_collection = _UnconfiguredCollection()
     coach_victor_archives_collection = _UnconfiguredCollection()
     journal_entries_collection = _UnconfiguredCollection()
+    consents_collection = _UnconfiguredCollection()
     workouts_collection = _UnconfiguredCollection()
     challenges_collection = _UnconfiguredCollection()
     challenge_memberships_collection = _UnconfiguredCollection()
@@ -309,6 +311,8 @@ async def ensure_indexes() -> None:
     await coach_victor_archives_collection.create_index([("thread_id", 1), ("created_at", 1)])
     await coach_victor_archives_collection.create_index([("user_id", 1), ("created_at", -1)])
     await journal_entries_collection.create_index([("user_id", 1), ("created_at", -1)])
+    await consents_collection.create_index([("user_id", 1), ("consent_id", 1), ("timestamp_utc", -1)])
+    await consents_collection.create_index("id", unique=True)
     await workouts_collection.create_index([("created_at", -1)])
     await workouts_collection.create_index([("visibility", 1), ("created_at", -1)])
     await workouts_collection.create_index([("visibility", 1), ("tag", 1), ("created_at", -1)])
